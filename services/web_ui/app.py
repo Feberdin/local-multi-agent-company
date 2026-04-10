@@ -8,11 +8,12 @@ How to debug: If a form stops working, inspect the orchestrator base URL, the ca
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -23,8 +24,13 @@ from services.shared.agentic_lab.schemas import HealthResponse
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 app = FastAPI(title="Feberdin Agent Team Dashboard", version="0.1.0")
-app.mount("/static", StaticFiles(directory="/app/services/web_ui/static"), name="static")
-templates = Jinja2Templates(directory="/app/services/web_ui/templates")
+
+# Why this exists:
+# The UI should import both inside the container (`/app/...`) and in local tests where the
+# repository lives in a normal workspace path. Resolving from this file keeps the setup portable.
+WEB_UI_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(WEB_UI_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(WEB_UI_DIR / "templates"))
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -311,7 +317,11 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
     )
 
 
-@app.post("/tasks", response_class=HTMLResponse)
+# Why this exists:
+# FastAPI tries to derive a response model from the return annotation. A union like
+# `HTMLResponse | RedirectResponse` is not a valid Pydantic response model and crashes at import time.
+# We return concrete response objects directly, so the route must opt out of response-model generation.
+@app.post("/tasks", response_class=HTMLResponse, response_model=None)
 async def create_task(
     request: Request,
     goal: str = Form(...),
@@ -319,7 +329,7 @@ async def create_task(
     local_repo_path: str = Form(...),
     enable_web_research: bool = Form(False),
     allow_repository_modifications: bool = Form(False),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     payload = {
         "goal": goal,
         "repository": repository,
@@ -336,11 +346,11 @@ async def create_task(
     return RedirectResponse(url=f"/tasks/{task['id']}", status_code=303)
 
 
-@app.post("/settings/repositories", response_class=HTMLResponse)
+@app.post("/settings/repositories", response_class=HTMLResponse, response_model=None)
 async def update_repository_settings(
     request: Request,
     allowed_repositories_text: str = Form(""),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     repositories = [line.strip() for line in allowed_repositories_text.splitlines() if line.strip()]
     response = await _api_request(
         "PUT",
@@ -354,7 +364,7 @@ async def update_repository_settings(
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.post("/settings/worker-guidance", response_class=HTMLResponse)
+@app.post("/settings/worker-guidance", response_class=HTMLResponse, response_model=None)
 async def update_worker_guidance(
     request: Request,
     worker_name: str = Form(...),
@@ -366,7 +376,7 @@ async def update_worker_guidance(
     competence_boundary: str = Form(...),
     escalate_beyond_boundary: bool = Form(False),
     auto_submit_improvement_suggestions: bool = Form(False),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     payload = {
         "worker_name": worker_name,
         "display_name": display_name,
@@ -393,11 +403,11 @@ async def update_worker_guidance(
     return RedirectResponse(url="/worker-guidance", status_code=303)
 
 
-@app.post("/settings/trusted-sources/profile", response_class=HTMLResponse)
+@app.post("/settings/trusted-sources/profile", response_class=HTMLResponse, response_model=None)
 async def update_trusted_source_profile(
     request: Request,
     profile_id: str = Form(...),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     response = await _api_request(
         "POST",
         "/api/settings/trusted-sources/active-profile",
@@ -414,7 +424,7 @@ async def update_trusted_source_profile(
     return RedirectResponse(url="/trusted-sources", status_code=303)
 
 
-@app.post("/settings/trusted-sources/source", response_class=HTMLResponse)
+@app.post("/settings/trusted-sources/source", response_class=HTMLResponse, response_model=None)
 async def upsert_trusted_source(
     request: Request,
     source_id: str = Form(""),
@@ -434,7 +444,7 @@ async def upsert_trusted_source(
     allowed_paths_text: str = Form(""),
     deny_paths_text: str = Form(""),
     tags_text: str = Form(""),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     payload = {
         "id": source_id or name,
         "name": name,
@@ -475,8 +485,8 @@ async def upsert_trusted_source(
     return RedirectResponse(url="/trusted-sources", status_code=303)
 
 
-@app.post("/settings/trusted-sources/source/{source_id}/toggle", response_class=HTMLResponse)
-async def toggle_trusted_source(request: Request, source_id: str) -> HTMLResponse | RedirectResponse:
+@app.post("/settings/trusted-sources/source/{source_id}/toggle", response_class=HTMLResponse, response_model=None)
+async def toggle_trusted_source(request: Request, source_id: str) -> Response:
     context = await _load_trusted_sources_context(edit_source_id=source_id)
     source = next((item for item in context["sources"] if item["id"] == source_id), None)
     if source is None:
@@ -499,8 +509,8 @@ async def toggle_trusted_source(request: Request, source_id: str) -> HTMLRespons
     return RedirectResponse(url="/trusted-sources", status_code=303)
 
 
-@app.post("/settings/trusted-sources/source/{source_id}/delete", response_class=HTMLResponse)
-async def delete_trusted_source(request: Request, source_id: str) -> HTMLResponse | RedirectResponse:
+@app.post("/settings/trusted-sources/source/{source_id}/delete", response_class=HTMLResponse, response_model=None)
+async def delete_trusted_source(request: Request, source_id: str) -> Response:
     response = await _api_request("DELETE", f"/api/settings/trusted-sources/sources/{source_id}")
     if response.status_code >= 400:
         detail = response.json().get("detail", "Die Quelle konnte nicht gelöscht werden.")
@@ -513,11 +523,11 @@ async def delete_trusted_source(request: Request, source_id: str) -> HTMLRespons
     return RedirectResponse(url="/trusted-sources", status_code=303)
 
 
-@app.post("/settings/trusted-sources/import", response_class=HTMLResponse)
+@app.post("/settings/trusted-sources/import", response_class=HTMLResponse, response_model=None)
 async def import_trusted_sources(
     request: Request,
     payload_json: str = Form(...),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     response = await _api_request(
         "POST",
         "/api/settings/trusted-sources/import",
@@ -574,7 +584,7 @@ async def test_trusted_source(
     return templates.TemplateResponse(request=request, name="trusted_sources.html", context={"request": request, **context})
 
 
-@app.post("/settings/web-search/core", response_class=HTMLResponse)
+@app.post("/settings/web-search/core", response_class=HTMLResponse, response_model=None)
 async def update_web_search_core_settings(
     request: Request,
     primary_web_search_provider: str = Form(...),
@@ -582,7 +592,7 @@ async def update_web_search_core_settings(
     require_trusted_sources_first: bool = Form(False),
     allow_general_web_search_fallback: bool = Form(False),
     provider_host_allowlist_text: str = Form(""),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     current_response = await _api_request("GET", "/api/settings/web-search")
     current_response.raise_for_status()
     current = current_response.json()
@@ -603,7 +613,7 @@ async def update_web_search_core_settings(
     return RedirectResponse(url="/web-search", status_code=303)
 
 
-@app.post("/settings/web-search/provider", response_class=HTMLResponse)
+@app.post("/settings/web-search/provider", response_class=HTMLResponse, response_model=None)
 async def upsert_web_search_provider(
     request: Request,
     provider_id: str = Form(""),
@@ -621,7 +631,7 @@ async def upsert_web_search_provider(
     default_language: str = Form("en"),
     default_categories_text: str = Form("general"),
     safe_search: int = Form(1),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     payload = {
         "id": provider_id or name,
         "name": name,
@@ -653,8 +663,8 @@ async def upsert_web_search_provider(
     return RedirectResponse(url="/web-search", status_code=303)
 
 
-@app.post("/settings/web-search/provider/{provider_id}/delete", response_class=HTMLResponse)
-async def delete_web_search_provider(request: Request, provider_id: str) -> HTMLResponse | RedirectResponse:
+@app.post("/settings/web-search/provider/{provider_id}/delete", response_class=HTMLResponse, response_model=None)
+async def delete_web_search_provider(request: Request, provider_id: str) -> Response:
     response = await _api_request("DELETE", f"/api/settings/web-search/providers/{provider_id}")
     if response.status_code >= 400:
         detail = response.json().get("detail", "Der Provider konnte nicht gelöscht werden.")
@@ -717,13 +727,13 @@ async def reject_task(
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
-@app.post("/suggestions/{suggestion_id}/approve", response_class=HTMLResponse)
+@app.post("/suggestions/{suggestion_id}/approve", response_class=HTMLResponse, response_model=None)
 async def approve_suggestion(
     request: Request,
     suggestion_id: str,
     task_id: str = Form(""),
     note: str = Form("CEO approval granted from dashboard."),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     response = await _api_request(
         "POST",
         f"/api/suggestions/{suggestion_id}/decision",
@@ -741,13 +751,13 @@ async def approve_suggestion(
     return RedirectResponse(url=target, status_code=303)
 
 
-@app.post("/suggestions/{suggestion_id}/reject", response_class=HTMLResponse)
+@app.post("/suggestions/{suggestion_id}/reject", response_class=HTMLResponse, response_model=None)
 async def reject_suggestion(
     request: Request,
     suggestion_id: str,
     task_id: str = Form(""),
     note: str = Form("CEO rejected the improvement suggestion."),
-) -> HTMLResponse | RedirectResponse:
+) -> Response:
     response = await _api_request(
         "POST",
         f"/api/suggestions/{suggestion_id}/decision",

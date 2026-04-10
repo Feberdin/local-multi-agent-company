@@ -79,3 +79,24 @@ def test_create_and_fetch_task(tmp_path) -> None:
         suggestions_response = client.get("/api/suggestions")
         assert suggestions_response.status_code == 200
         assert suggestions_response.json() == []
+
+
+def test_web_ui_import_and_health(tmp_path) -> None:
+    engine = configure_database(f"sqlite:///{tmp_path / 'web-ui.db'}")
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    app_module = importlib.import_module("services.web_ui.app")
+    app_module = importlib.reload(app_module)
+
+    tasks_route = next(
+        route
+        for route in app_module.app.routes
+        if getattr(route, "path", None) == "/tasks" and "POST" in getattr(route, "methods", set())
+    )
+    assert tasks_route.response_model is None
+
+    with TestClient(app_module.app) as client:
+        health_response = client.get("/health")
+        assert health_response.status_code == 200
+        assert health_response.json()["service"] == "web-ui"
