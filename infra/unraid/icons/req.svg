@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Requirements</title>
+  <desc id="desc">Blue checklist icon for the requirements worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#1d4ed8"/>
+  <rect x="64" y="52" width="128" height="132" rx="18" fill="#eff6ff"/>
+  <path d="M92 96l10 10 18-22M92 128l10 10 18-22M92 160l10 10 18-22M132 90h30M132 122h30M132 154h30" stroke="#1d4ed8" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#eff6ff" font-family="Arial, sans-serif" font-size="36" font-weight="700" text-anchor="middle">REQ</text>
+</svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">GitHub</title>
+  <desc id="desc">Slate git branch icon for the GitHub worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#1e293b"/>
+  <circle cx="84" cy="76" r="18" fill="#e2e8f0"/>
+  <circle cx="84" cy="180" r="18" fill="#cbd5e1"/>
+  <circle cx="172" cy="128" r="18" fill="#f8fafc"/>
+  <path d="M84 94v68M84 128h70M154 128v-18" fill="none" stroke="#94a3b8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#f8fafc" font-family="Arial, sans-serif" font-size="36" font-weight="700" text-anchor="middle">GH</text>
+</svg>

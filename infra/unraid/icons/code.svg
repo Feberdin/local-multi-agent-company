@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Coding</title>
+  <desc id="desc">Dark green code brackets icon for the coding worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#166534"/>
+  <path d="M94 78L58 112l36 34M162 78l36 34-36 34M138 64l-20 96" fill="none" stroke="#dcfce7" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#dcfce7" font-family="Arial, sans-serif" font-size="36" font-weight="700" text-anchor="middle">CODE</text>
+</svg>

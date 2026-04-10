@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">UX</title>
+  <desc id="desc">Pink cursor icon for the UX worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#be185d"/>
+  <path d="M78 56l36 106 24-34 40 58 20-14-40-58 42-6z" fill="#fdf2f8"/>
+  <circle cx="186" cy="74" r="12" fill="#fbcfe8"/>
+  <text x="128" y="228" fill="#fdf2f8" font-family="Arial, sans-serif" font-size="40" font-weight="700" text-anchor="middle">UX</text>
+</svg>

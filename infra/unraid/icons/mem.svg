@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Memory</title>
+  <desc id="desc">Violet chip icon for the memory worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#5b21b6"/>
+  <rect x="74" y="70" width="108" height="88" rx="16" fill="#f5f3ff"/>
+  <path d="M96 92h64M96 118h64M96 144h40" stroke="#7c3aed" stroke-width="10" stroke-linecap="round"/>
+  <path d="M66 86h8M66 110h8M66 134h8M66 158h8M182 86h8M182 110h8M182 134h8M182 158h8" stroke="#ddd6fe" stroke-width="8" stroke-linecap="round"/>
+  <text x="128" y="228" fill="#f5f3ff" font-family="Arial, sans-serif" font-size="36" font-weight="700" text-anchor="middle">MEM</text>
+</svg>

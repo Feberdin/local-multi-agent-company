@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Human Resources</title>
+  <desc id="desc">People icon for the human resources worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#7c2d12"/>
+  <circle cx="92" cy="94" r="22" fill="#ffedd5"/>
+  <circle cx="164" cy="94" r="22" fill="#fed7aa"/>
+  <path d="M62 168c0-22 18-40 40-40h52c22 0 40 18 40 40" fill="none" stroke="#ffedd5" stroke-width="14" stroke-linecap="round"/>
+  <text x="128" y="228" fill="#ffedd5" font-family="Arial, sans-serif" font-size="42" font-weight="700" text-anchor="middle">HR</text>
+</svg>

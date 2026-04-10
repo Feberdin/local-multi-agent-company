@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Documentation</title>
+  <desc id="desc">Sky document icon for the documentation worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#0369a1"/>
+  <path d="M78 52h72l28 28v124H78z" fill="#e0f2fe"/>
+  <path d="M150 52v32h28M98 112h58M98 138h58M98 164h42" fill="none" stroke="#0369a1" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#e0f2fe" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">DOCS</text>
+</svg>

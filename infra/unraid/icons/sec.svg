@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Security</title>
+  <desc id="desc">Rose shield icon for the security worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#9f1239"/>
+  <path d="M128 54l58 20v44c0 38-23 64-58 84-35-20-58-46-58-84V74l58-20z" fill="#ffe4e6"/>
+  <path d="M104 124l14 14 34-38" fill="none" stroke="#9f1239" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#ffe4e6" font-family="Arial, sans-serif" font-size="38" font-weight="700" text-anchor="middle">SEC</text>
+</svg>

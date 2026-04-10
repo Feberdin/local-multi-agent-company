@@ -111,3 +111,16 @@ docker inspect <container-name> --format '{{json .Mounts}}'
 - Docker-Logs über Unraid UI
 - Task-Reports unter `HOST_REPORTS_DIR/<task-id>/`
 - dauerhafte Entscheidungen unter `HOST_DATA_DIR/memory/`
+
+## Kurze Containernamen
+
+Die Compose-Services behalten ihre internen Service-Namen, aber die sichtbaren Containernamen in Docker/Unraid sind jetzt kuerzer, zum Beispiel:
+
+- `fmac-orch`
+- `fmac-req`
+- `fmac-rsch`
+- `fmac-arch`
+- `fmac-code`
+- `fmac-web`
+
+Die komplette Zuordnung inklusive SVG-Icons findest du in [docs/unraid-icons.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-icons.md).

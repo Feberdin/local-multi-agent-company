@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Cost</title>
+  <desc id="desc">Gold coin icon for the cost worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#854d0e"/>
+  <circle cx="108" cy="110" r="38" fill="#fde68a"/>
+  <circle cx="152" cy="132" r="38" fill="#fef3c7"/>
+  <path d="M104 110h8c8 0 14-5 14-12s-6-12-14-12h-8c-8 0-14 5-14 12s6 12 14 12h8c8 0 14 5 14 12s-6 12-14 12h-8c-8 0-14-5-14-12" fill="none" stroke="#854d0e" stroke-width="8" stroke-linecap="round"/>
+  <text x="128" y="228" fill="#fef3c7" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">COST</text>
+</svg>

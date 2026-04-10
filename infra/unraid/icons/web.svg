@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Web UI</title>
+  <desc id="desc">Blue window icon for the web UI container.</desc>
+  <rect width="256" height="256" rx="52" fill="#1e40af"/>
+  <rect x="50" y="62" width="156" height="112" rx="18" fill="#eff6ff"/>
+  <path d="M50 96h156M78 80h0M98 80h0M118 80h0" stroke="#1e40af" stroke-width="10" stroke-linecap="round"/>
+  <path d="M78 122h44M78 146h70M160 128l16 16 22-28" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#eff6ff" font-family="Arial, sans-serif" font-size="36" font-weight="700" text-anchor="middle">WEB</text>
+</svg>

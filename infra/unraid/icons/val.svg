@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Validation</title>
+  <desc id="desc">Green target icon for the validation worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#065f46"/>
+  <circle cx="128" cy="114" r="58" fill="none" stroke="#d1fae5" stroke-width="14"/>
+  <circle cx="128" cy="114" r="30" fill="none" stroke="#a7f3d0" stroke-width="12"/>
+  <circle cx="128" cy="114" r="10" fill="#ecfdf5"/>
+  <text x="128" y="228" fill="#d1fae5" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">VAL</text>
+</svg>

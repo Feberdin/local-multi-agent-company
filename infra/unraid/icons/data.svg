@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Data</title>
+  <desc id="desc">Cyan database icon for the data worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#155e75"/>
+  <ellipse cx="128" cy="78" rx="58" ry="24" fill="#cffafe"/>
+  <path d="M70 78v68c0 13 26 24 58 24s58-11 58-24V78" fill="#ecfeff"/>
+  <path d="M70 112c0 13 26 24 58 24s58-11 58-24M70 146c0 13 26 24 58 24s58-11 58-24" fill="none" stroke="#155e75" stroke-width="8"/>
+  <text x="128" y="228" fill="#ecfeff" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">DATA</text>
+</svg>

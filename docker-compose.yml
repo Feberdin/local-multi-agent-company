@@ -24,6 +24,7 @@ x-agent-service: &agent-service
 services:
   orchestrator:
     <<: *agent-service
+    container_name: fmac-orch
     command: ["uvicorn", "services.orchestrator.app:app", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       SERVICE_NAME: orchestrator
@@ -39,6 +40,7 @@ services:
 
   requirements-worker:
     <<: *agent-service
+    container_name: fmac-req
     command: ["uvicorn", "services.requirements_worker.app:app", "--host", "0.0.0.0", "--port", "8090"]
     environment:
       SERVICE_NAME: requirements-worker
@@ -52,6 +54,7 @@ services:
 
   research-worker:
     <<: *agent-service
+    container_name: fmac-rsch
     command: ["uvicorn", "services.research_worker.app:app", "--host", "0.0.0.0", "--port", "8091"]
     environment:
       SERVICE_NAME: research-worker
@@ -65,6 +68,7 @@ services:
 
   architecture-worker:
     <<: *agent-service
+    container_name: fmac-arch
     command: ["uvicorn", "services.architecture_worker.app:app", "--host", "0.0.0.0", "--port", "8092"]
     environment:
       SERVICE_NAME: architecture-worker
@@ -78,6 +82,7 @@ services:
 
   coding-worker:
     <<: *agent-service
+    container_name: fmac-code
     command: ["uvicorn", "services.coding_worker.app:app", "--host", "0.0.0.0", "--port", "8093"]
     environment:
       SERVICE_NAME: coding-worker
@@ -91,6 +96,7 @@ services:
 
   reviewer-worker:
     <<: *agent-service
+    container_name: fmac-rev
     command: ["uvicorn", "services.reviewer_worker.app:app", "--host", "0.0.0.0", "--port", "8094"]
     environment:
       SERVICE_NAME: reviewer-worker
@@ -104,6 +110,7 @@ services:
 
   test-worker:
     <<: *agent-service
+    container_name: fmac-test
     command: ["uvicorn", "services.test_worker.app:app", "--host", "0.0.0.0", "--port", "8095"]
     environment:
       SERVICE_NAME: test-worker
@@ -117,6 +124,7 @@ services:
 
   github-worker:
     <<: *agent-service
+    container_name: fmac-gh
     command: ["uvicorn", "services.github_worker.app:app", "--host", "0.0.0.0", "--port", "8096"]
     environment:
       SERVICE_NAME: github-worker
@@ -130,6 +138,7 @@ services:
 
   deploy-worker:
     <<: *agent-service
+    container_name: fmac-deploy
     command: ["uvicorn", "services.deploy_worker.app:app", "--host", "0.0.0.0", "--port", "8097"]
     environment:
       SERVICE_NAME: deploy-worker
@@ -143,6 +152,7 @@ services:
 
   qa-worker:
     <<: *agent-service
+    container_name: fmac-qa
     command: ["uvicorn", "services.qa_worker.app:app", "--host", "0.0.0.0", "--port", "8098"]
     environment:
       SERVICE_NAME: qa-worker
@@ -156,6 +166,7 @@ services:
 
   security-worker:
     <<: *agent-service
+    container_name: fmac-sec
     command: ["uvicorn", "services.security_worker.app:app", "--host", "0.0.0.0", "--port", "8099"]
     environment:
       SERVICE_NAME: security-worker
@@ -169,6 +180,7 @@ services:
 
   validation-worker:
     <<: *agent-service
+    container_name: fmac-val
     command: ["uvicorn", "services.validation_worker.app:app", "--host", "0.0.0.0", "--port", "8100"]
     environment:
       SERVICE_NAME: validation-worker
@@ -182,6 +194,7 @@ services:
 
   documentation-worker:
     <<: *agent-service
+    container_name: fmac-docs
     command: ["uvicorn", "services.documentation_worker.app:app", "--host", "0.0.0.0", "--port", "8101"]
     environment:
       SERVICE_NAME: documentation-worker
@@ -195,6 +208,7 @@ services:
 
   memory-worker:
     <<: *agent-service
+    container_name: fmac-mem
     command: ["uvicorn", "services.memory_worker.app:app", "--host", "0.0.0.0", "--port", "8102"]
     environment:
       SERVICE_NAME: memory-worker
@@ -208,6 +222,7 @@ services:
 
   data-worker:
     <<: *agent-service
+    container_name: fmac-data
     command: ["uvicorn", "services.data_worker.app:app", "--host", "0.0.0.0", "--port", "8103"]
     environment:
       SERVICE_NAME: data-worker
@@ -221,6 +236,7 @@ services:
 
   ux-worker:
     <<: *agent-service
+    container_name: fmac-ux
     command: ["uvicorn", "services.ux_worker.app:app", "--host", "0.0.0.0", "--port", "8104"]
     environment:
       SERVICE_NAME: ux-worker
@@ -234,6 +250,7 @@ services:
 
   cost-worker:
     <<: *agent-service
+    container_name: fmac-cost
     command: ["uvicorn", "services.cost_worker.app:app", "--host", "0.0.0.0", "--port", "8105"]
     environment:
       SERVICE_NAME: cost-worker
@@ -247,6 +264,7 @@ services:
 
   human-resources-worker:
     <<: *agent-service
+    container_name: fmac-hr
     command: ["uvicorn", "services.human_resources_worker.app:app", "--host", "0.0.0.0", "--port", "8106"]
     environment:
       SERVICE_NAME: human-resources-worker
@@ -260,6 +278,7 @@ services:
 
   web-ui:
     <<: *agent-service
+    container_name: fmac-web
     command: ["uvicorn", "services.web_ui.app:app", "--host", "0.0.0.0", "--port", "8088"]
     environment:
       SERVICE_NAME: web-ui
@@ -279,6 +298,7 @@ services:
 
   openhands:
     image: ${OPENHANDS_IMAGE:-ghcr.io/all-hands-ai/openhands:latest}
+    container_name: fmac-oh
     profiles: ["optional-ai"]
     env_file: [".env"]
     user: "${PUID:-99}:${PGID:-100}"
@@ -289,6 +309,7 @@ services:
 
   github-mcp:
     image: ${GITHUB_MCP_IMAGE:-ghcr.io/github/github-mcp-server:latest}
+    container_name: fmac-gh-mcp
     profiles: ["optional-integrations"]
     env_file: [".env"]
     restart: unless-stopped

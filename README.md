@@ -192,6 +192,18 @@ Wichtig:
 
 Die vollständige Anleitung steht in [docs/unraid-deployment.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-deployment.md).
 
+## Kurze Containernamen und Unraid-Icons
+
+Fuer die Unraid-Docker-Ansicht verwendet der Stack jetzt kurze, eindeutige Containernamen wie:
+
+- `fmac-orch`
+- `fmac-arch`
+- `fmac-code`
+- `fmac-rsch`
+- `fmac-web`
+
+Zusaetzlich liegt ein kleines SVG-Icon-Set fuer die Worker unter [infra/unraid/icons](/Users/joachim.stiegler/CodingFamily/infra/unraid/icons) bereit. Die Zuordnung steht in [docs/unraid-icons.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-icons.md).
+
 ## Runtime-Preflight
 
 Vor jedem Start prüft [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh):

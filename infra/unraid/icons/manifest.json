@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "project_prefix": "fmac",
+  "description": "Short container names and icon mapping for the Feberdin Multi-Agent Company stack on Unraid.",
+  "services": [
+    { "service": "orchestrator", "container_name": "fmac-orch", "label": "Orchestrator", "icon": "infra/unraid/icons/orch.svg" },
+    { "service": "requirements-worker", "container_name": "fmac-req", "label": "Requirements", "icon": "infra/unraid/icons/req.svg" },
+    { "service": "research-worker", "container_name": "fmac-rsch", "label": "Research", "icon": "infra/unraid/icons/rsch.svg" },
+    { "service": "architecture-worker", "container_name": "fmac-arch", "label": "Architecture", "icon": "infra/unraid/icons/arch.svg" },
+    { "service": "coding-worker", "container_name": "fmac-code", "label": "Coding", "icon": "infra/unraid/icons/code.svg" },
+    { "service": "reviewer-worker", "container_name": "fmac-rev", "label": "Review", "icon": "infra/unraid/icons/rev.svg" },
+    { "service": "test-worker", "container_name": "fmac-test", "label": "Testing", "icon": "infra/unraid/icons/test.svg" },
+    { "service": "github-worker", "container_name": "fmac-gh", "label": "GitHub", "icon": "infra/unraid/icons/gh.svg" },
+    { "service": "deploy-worker", "container_name": "fmac-deploy", "label": "Deploy", "icon": "infra/unraid/icons/deploy.svg" },
+    { "service": "qa-worker", "container_name": "fmac-qa", "label": "QA", "icon": "infra/unraid/icons/qa.svg" },
+    { "service": "security-worker", "container_name": "fmac-sec", "label": "Security", "icon": "infra/unraid/icons/sec.svg" },
+    { "service": "validation-worker", "container_name": "fmac-val", "label": "Validation", "icon": "infra/unraid/icons/val.svg" },
+    { "service": "documentation-worker", "container_name": "fmac-docs", "label": "Documentation", "icon": "infra/unraid/icons/docs.svg" },
+    { "service": "memory-worker", "container_name": "fmac-mem", "label": "Memory", "icon": "infra/unraid/icons/mem.svg" },
+    { "service": "data-worker", "container_name": "fmac-data", "label": "Data", "icon": "infra/unraid/icons/data.svg" },
+    { "service": "ux-worker", "container_name": "fmac-ux", "label": "UX", "icon": "infra/unraid/icons/ux.svg" },
+    { "service": "cost-worker", "container_name": "fmac-cost", "label": "Cost", "icon": "infra/unraid/icons/cost.svg" },
+    { "service": "human-resources-worker", "container_name": "fmac-hr", "label": "HR", "icon": "infra/unraid/icons/hr.svg" },
+    { "service": "web-ui", "container_name": "fmac-web", "label": "Web UI", "icon": "infra/unraid/icons/web.svg" },
+    { "service": "bootstrap-template", "container_name": "fmac-bootstrap", "label": "Bootstrap", "icon": "infra/unraid/icons/bootstrap.svg" }
+  ]
+}

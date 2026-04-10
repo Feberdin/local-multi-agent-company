@@ -8,6 +8,7 @@ and .env.example together before touching the service code.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -76,6 +77,19 @@ def test_runtime_services_have_all_required_mount_targets() -> None:
     for service_name in REQUIRED_RUNTIME_SERVICES:
         targets = _volume_targets(services[service_name])
         assert REQUIRED_TARGETS.issubset(targets), f"{service_name} is missing one of {sorted(REQUIRED_TARGETS - targets)}"
+
+
+def test_runtime_services_use_short_container_names_and_icon_manifest() -> None:
+    compose_data = _load_yaml(ROOT_DIR / "docker-compose.yml")
+    services = compose_data["services"]
+    manifest = json.loads((ROOT_DIR / "infra/unraid/icons/manifest.json").read_text(encoding="utf-8"))
+    manifest_by_service = {entry["service"]: entry for entry in manifest["services"]}
+
+    for service_name in REQUIRED_RUNTIME_SERVICES:
+        expected = manifest_by_service[service_name]
+        assert services[service_name]["container_name"] == expected["container_name"]
+        assert expected["container_name"].startswith("fmac-")
+        assert (ROOT_DIR / expected["icon"]).exists(), f"Missing icon file for {service_name}"
 
 
 def test_override_does_not_override_ports_or_volumes() -> None:

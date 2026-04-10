@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">QA</title>
+  <desc id="desc">Orange speech-bubble quality icon for the QA worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#c2410c"/>
+  <path d="M62 76h132a18 18 0 0 1 18 18v56a18 18 0 0 1-18 18h-64l-30 24v-24H62a18 18 0 0 1-18-18V94a18 18 0 0 1 18-18z" fill="#ffedd5"/>
+  <path d="M90 122l18 18 42-44" fill="none" stroke="#c2410c" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#ffedd5" font-family="Arial, sans-serif" font-size="42" font-weight="700" text-anchor="middle">QA</text>
+</svg>

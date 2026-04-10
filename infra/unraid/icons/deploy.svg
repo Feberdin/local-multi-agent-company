@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Deploy</title>
+  <desc id="desc">Red launch icon for the deploy worker.</desc>
+  <rect width="256" height="256" rx="52" fill="#b91c1c"/>
+  <path d="M128 58c28 20 42 48 42 84l-42-18-42 18c0-36 14-64 42-84z" fill="#fee2e2"/>
+  <path d="M128 124v36M112 174l16-14 16 14M94 188h68" fill="none" stroke="#fecaca" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="228" fill="#fee2e2" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">DPLY</text>
+</svg>

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>Feberdin Agent Team Bootstrap</Name>
+  <Name>FMAC Bootstrap</Name>
   <Repository>docker:cli</Repository>
   <Registry>https://hub.docker.com/_/docker</Registry>
   <Network>bridge</Network>
@@ -18,7 +18,7 @@
   <Category>Tools:</Category>
   <WebUI />
   <TemplateURL />
-  <Icon />
+  <Icon>https://raw.githubusercontent.com/Feberdin/local-multi-agent-company/main/infra/unraid/icons/bootstrap.svg</Icon>
   <ExtraParams>--rm</ExtraParams>
   <PostArgs>-lc 'apk add --no-cache bash curl git &gt;/dev/null &amp;&amp; export PROJECT_ROOT="/project" &amp;&amp; curl -fsSL "$BOOTSTRAP_SCRIPT_URL" | bash'</PostArgs>
   <CPUset />
