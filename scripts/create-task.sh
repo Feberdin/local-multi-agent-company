@@ -9,7 +9,7 @@ set -eu
 GOAL="${1:-}"
 REPOSITORY="${2:-}"
 LOCAL_REPO_PATH="${3:-}"
-ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-http://localhost:8080}"
+ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-http://localhost:18080}"
 
 if [ -z "$GOAL" ] || [ -z "$REPOSITORY" ] || [ -z "$LOCAL_REPO_PATH" ]; then
   echo "Usage: ./scripts/create-task.sh <goal> <owner/repo> <local_repo_path>" >&2

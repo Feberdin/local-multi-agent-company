@@ -1,0 +1,238 @@
+<!--
+Purpose: Operator UI for configuring fallback web-search providers such as SearXNG and Brave.
+Input/Output: Receives provider settings plus optional health/test results from the web UI service.
+Important invariants: Trusted sources stay first, provider secrets are never shown, and fallback remains explicit.
+How to debug: If provider tests fail, inspect base URL, auth ENV name, and whether trusted-domain filtering removed all results.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Web Search Providers</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search" class="active">Web Search Providers</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Research Fallback</p>
+        <h1>Web Search Providers</h1>
+        <p class="lead">SearXNG zuerst, Brave optional als Fallback. Trusted Sources behalten immer Vorrang.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Routing</h2>
+          <span class="muted">Trusted Sources bleiben First-Class</span>
+        </div>
+        <form method="post" action="/settings/web-search/core" class="stack">
+          <label>
+            Primärer Provider
+            <select name="primary_web_search_provider">
+              {% for value in ["searxng", "brave"] %}
+              <option value="{{ value }}" {% if web_search_settings.primary_web_search_provider == value %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Fallback Provider
+            <select name="fallback_web_search_provider">
+              {% for value in ["searxng", "brave"] %}
+              <option value="{{ value }}" {% if web_search_settings.fallback_web_search_provider == value %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="require_trusted_sources_first" value="true" {% if web_search_settings.require_trusted_sources_first %}checked{% endif %}>
+            <span>Trusted Sources vor allgemeiner Websuche erzwingen</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="allow_general_web_search_fallback" value="true" {% if web_search_settings.allow_general_web_search_fallback %}checked{% endif %}>
+            <span>Allgemeine Websuche als Fallback erlauben</span>
+          </label>
+          <label>
+            Provider Host Allowlist
+            <textarea name="provider_host_allowlist_text" rows="4" placeholder="search.feberdin.local&#10;192.168.57.10">{{ web_search_settings.provider_host_allowlist|join('\n') }}</textarea>
+          </label>
+          <button type="submit">Routing speichern</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Provider</h2>
+          <span class="muted">{{ providers|length }} Einträge</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Typ</th>
+                <th>Aktiv</th>
+                <th>Priorität</th>
+                <th>Base URL</th>
+                <th>Methode</th>
+                <th>Auth</th>
+                <th>Status</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for provider in providers %}
+              <tr>
+                <td>{{ provider.name }}</td>
+                <td>{{ provider.provider_type }}</td>
+                <td>{{ "Ja" if provider.enabled else "Nein" }}</td>
+                <td>{{ provider.priority }}</td>
+                <td>{{ provider.base_url }}{{ provider.search_path }}</td>
+                <td>{{ provider.method }}</td>
+                <td>{{ provider.auth_type }}{% if provider.auth_env_var %} ({{ provider.auth_env_var }}){% endif %}</td>
+                <td>{{ provider.health_status }}</td>
+                <td class="action-cell">
+                  <a class="button-link secondary" href="/web-search?edit={{ provider.id }}">Bearbeiten</a>
+                  <form method="post" action="/settings/web-search/provider/{{ provider.id }}/health">
+                    <button type="submit">Health</button>
+                  </form>
+                  <form method="post" action="/settings/web-search/provider/{{ provider.id }}/delete">
+                    <button type="submit" class="danger">Löschen</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="9" class="muted">Noch keine Provider vorhanden.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>{{ "Provider bearbeiten" if provider_form_values.id else "Provider hinzufügen" }}</h2>
+          <form method="post" action="/settings/web-search/provider" class="stack">
+            <input type="hidden" name="provider_id" value="{{ provider_form_values.id }}">
+            <label>
+              Name
+              <input type="text" name="name" value="{{ provider_form_values.name }}" required>
+            </label>
+            <label>
+              Provider-Typ
+              <select name="provider_type">
+                {% for value in ["searxng", "brave"] %}
+                <option value="{{ value }}" {% if provider_form_values.provider_type == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="enabled" value="true" {% if provider_form_values.enabled %}checked{% endif %}>
+              <span>Provider aktivieren</span>
+            </label>
+            <label>
+              Priorität
+              <input type="number" name="priority" value="{{ provider_form_values.priority }}" min="0" max="1000" required>
+            </label>
+            <label>
+              Base URL
+              <input type="url" name="base_url" value="{{ provider_form_values.base_url }}" placeholder="http://192.168.57.10:8081" required>
+            </label>
+            <label>
+              Search Path
+              <input type="text" name="search_path" value="{{ provider_form_values.search_path }}" required>
+            </label>
+            <label>
+              Methode
+              <select name="method">
+                {% for value in ["GET", "POST"] %}
+                <option value="{{ value }}" {% if provider_form_values.method == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Auth-Type
+              <select name="auth_type">
+                {% for value in ["none", "bearer", "token", "header", "header_token", "oauth"] %}
+                <option value="{{ value }}" {% if provider_form_values.auth_type == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Auth ENV Name
+              <input type="text" name="auth_env_var" value="{{ provider_form_values.auth_env_var }}" placeholder="BRAVE_SEARCH_API_KEY">
+            </label>
+            <label>
+              Timeout (Sekunden)
+              <input type="number" name="timeout_seconds" step="0.5" min="1" max="60" value="{{ provider_form_values.timeout_seconds }}" required>
+            </label>
+            <label>
+              Max Results
+              <input type="number" name="max_results" min="1" max="50" value="{{ provider_form_values.max_results }}" required>
+            </label>
+            <label>
+              Sprache
+              <input type="text" name="default_language" value="{{ provider_form_values.default_language }}" required>
+            </label>
+            <label>
+              Kategorien
+              <textarea name="default_categories_text" rows="3">{{ provider_form_values.default_categories_text }}</textarea>
+            </label>
+            <label>
+              Safe Search
+              <input type="number" name="safe_search" min="0" max="2" value="{{ provider_form_values.safe_search }}" required>
+            </label>
+            <button type="submit">Provider speichern</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Provider testen</h2>
+          <form method="post" action="/settings/web-search/provider/test" class="stack">
+            <label>
+              Provider
+              <select name="provider_id">
+                {% for provider in providers %}
+                <option value="{{ provider.id }}" {% if provider_form_values.id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Beispielanfrage
+              <input type="text" name="query" value="python packaging official docs" required>
+            </label>
+            <button type="submit">Testabfrage</button>
+          </form>
+          {% if provider_test_result %}
+          <details open>
+            <summary>Testergebnis</summary>
+            <pre>{{ provider_test_result | tojson(indent=2) }}</pre>
+          </details>
+          {% endif %}
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

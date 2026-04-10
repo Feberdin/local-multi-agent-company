@@ -14,16 +14,37 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
   </head>
   <body>
     <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+      </nav>
+
       <section class="hero">
         <p class="eyebrow">Feberdin Homelab</p>
         <h1>Agent Team Dashboard</h1>
-        <p class="lead">Neue Ziele erfassen, Fortschritt verfolgen und riskante Schritte bewusst freigeben.</p>
+        <p class="lead">Neue Ziele erfassen, Fortschritt verfolgen, Worker steuern und grenzüberschreitende Verbesserungen bewusst freigeben.</p>
+      </section>
+
+      <section class="panel panel-note">
+        <h2>Geschäftsführer-Überblick</h2>
+        <p><strong>Offene Mitarbeiterideen:</strong> {{ pending_suggestions_count }}</p>
+        <p class="muted">Ideen, die den Kompetenzrahmen überschreiten, landen im Vorschlags-Dashboard und benötigen dort deine Entscheidung.</p>
       </section>
 
       {% if error_message %}
       <section class="panel panel-alert">
         <h2>Hinweis</h2>
         <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
       </section>
       {% endif %}
 
@@ -56,6 +77,10 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
           <label>
             Lokaler Workspace-Pfad
             <input type="text" name="local_repo_path" placeholder="/workspace/example-repo" required>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="enable_web_research" value="true">
+            <span>Optional allgemeine Web-Recherche erlauben, falls Trusted Sources nicht ausreichen.</span>
           </label>
           <label class="checkbox-row">
             <input type="checkbox" name="allow_repository_modifications" value="true">

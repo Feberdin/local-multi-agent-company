@@ -1,0 +1,119 @@
+<!--
+Purpose: Operator UI for maintaining worker-level Handlungsempfehlungen and competence boundaries.
+Input/Output: Receives stored worker guidance policies from the orchestrator API and lets the CEO adjust them.
+Important invariants: Guidance remains explicit, per-worker, and separate from the task-specific approval system.
+How to debug: If a worker policy does not save, inspect the returned validation message and the submitted text fields.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Worker Guidance</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance" class="active">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Führungsebene</p>
+        <h1>Worker Guidance</h1>
+        <p class="lead">Lege pro Worker fest, wie er grundsätzlich arbeiten soll, wo sein Kompetenzrahmen endet und ob Ideen automatisch eingereicht werden.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Worker-Übersicht</h2>
+          <span class="muted">{{ workers|length }} Worker</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Aktiv</th>
+                <th>Rolle</th>
+                <th>Kompetenzgrenze</th>
+                <th>Vorschläge auto-einreichen</th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for worker in workers %}
+              <tr>
+                <td>{{ worker.display_name }}</td>
+                <td>{{ "Ja" if worker.enabled else "Nein" }}</td>
+                <td>{{ worker.role_summary }}</td>
+                <td>{{ worker.competence_boundary }}</td>
+                <td>{{ "Ja" if worker.auto_submit_improvement_suggestions else "Nein" }}</td>
+                <td><a class="button-link secondary" href="/worker-guidance?edit={{ worker.worker_name }}">Bearbeiten</a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Worker-Regel bearbeiten</h2>
+        <form method="post" action="/settings/worker-guidance" class="stack">
+          <input type="hidden" name="worker_name" value="{{ worker_guidance_form_values.worker_name }}">
+          <label>
+            Anzeigename
+            <input type="text" name="display_name" value="{{ worker_guidance_form_values.display_name }}" required>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="enabled" value="true" {% if worker_guidance_form_values.enabled %}checked{% endif %}>
+            <span>Guidance für diesen Worker aktivieren</span>
+          </label>
+          <label>
+            Rollenbeschreibung
+            <textarea name="role_summary" rows="3" required>{{ worker_guidance_form_values.role_summary }}</textarea>
+          </label>
+          <label>
+            Handlungsempfehlungen
+            <textarea name="operator_recommendations_text" rows="5" placeholder="Ein Punkt pro Zeile">{{ worker_guidance_form_values.operator_recommendations_text }}</textarea>
+          </label>
+          <label>
+            Entscheidungspräferenzen
+            <textarea name="decision_preferences_text" rows="4" placeholder="Ein Punkt pro Zeile">{{ worker_guidance_form_values.decision_preferences_text }}</textarea>
+          </label>
+          <label>
+            Kompetenzgrenze
+            <textarea name="competence_boundary" rows="4" required>{{ worker_guidance_form_values.competence_boundary }}</textarea>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="escalate_beyond_boundary" value="true" {% if worker_guidance_form_values.escalate_beyond_boundary %}checked{% endif %}>
+            <span>Ideen außerhalb des Kompetenzrahmens grundsätzlich eskalieren</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="auto_submit_improvement_suggestions" value="true" {% if worker_guidance_form_values.auto_submit_improvement_suggestions %}checked{% endif %}>
+            <span>Mitarbeiterideen automatisch ins Vorschlags-Dashboard einreichen</span>
+          </label>
+          <button type="submit">Worker Guidance speichern</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

@@ -20,6 +20,34 @@
 16. optional `qa`
 17. `memory`
 
+## Research-Routing
+
+Vor allgemeiner Websuche gilt jetzt:
+
+1. Trusted official API / Registry
+2. Trusted official documentation
+3. SearXNG
+4. Brave
+5. transparenter Abbruch
+
+Der Research-Worker dokumentiert:
+
+- aktives Trusted-Source-Profil
+- inferierten Fragetyp
+- inferiertes Ökosystem
+- gewählte Quellen
+- Fallback-Grund
+- verwendeten Provider, falls nötig
+
+## Governance und Entscheidungstransparenz
+
+- Vor jedem Worker-Lauf injiziert der Orchestrator die konfigurierte Worker-Guidance.
+- Nach jedem Worker-Lauf ergänzt der Orchestrator:
+  - `applied_guidance`
+  - `decision_tree`
+  - optionale `Mitarbeiterideen`
+- Verbesserungsvorschläge laufen nie automatisch los, sondern erscheinen im Geschäftsführer-Dashboard.
+
 ## Resume-Verhalten
 
 - Jeder Statuswechsel wird als Event und Snapshot gespeichert.

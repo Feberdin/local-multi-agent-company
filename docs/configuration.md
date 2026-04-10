@@ -17,8 +17,21 @@
 - `MISTRAL_API_KEY_FILE`
 - `QWEN_API_KEY_FILE`
 - `WEB_SEARCH_API_KEY_FILE`
+- `BRAVE_SEARCH_API_KEY`
+- `BRAVE_SEARCH_API_KEY_FILE`
 - `MODEL_ROUTING_CONFIG`
+- `ORCHESTRATOR_PORT`
+- `WEB_UI_PORT`
 - `STAGING_*`
+
+Wichtige Defaults:
+
+- `ORCHESTRATOR_PORT=18080`
+- `WEB_UI_PORT=18088`
+
+Regel:
+
+- Jeder Schlüssel darf in `.env` nur einmal vorkommen. Doppelte Einträge werden vom Runtime-Doctor und von den Services als Fehler behandelt.
 
 ## Empfohlener lokaler Secret-Store
 
@@ -51,7 +64,53 @@ GITHUB_TOKEN_FILE=/run/project-secrets/github_token
 MISTRAL_API_KEY_FILE=/run/project-secrets/mistral_api_key
 QWEN_API_KEY_FILE=/run/project-secrets/qwen_api_key
 WEB_SEARCH_API_KEY_FILE=/run/project-secrets/web_search_api_key
+BRAVE_SEARCH_API_KEY_FILE=/run/project-secrets/brave_search_api_key
 ```
+
+## Trusted Sources
+
+- Seed-Datei: [config/trusted_sources.coding_profile.json](/Users/joachim.stiegler/CodingFamily/config/trusted_sources.coding_profile.json)
+- Laufzeit-Persistenz: `DATA_DIR/trusted_sources.json`
+- Verwaltung im Dashboard unter `Trusted Sources`
+
+Unterstützt:
+
+- Profile mit aktivem Profilwechsel
+- Quellen hinzufügen, bearbeiten, deaktivieren, löschen
+- JSON Import/Export
+- Dry-Run: welche Quelle würde gewählt
+- Quellentest inkl. Connectivity-Check
+
+## Web Search Provider
+
+- Seed-Datei: [config/web_search.providers.json](/Users/joachim.stiegler/CodingFamily/config/web_search.providers.json)
+- Laufzeit-Persistenz: `DATA_DIR/web_search_providers.json`
+- Verwaltung im Dashboard unter `Web Search Providers`
+
+Sichere Defaults:
+
+- `SearXNG` als vorgesehener primärer Provider
+- `Brave` als optionaler Fallback
+- beide initial deaktiviert
+- Trusted Sources behalten Vorrang
+
+Hinweis:
+
+- Wenn deine lokalen Modelle ohne Auth laufen, bleiben `MODEL_API_KEY`, `MISTRAL_API_KEY` und `QWEN_API_KEY` leer.
+- `BRAVE_SEARCH_API_KEY` wird nur benötigt, wenn Brave wirklich aktiviert wird.
+
+## Worker Guidance
+
+- Seed-Datei: [config/worker_guidance.defaults.json](/Users/joachim.stiegler/CodingFamily/config/worker_guidance.defaults.json)
+- Laufzeit-Persistenz: `DATA_DIR/worker_guidance.json`
+- Vorschlags-Persistenz: `DATA_DIR/improvement_suggestions.json`
+
+Im Dashboard pflegbar:
+
+- Handlungsempfehlungen pro Worker
+- Entscheidungspräferenzen
+- Kompetenzgrenzen
+- automatische Einreichung von Mitarbeiterideen
 
 ## Modellrouting
 
@@ -74,6 +133,22 @@ WEB_SEARCH_API_KEY_FILE=/run/project-secrets/web_search_api_key
 
 - `AUTO_DEPLOY_STAGING=true` aktiviert den Staging-Schritt nach GitHub.
 - `STAGING_PROJECT_DIR` zeigt auf den bestehenden Staging-Checkout auf Unraid.
+
+## Runtime-Doctor
+
+- Skript: [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh)
+- Prüft vor dem Start:
+  - Host-Verzeichnisse
+  - Schreibrechte
+  - doppelte `.env`-Schlüssel
+  - finale Compose-Mounts
+  - Portkonflikte
+
+Beispiel:
+
+```bash
+./scripts/doctor.sh
+```
 
 ## Security
 

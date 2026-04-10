@@ -15,6 +15,33 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def validate_runtime_env_file(env_file: Path = Path(".env")) -> None:
+    """Reject duplicate keys in `.env` because Compose and settings loaders otherwise override silently."""
+
+    if not env_file.exists():
+        return
+
+    seen: dict[str, int] = {}
+    duplicates: set[str] = set()
+    for line_number, raw_line in enumerate(env_file.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in seen:
+            duplicates.add(key)
+            continue
+        seen[key] = line_number
+
+    if duplicates:
+        duplicate_list = ", ".join(sorted(duplicates))
+        raise RuntimeError(
+            "Duplicate keys in .env detected: "
+            f"{duplicate_list}. Remove duplicated keys because Docker Compose and the runtime would otherwise "
+            "pick one value silently and make debugging much harder."
+        )
+
+
 class Settings(BaseSettings):
     """Typed environment-backed settings with safe defaults for local staging."""
 
@@ -139,8 +166,21 @@ class Settings(BaseSettings):
     def ensure_runtime_directories(self) -> None:
         """Create runtime directories early so services fail less often at first write."""
 
-        for directory in (self.data_dir, self.reports_dir, self.workspace_root, self.staging_stack_root):
-            directory.mkdir(parents=True, exist_ok=True)
+        directories = {
+            "DATA_DIR": self.data_dir,
+            "REPORTS_DIR": self.reports_dir,
+            "WORKSPACE_ROOT": self.workspace_root,
+            "STAGING_STACK_ROOT": self.staging_stack_root,
+        }
+        for env_name, directory in directories.items():
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except PermissionError as exc:
+                raise RuntimeError(
+                    f"Runtime path '{directory}' for {env_name} is not writable. "
+                    "This usually means the Docker bind mount is missing or points to a path with wrong permissions. "
+                    "Check the host path, then verify the final Compose model contains the expected mount."
+                ) from exc
 
     def apply_secret_file_overrides(self) -> None:
         """Load secret values from *_FILE paths when the plain environment variables are empty."""
@@ -201,6 +241,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return cached settings because every service resolves the same environment repeatedly."""
 
+    validate_runtime_env_file()
     settings = Settings()
     settings.apply_secret_file_overrides()
     settings.ensure_runtime_directories()

@@ -14,10 +14,12 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 llm = LLMClient(settings)
+worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Validation Worker", version="0.1.0")
 
 
@@ -33,12 +35,14 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
     tests = request.prior_results.get("tester", {}).get("outputs", {})
     security = request.prior_results.get("security", {}).get("outputs", {})
+    guidance_block = worker_governance.guidance_prompt_block(request, "validation")
 
     try:
         outputs = await llm.complete_json(
             system_prompt=(
                 "You are a validation lead. Return JSON with keys fulfilled, partially_verified, unverified, residual_risks, "
                 "release_readiness, recommendation."
+                f"{guidance_block}"
             ),
             user_prompt=(
                 f"Original Auftrag:\n{request.goal}\n\n"

@@ -1,0 +1,98 @@
+<!--
+Purpose: CEO dashboard for reviewing worker-generated improvement suggestions and deciding on out-of-scope ideas.
+Input/Output: Receives the suggestion registry and renders pending, approved, and rejected recommendations.
+Important invariants: Suggestions remain explicit proposals; they never execute by themselves.
+How to debug: If a suggestion action fails, inspect the orchestrator decision endpoint response and the suggestion ID.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mitarbeiterideen</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions" class="active">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Geschäftsführer-Dashboard</p>
+        <h1>Mitarbeiterideen</h1>
+        <p class="lead">Hier landen Verbesserungsvorschläge der Worker, besonders wenn sie ihren Kompetenzrahmen überschreiten oder Governance-Anpassungen empfehlen.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="grid">
+        <article class="panel panel-note">
+          <h2>Offen</h2>
+          <p><strong>{{ pending_suggestions|length }}</strong> Vorschläge warten auf deine Entscheidung.</p>
+        </article>
+        <article class="panel">
+          <h2>Freigegeben</h2>
+          <p><strong>{{ approved_suggestions|length }}</strong> Vorschläge wurden bestätigt.</p>
+        </article>
+        <article class="panel">
+          <h2>Abgelehnt</h2>
+          <p><strong>{{ rejected_suggestions|length }}</strong> Vorschläge wurden verworfen.</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Alle Vorschläge</h2>
+        <div class="timeline">
+          {% for suggestion in suggestions %}
+          <article class="event">
+            <div class="event-header">
+              <strong>{{ suggestion.title }}</strong>
+              <span class="muted">{{ suggestion.worker_name }} · {{ suggestion.status }}{% if suggestion.task_id %} · Task {{ suggestion.task_id }}{% endif %}</span>
+            </div>
+            <p>{{ suggestion.summary }}</p>
+            <p class="muted"><strong>Begründung:</strong> {{ suggestion.rationale }}</p>
+            <p class="muted"><strong>Empfohlene Maßnahme:</strong> {{ suggestion.suggested_action }}</p>
+            <p class="muted"><strong>Wirkung:</strong> {{ suggestion.impact }}</p>
+            <p class="muted"><strong>Kompetenzrahmen überschritten:</strong> {{ "Ja" if suggestion.exceeds_competence_boundary else "Nein" }}</p>
+            {% if suggestion.status == "pending" %}
+            <div class="actions">
+              <form method="post" action="/suggestions/{{ suggestion.id }}/approve">
+                <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
+                <input type="text" name="note" placeholder="Freigabevermerk">
+                <button type="submit">Freigeben</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/reject">
+                <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
+                <input type="text" name="note" placeholder="Ablehnungsgrund">
+                <button type="submit" class="danger">Ablehnen</button>
+              </form>
+            </div>
+            {% elif suggestion.decision_note %}
+            <p class="muted"><strong>Entscheidungsnotiz:</strong> {{ suggestion.decision_note }}</p>
+            {% endif %}
+          </article>
+          {% else %}
+          <p class="muted">Noch keine Mitarbeiterideen gespeichert.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

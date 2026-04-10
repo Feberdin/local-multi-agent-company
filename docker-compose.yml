@@ -3,18 +3,21 @@
 # Invariants: All stateful data is stored in mounted appdata paths, and every service exposes a health endpoint.
 # Debugging: If startup ordering fails, inspect the worker health endpoints and the shared `agent-control` network first.
 
+x-agent-runtime-volumes: &agent-runtime-volumes
+  - ${HOST_DATA_DIR:-./data}:/data
+  - ${HOST_REPORTS_DIR:-./reports}:/reports
+  - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
+  - ${HOST_STAGING_STACK_ROOT:-./staging-stacks}:/staging-stacks
+  - ${HOST_SECRETS_DIR:-./secrets}:/run/project-secrets:ro
+  - ./:/app
+
 x-agent-service: &agent-service
   build:
     context: .
     dockerfile: docker/Dockerfile.agent-service
   env_file: [".env"]
   user: "${PUID:-99}:${PGID:-100}"
-  volumes:
-    - ${HOST_DATA_DIR:-./data}:/data
-    - ${HOST_REPORTS_DIR:-./reports}:/reports
-    - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
-    - ${HOST_SECRETS_DIR:-./secrets}:/run/project-secrets:ro
-    - ./:/app
+  volumes: *agent-runtime-volumes
   networks: [agent-control]
   restart: unless-stopped
 
@@ -26,7 +29,7 @@ services:
       SERVICE_NAME: orchestrator
       SERVICE_PORT: 8080
     ports:
-      - "${ORCHESTRATOR_PORT:-8080}:8080"
+      - "${ORCHESTRATOR_PORT:-18080}:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
       interval: 30s
@@ -131,13 +134,6 @@ services:
     environment:
       SERVICE_NAME: deploy-worker
       SERVICE_PORT: 8097
-    volumes:
-      - ${HOST_DATA_DIR:-./data}:/data
-      - ${HOST_REPORTS_DIR:-./reports}:/reports
-      - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
-      - ${HOST_STAGING_STACK_ROOT:-./staging-stacks}:/staging-stacks
-      - ${HOST_SECRETS_DIR:-./secrets}:/run/project-secrets:ro
-      - ./:/app
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/health', timeout=5).read()"]
       interval: 30s
@@ -270,7 +266,7 @@ services:
       SERVICE_PORT: 8088
       ORCHESTRATOR_INTERNAL_URL: http://orchestrator:8080
     ports:
-      - "${WEB_UI_PORT:-8088}:8088"
+      - "${WEB_UI_PORT:-18088}:8088"
     depends_on:
       orchestrator:
         condition: service_healthy

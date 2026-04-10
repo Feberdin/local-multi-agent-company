@@ -1,0 +1,287 @@
+<!--
+Purpose: Operator UI for trusted coding sources, profile selection, dry-runs, and source tests.
+Input/Output: Receives trusted-source registry data plus optional test and dry-run results from the web UI service.
+Important invariants: Unknown domains stay blocked by default, and profile edits remain explicit and reviewable.
+How to debug: If a source cannot be saved, compare the submitted domain/base URL with the validation message from the orchestrator API.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Trusted Sources</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources" class="active">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Research Guardrails</p>
+        <h1>Trusted Sources</h1>
+        <p class="lead">Offizielle APIs, Registries und Doku zuerst. Allgemeine Websuche bleibt klar markierter Fallback.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Aktives Profil</h2>
+          <span class="muted">{{ active_profile.id if active_profile else "kein Profil" }}</span>
+        </div>
+        <form method="post" action="/settings/trusted-sources/profile" class="stack">
+          <label>
+            Profil auswählen
+            <select name="profile_id">
+              {% for profile in profiles %}
+              <option value="{{ profile.id }}" {% if active_profile and profile.id == active_profile.id %}selected{% endif %}>{{ profile.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          {% if active_profile %}
+          <div class="stats-grid">
+            <p><strong>Beschreibung:</strong> {{ active_profile.description }}</p>
+            <p><strong>Whitelist-Match:</strong> {{ "Ja" if active_profile.require_whitelist_match else "Nein" }}</p>
+            <p><strong>Fallback erlaubt:</strong> {{ "Ja" if active_profile.fallback_to_general_web_search else "Nein" }}</p>
+            <p><strong>Minimum Quellen:</strong> {{ active_profile.minimum_source_count }}</p>
+          </div>
+          {% endif %}
+          <button type="submit">Profil aktivieren</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Quellen</h2>
+          <span class="muted">{{ sources|length }} Einträge</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Domain</th>
+                <th>Kategorie</th>
+                <th>Aktiv</th>
+                <th>Priorität</th>
+                <th>Zugriff</th>
+                <th>Auth</th>
+                <th>Tags</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for source in sources %}
+              <tr>
+                <td>{{ source.name }}</td>
+                <td>{{ source.domain }}</td>
+                <td>{{ source.category }}</td>
+                <td>{{ "Ja" if source.enabled else "Nein" }}</td>
+                <td>{{ source.priority }}</td>
+                <td>{{ source.preferred_access }}</td>
+                <td>{{ source.auth_type }}</td>
+                <td>{{ source.tags|join(", ") }}</td>
+                <td class="action-cell">
+                  <a class="button-link secondary" href="/trusted-sources?edit={{ source.id }}">Bearbeiten</a>
+                  <form method="post" action="/settings/trusted-sources/source/{{ source.id }}/toggle">
+                    <button type="submit">{{ "Deaktivieren" if source.enabled else "Aktivieren" }}</button>
+                  </form>
+                  <form method="post" action="/settings/trusted-sources/source/{{ source.id }}/delete">
+                    <button type="submit" class="danger">Löschen</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="9" class="muted">Noch keine Quellen vorhanden.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>{{ "Quelle bearbeiten" if source_form_values.id else "Quelle hinzufügen" }}</h2>
+          <form method="post" action="/settings/trusted-sources/source" class="stack">
+            <input type="hidden" name="source_id" value="{{ source_form_values.id }}">
+            <label>
+              Name
+              <input type="text" name="name" value="{{ source_form_values.name }}" required>
+            </label>
+            <label>
+              Domain
+              <input type="text" name="domain" value="{{ source_form_values.domain }}" placeholder="docs.github.com" required>
+            </label>
+            <label>
+              Kategorie
+              <select name="category">
+                {% for value in ["official_docs", "official_api", "official_registry", "repo_hosting", "package_registry", "standards_docs"] %}
+                <option value="{{ value }}" {% if source_form_values.category == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="enabled" value="true" {% if source_form_values.enabled %}checked{% endif %}>
+              <span>Quelle aktivieren</span>
+            </label>
+            <label>
+              Priorität
+              <input type="number" name="priority" value="{{ source_form_values.priority }}" min="0" max="1000" required>
+            </label>
+            <label>
+              Source-Type
+              <select name="source_type">
+                {% for value in ["docs", "api", "registry", "repo", "standard"] %}
+                <option value="{{ value }}" {% if source_form_values.source_type == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Preferred Access
+              <select name="preferred_access">
+                {% for value in ["api", "html", "mixed"] %}
+                <option value="{{ value }}" {% if source_form_values.preferred_access == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Base URL
+              <input type="url" name="base_url" value="{{ source_form_values.base_url }}" placeholder="https://docs.github.com" required>
+            </label>
+            <label>
+              API-/Nutzungsbeschreibung
+              <textarea name="api_description" rows="3">{{ source_form_values.api_description }}</textarea>
+            </label>
+            <label>
+              Auth-Type
+              <select name="auth_type">
+                {% for value in ["none", "bearer", "token", "header", "header_token", "oauth"] %}
+                <option value="{{ value }}" {% if source_form_values.auth_type == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Auth ENV Name
+              <input type="text" name="auth_env_var" value="{{ source_form_values.auth_env_var }}">
+            </label>
+            <label>
+              Rate-Limit Hinweise
+              <textarea name="rate_limit_notes" rows="2">{{ source_form_values.rate_limit_notes }}</textarea>
+            </label>
+            <label>
+              Usage Instructions
+              <textarea name="usage_instructions" rows="3">{{ source_form_values.usage_instructions }}</textarea>
+            </label>
+            <label>
+              Allowed Paths
+              <textarea name="allowed_paths_text" rows="3" placeholder="/repos&#10;/search">{{ source_form_values.allowed_paths_text }}</textarea>
+            </label>
+            <label>
+              Deny Paths
+              <textarea name="deny_paths_text" rows="3">{{ source_form_values.deny_paths_text }}</textarea>
+            </label>
+            <label>
+              Tags
+              <textarea name="tags_text" rows="3" placeholder="python&#10;packaging">{{ source_form_values.tags_text }}</textarea>
+            </label>
+            <button type="submit">Quelle speichern</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Dry-Run</h2>
+          <form method="post" action="/settings/trusted-sources/dry-run" class="stack">
+            <label>
+              Frage
+              <textarea name="query" rows="4" placeholder="Which official source should I use for the latest FastAPI version?" required></textarea>
+            </label>
+            <label>
+              Vermutetes Ökosystem
+              <select name="ecosystem">
+                <option value="">Automatisch erkennen</option>
+                {% for value in ["python", "node", "github", "web", "docker", "kubernetes", "rust", "go", "linux", "infra", "general"] %}
+                <option value="{{ value }}">{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Fragetyp
+              <select name="question_type">
+                <option value="">Automatisch erkennen</option>
+                {% for value in ["version", "dependency", "docs", "api", "install", "standard", "release", "security", "general"] %}
+                <option value="{{ value }}">{{ value }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit">Routing simulieren</button>
+          </form>
+          {% if dry_run_result %}
+          <details open>
+            <summary>Dry-Run Ergebnis</summary>
+            <pre>{{ dry_run_result | tojson(indent=2) }}</pre>
+          </details>
+          {% endif %}
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Quellentest</h2>
+          <form method="post" action="/settings/trusted-sources/test" class="stack">
+            <label>
+              Quelle
+              <select name="source_id">
+                {% for source in sources %}
+                <option value="{{ source.id }}" {% if source_form_values.id == source.id %}selected{% endif %}>{{ source.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Beispielanfrage
+              <input type="text" name="query" value="latest stable release" required>
+            </label>
+            <button type="submit">Testabfrage + Connectivity-Check</button>
+          </form>
+          {% if source_test_result %}
+          <details open>
+            <summary>Testergebnis</summary>
+            <pre>{{ source_test_result | tojson(indent=2) }}</pre>
+          </details>
+          {% endif %}
+        </article>
+
+        <article class="panel">
+          <h2>JSON Import / Export</h2>
+          <form method="post" action="/settings/trusted-sources/import" class="stack">
+            <label>
+              Registry JSON
+              <textarea name="payload_json" rows="18">{{ import_payload }}</textarea>
+            </label>
+            <p class="muted">Du kannst das aktuelle Registry-JSON exportieren, lokal sichern, ergänzen und hier wieder importieren.</p>
+            <button type="submit">JSON importieren</button>
+          </form>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

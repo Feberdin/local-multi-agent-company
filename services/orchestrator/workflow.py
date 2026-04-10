@@ -18,6 +18,7 @@ from services.shared.agentic_lab.policy_service import RepositoryPolicyError, Re
 from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, TaskDetail, TaskStatus, WorkerRequest
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.worker_client import WorkerCallError, call_worker
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 
 class WorkflowState(TypedDict, total=False):
@@ -54,10 +55,12 @@ class WorkflowOrchestrator:
         settings: Settings,
         task_service: TaskService,
         policy_service: RepositoryPolicyService | None = None,
+        worker_governance_service: WorkerGovernanceService | None = None,
     ) -> None:
         self.settings = settings
         self.task_service = task_service
         self.policy_service = policy_service or RepositoryPolicyService(settings)
+        self.worker_governance_service = worker_governance_service or WorkerGovernanceService(settings)
         self.logger = configure_logging(settings.service_name, settings.log_level)
         self.graph = self._build_graph().compile()
 
@@ -535,8 +538,10 @@ class WorkflowOrchestrator:
         )
         logger.info("Starting %s stage against %s", worker_name, service_url)
 
+        worker_request = self._build_worker_request(state, worker_name)
+
         try:
-            response = await call_worker(service_url, self._build_worker_request(state))
+            response = await call_worker(service_url, worker_request)
         except WorkerCallError as exc:
             logger.error("%s stage failed: %s", worker_name, exc)
             failed_task = self.task_service.update_status(
@@ -548,24 +553,38 @@ class WorkflowOrchestrator:
             )
             return self._task_to_state(failed_task)
 
-        self.task_service.store_worker_result(task_id, worker_name, response)
+        annotated_response = self.worker_governance_service.annotate_worker_response(
+            worker_name,
+            worker_request,
+            response,
+        )
+        self.worker_governance_service.register_worker_suggestions(
+            worker_name=worker_name,
+            request=worker_request,
+            response=annotated_response,
+        )
+        self.task_service.store_worker_result(task_id, worker_name, annotated_response)
         logger.info("%s stage completed successfully", worker_name)
 
-        if not response.success:
-            error_text = "; ".join(response.errors) or f"{worker_name} reported failure."
+        if not annotated_response.success:
+            error_text = "; ".join(annotated_response.errors) or f"{worker_name} reported failure."
             failed_task = self.task_service.update_status(
                 task_id,
                 TaskStatus.FAILED,
                 message=f"{worker_name} stage reported a failure.",
-                details={"errors": response.errors, "warnings": response.warnings},
+                details={"errors": annotated_response.errors, "warnings": annotated_response.warnings},
                 latest_error=error_text,
             )
             return self._task_to_state(failed_task)
 
         return self._task_to_state(self.task_service.get_task(task_id))
 
-    def _build_worker_request(self, state: WorkflowState) -> WorkerRequest:
+    def _build_worker_request(self, state: WorkflowState, worker_name: str) -> WorkerRequest:
         metadata = dict(state.get("metadata", {}))
+        guidance_map = self.worker_governance_service.guidance_map()
+        metadata["worker_guidance_map"] = guidance_map
+        metadata["current_worker_guidance"] = guidance_map.get(worker_name)
+        metadata["current_worker_name"] = worker_name
         return WorkerRequest(
             task_id=state["task_id"],
             goal=state["goal"],

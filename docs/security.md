@@ -17,6 +17,11 @@
 - Staging-only Deployments per Default
 - Memory- und Report-Artefakte statt versteckter Agenten-Entscheidungen
 - projektgebundener Secret-Ordner außerhalb des Repos mit `*_FILE`-Support im Config-Layer
+- Trusted-Source-Whitelist mit blockierten Wildcards und deny-by-default für unbekannte Domains
+- keine freie URL-Fetch-Funktion im Dashboard; Tests und Fallback laufen nur über gespeicherte Quellen/Provider
+- serverseitige Token-Nutzung für GitHub- und Brave-Zugriffe
+- SSRF-arme Provider-Konfiguration durch feste Base-URLs, Host-Prüfung und optionale Host-Allowlist
+- Fallback-Websuche wird nachgelagert gegen die Trusted-Source-Regeln gefiltert
 
 ## Offene Erweiterungen
 

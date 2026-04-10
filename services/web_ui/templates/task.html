@@ -14,6 +14,14 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
   </head>
   <body>
     <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+      </nav>
+
       <section class="hero">
         <p class="eyebrow">Task {{ task.id }}</p>
         <h1>{{ task.goal }}</h1>
@@ -85,6 +93,87 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           </article>
           {% else %}
           <p class="muted">Noch keine Ereignisse vorhanden.</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Entscheidungsbäume</h2>
+        <div class="timeline">
+          {% for name, result in task.worker_results.items() %}
+            {% set tree = result.get("outputs", {}).get("decision_tree") %}
+            {% if tree %}
+            <article class="event">
+              <div class="event-header">
+                <strong>{{ tree.title }}</strong>
+                <span class="muted">{{ name }}</span>
+              </div>
+              {% macro render_node(node) -%}
+                <div class="decision-node">
+                  <p><strong>{{ node.label }}</strong></p>
+                  {% if node.decision %}
+                  <p class="muted"><strong>Entscheidung:</strong> {{ node.decision }}</p>
+                  {% endif %}
+                  {% if node.outcome %}
+                  <p class="muted"><strong>Ergebnis:</strong> {{ node.outcome }}</p>
+                  {% endif %}
+                  {% if node.evidence %}
+                  <ul class="simple-list">
+                    {% for item in node.evidence %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                  </ul>
+                  {% endif %}
+                  {% if node.children %}
+                  <div class="decision-children">
+                    {% for child in node.children %}
+                      {{ render_node(child) }}
+                    {% endfor %}
+                  </div>
+                  {% endif %}
+                </div>
+              {%- endmacro %}
+              {{ render_node(tree.root) }}
+            </article>
+            {% endif %}
+          {% else %}
+          <p class="muted">Noch keine Entscheidungsbäume vorhanden.</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Mitarbeiterideen zu dieser Aufgabe</h2>
+          <a class="button-link secondary" href="/suggestions?task_id={{ task.id }}">Alle Vorschläge ansehen</a>
+        </div>
+        <div class="timeline">
+          {% for suggestion in suggestions %}
+          <article class="event">
+            <div class="event-header">
+              <strong>{{ suggestion.title }}</strong>
+              <span class="muted">{{ suggestion.worker_name }} · {{ suggestion.status }}</span>
+            </div>
+            <p>{{ suggestion.summary }}</p>
+            <p class="muted"><strong>Begründung:</strong> {{ suggestion.rationale }}</p>
+            <p class="muted"><strong>Empfohlene Maßnahme:</strong> {{ suggestion.suggested_action }}</p>
+            {% if suggestion.status == "pending" %}
+            <div class="actions">
+              <form method="post" action="/suggestions/{{ suggestion.id }}/approve">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="text" name="note" placeholder="Freigabevermerk">
+                <button type="submit">Freigeben</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/reject">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="text" name="note" placeholder="Ablehnungsgrund">
+                <button type="submit" class="danger">Ablehnen</button>
+              </form>
+            </div>
+            {% endif %}
+          </article>
+          {% else %}
+          <p class="muted">Zu dieser Aufgabe gibt es noch keine gespeicherten Mitarbeiterideen.</p>
           {% endfor %}
         </div>
       </section>

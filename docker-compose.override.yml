@@ -2,6 +2,7 @@
 # Input/Output: Docker Compose automatically merges this file for local development.
 # Invariants: The override keeps log verbosity high and source mounts live during debugging.
 # Debugging: If behavior differs between local and Unraid runs, compare this file with `docker-compose.yml`.
+# Guardrail: Do not redefine `volumes:` or `ports:` here unless the final `docker compose config` was checked afterwards.
 
 services:
   orchestrator:

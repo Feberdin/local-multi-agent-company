@@ -1,0 +1,51 @@
+{
+  "primary_web_search_provider": "searxng",
+  "fallback_web_search_provider": "brave",
+  "require_trusted_sources_first": true,
+  "allow_general_web_search_fallback": true,
+  "provider_host_allowlist": [],
+  "providers": [
+    {
+      "id": "searxng_primary",
+      "name": "SearXNG",
+      "provider_type": "searxng",
+      "enabled": false,
+      "priority": 10,
+      "base_url": "http://192.168.57.10:8081",
+      "search_path": "/search",
+      "method": "GET",
+      "auth_type": "none",
+      "auth_env_var": null,
+      "timeout_seconds": 10.0,
+      "max_results": 8,
+      "default_language": "de",
+      "default_categories": [
+        "general"
+      ],
+      "safe_search": 1,
+      "health_status": "unknown",
+      "last_checked_at": null
+    },
+    {
+      "id": "brave_fallback",
+      "name": "Brave Search API",
+      "provider_type": "brave",
+      "enabled": false,
+      "priority": 20,
+      "base_url": "https://api.search.brave.com",
+      "search_path": "/res/v1/web/search",
+      "method": "GET",
+      "auth_type": "header_token",
+      "auth_env_var": "BRAVE_SEARCH_API_KEY",
+      "timeout_seconds": 10.0,
+      "max_results": 8,
+      "default_language": "en",
+      "default_categories": [
+        "general"
+      ],
+      "safe_search": 1,
+      "health_status": "unknown",
+      "last_checked_at": null
+    }
+  ]
+}

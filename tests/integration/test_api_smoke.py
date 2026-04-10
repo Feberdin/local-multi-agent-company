@@ -37,3 +37,45 @@ def test_create_and_fetch_task(tmp_path) -> None:
         fetch_response = client.get(f"/api/tasks/{task_id}")
         assert fetch_response.status_code == 200
         assert fetch_response.json()["repository"] == "Feberdin/example-repo"
+
+        trusted_sources_response = client.get("/api/settings/trusted-sources")
+        assert trusted_sources_response.status_code == 200
+        assert trusted_sources_response.json()["active_profile_id"] == "trusted_coding"
+
+        dry_run_response = client.post(
+            "/api/settings/trusted-sources/dry-run",
+            json={"query": "latest FastAPI version on PyPI"},
+        )
+        assert dry_run_response.status_code == 200
+        assert dry_run_response.json()["trusted_matches"][0]["domain"] == "pypi.org"
+
+        invalid_source_response = client.post(
+            "/api/settings/trusted-sources/sources",
+            json={
+                "id": "bad",
+                "name": "Wildcard Source",
+                "domain": "*.example.org",
+                "category": "official_docs",
+                "enabled": False,
+                "priority": 100,
+                "source_type": "docs",
+                "preferred_access": "html",
+                "base_url": "https://example.org",
+                "allowed_paths": [],
+                "deny_paths": [],
+                "tags": [],
+            },
+        )
+        assert invalid_source_response.status_code == 400
+
+        web_search_settings_response = client.get("/api/settings/web-search")
+        assert web_search_settings_response.status_code == 200
+        assert web_search_settings_response.json()["primary_web_search_provider"] == "searxng"
+
+        worker_guidance_response = client.get("/api/settings/worker-guidance")
+        assert worker_guidance_response.status_code == 200
+        assert any(item["worker_name"] == "coding" for item in worker_guidance_response.json()["workers"])
+
+        suggestions_response = client.get("/api/suggestions")
+        assert suggestions_response.status_code == 200
+        assert suggestions_response.json() == []

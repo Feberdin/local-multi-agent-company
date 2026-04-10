@@ -67,9 +67,36 @@ body {
   background: #fff4f1;
 }
 
+.panel-success {
+  border-color: #b7d7bf;
+  background: #f2fbf3;
+}
+
 .panel-note {
   border-color: #e0c9b6;
   background: #fff9f3;
+}
+
+.topnav {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.topnav a {
+  color: var(--ink);
+  text-decoration: none;
+  padding: 0.65rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+}
+
+.topnav a.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
 }
 
 .panel-header,
@@ -110,6 +137,7 @@ label {
 }
 
 input,
+select,
 textarea,
 button,
 .button-link {
@@ -118,6 +146,7 @@ button,
 }
 
 input,
+select,
 textarea {
   border: 1px solid var(--line);
   padding: 0.85rem 1rem;
@@ -136,6 +165,11 @@ button,
 
 button.danger {
   background: var(--danger);
+}
+
+.button-link.secondary {
+  background: #e9e0d2;
+  color: var(--ink);
 }
 
 .task-list {
@@ -184,6 +218,58 @@ button.danger {
 .status-staging_deployed {
   background: #d6ead8;
   color: #245232;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.75rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.action-cell {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.decision-node {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem;
+  margin-top: 0.75rem;
+  background: white;
+}
+
+.decision-children {
+  margin-left: 1rem;
+  border-left: 2px solid var(--accent-soft);
+  padding-left: 1rem;
+}
+
+.simple-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.stats-grid {
+  display: grid;
+  gap: 0.45rem;
 }
 
 pre {

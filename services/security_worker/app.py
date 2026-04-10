@@ -21,10 +21,12 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import current_diff, write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 llm = LLMClient(settings)
+worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Security Worker", version="0.1.0")
 
 
@@ -54,11 +56,13 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     }
     warnings: list[str] = []
     ai_findings: list[str] = []
+    guidance_block = worker_governance.guidance_prompt_block(request, "security")
 
     try:
         ai_summary = await llm.complete_json(
             system_prompt=(
                 "You are a security reviewer. Return JSON with keys findings, residual_risks, requires_human_approval, approval_reason."
+                f"{guidance_block}"
             ),
             user_prompt=(
                 f"Goal:\n{request.goal}\n\n"

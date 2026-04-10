@@ -17,10 +17,12 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import current_diff, write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 llm = LLMClient(settings)
+worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Reviewer Worker", version="0.1.0")
 
 
@@ -45,9 +47,10 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
     findings = _heuristic_findings(diff["changed_files"])
     warnings: list[str] = []
+    guidance_block = worker_governance.guidance_prompt_block(request, "reviewer")
 
     try:
-        ai_review = await _review_with_llm(request.goal, diff)
+        ai_review = await _review_with_llm(request.goal, diff, guidance_block)
         findings.extend(ai_review.get("findings", []))
         warnings.extend(ai_review.get("warnings", []))
     except LLMError as exc:
@@ -99,10 +102,11 @@ def _heuristic_findings(changed_files: list[str]) -> list[str]:
     return findings
 
 
-async def _review_with_llm(goal: str, diff: dict) -> dict:
+async def _review_with_llm(goal: str, diff: dict, guidance_block: str) -> dict:
     system_prompt = (
         "You are a strict reviewer focused on bugs, regressions, security, and architecture drift. "
         "Return JSON with keys findings and warnings."
+        f"{guidance_block}"
     )
     user_prompt = (
         f"Goal:\n{goal}\n\n"

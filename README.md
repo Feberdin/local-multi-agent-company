@@ -19,6 +19,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 - `cost-worker`: schätzt Modell- und Ressourcenbedarf
 - `human-resources-worker`: empfiehlt passende Worker-Zuschnitte
 - `research-worker`: Repo-Analyse und optional untrusted Web-Recherche
+- `trusted sources`: offizielle Coding-Quellen, Routing und Fallback-Regeln für den Research-Worker
 - `architecture-worker`: Komponenten, Datenflüsse, Modulgrenzen, Implementierungsplan
 - `data-worker`: Datenverarbeitungs-Hinweise bei Parsing-/Extraktionsaufgaben
 - `ux-worker`: UI-/Flow-Hinweise bei UI-orientierten Zielen
@@ -117,17 +118,27 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    ./scripts/bootstrap.sh
    ```
 
-4. Stack starten:
+4. Preflight prüfen:
 
    ```bash
-   docker compose up --build -d
+   ./scripts/doctor.sh
    ```
 
-5. Dashboard öffnen:
+5. Stack starten:
 
-   - `http://<unraid-host>:8088`
+   ```bash
+   docker compose up -d --build --force-recreate
+   ```
 
-6. Beispiel-Task anlegen:
+6. Dashboard öffnen:
+
+   - `http://<unraid-host>:18088`
+   - `http://<unraid-host>:18088/worker-guidance`
+   - `http://<unraid-host>:18088/suggestions`
+   - `http://<unraid-host>:18088/trusted-sources`
+   - `http://<unraid-host>:18088/web-search`
+
+7. Beispiel-Task anlegen:
 
    ```bash
    ./scripts/create-task.sh \
@@ -180,6 +191,32 @@ Wichtig:
 - Optional kann der Bootstrap-Container anschließend `docker compose up -d` auf dem Unraid-Host ausführen, wenn du den Docker-Socket bewusst mountest und `AUTO_START_STACK=true` setzt.
 
 Die vollständige Anleitung steht in [docs/unraid-deployment.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-deployment.md).
+
+## Runtime-Preflight
+
+Vor jedem Start prüft [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh):
+
+- doppelte Schlüssel in `.env`
+- ob `HOST_DATA_DIR`, `HOST_REPORTS_DIR`, `HOST_WORKSPACE_ROOT` und `HOST_STAGING_STACK_ROOT` existieren und beschreibbar sind
+- ob das finale Compose-Modell den Bind-Mount nach `/staging-stacks` sowie die übrigen Runtime-Mounts für alle relevanten Services enthält
+- ob `ORCHESTRATOR_PORT` und `WEB_UI_PORT` frei sind
+
+Wichtige Defaults:
+
+- `ORCHESTRATOR_PORT=18080`
+- `WEB_UI_PORT=18088`
+
+Wichtige Diagnosebefehle:
+
+```bash
+./scripts/doctor.sh
+docker compose config
+docker compose up -d --build --force-recreate
+docker compose ps
+docker compose logs -f orchestrator
+curl http://localhost:18080/health
+curl http://localhost:18088/health
+```
 
 ## Modellrouting
 
@@ -244,6 +281,40 @@ Das Dashboard enthält jetzt eine zentrale Allowlist für GitHub-Repositories.
 - Änderungen an erlaubten Repositories benötigen zusätzlich eine ausdrückliche Bestätigung.
 - Ohne diese Bestätigung stoppt der Workflow vor dem Coding-Schritt und liefert zuerst Analyse- und Verbesserungsvorschläge.
 - Commits und PRs enthalten einen sichtbaren Herkunftshinweis auf das `Feberdin local-multi-agent-company worker project`.
+
+## Trusted Sources und Web Search
+
+Der Research-/Search-Worker verwendet jetzt ein persistentes Trusted-Source-Profil.
+
+- Seed-Profil: [config/trusted_sources.coding_profile.json](/Users/joachim.stiegler/CodingFamily/config/trusted_sources.coding_profile.json)
+- Web-Search-Provider: [config/web_search.providers.json](/Users/joachim.stiegler/CodingFamily/config/web_search.providers.json)
+- Doku: [docs/trusted-sources.md](/Users/joachim.stiegler/CodingFamily/docs/trusted-sources.md)
+
+Verhalten:
+
+- strukturierte offizielle APIs und Registries vor HTML-Doku
+- offizielle Doku vor allgemeiner Websuche
+- unbekannte Domains standardmäßig blockiert
+- SearXNG als vorgesehener Primär-Provider
+- Brave optional als Fallback
+- Dry-Run, Connectivity-Checks und JSON Import/Export direkt im Dashboard
+
+Wichtig zu Keys:
+
+- `GITHUB_TOKEN`: für GitHub-Automation nötig
+- `BRAVE_SEARCH_API_KEY`: nur nötig, wenn Brave aktiviert wird
+- `MODEL_API_KEY`, `MISTRAL_API_KEY`, `QWEN_API_KEY`: nur nötig, wenn dein lokaler Modell-Endpoint Auth verlangt
+
+## Worker Guidance und Mitarbeiterideen
+
+Das Dashboard enthält jetzt zwei zusätzliche Führungsbereiche:
+
+- `Worker Guidance`: pro Worker Handlungsempfehlungen, Entscheidungspräferenzen und Kompetenzgrenzen pflegen
+- `Mitarbeiterideen`: Verbesserungsvorschläge der Worker prüfen und freigeben oder ablehnen
+
+Außerdem schreibt der Orchestrator für jeden Worker-Lauf einen sichtbaren Entscheidungsbaum in die Task-Detail-Seite.
+
+Mehr dazu in [docs/worker-governance.md](/Users/joachim.stiegler/CodingFamily/docs/worker-governance.md).
 
 ## Logs und Debugging
 

@@ -26,10 +26,12 @@ from services.shared.agentic_lab.repo_tools import (
     write_report,
 )
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 llm = LLMClient(settings)
+worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Coding Worker", version="0.1.0")
 
 
@@ -76,6 +78,7 @@ async def _run_local_patch_backend(
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
     research = request.prior_results.get("research", {}).get("outputs", {})
     overview = collect_repo_overview(repo_path)
+    guidance_block = worker_governance.guidance_prompt_block(request, "coding")
 
     candidate_files = [
         path
@@ -92,6 +95,7 @@ async def _run_local_patch_backend(
                 "You are a careful coding agent. Return JSON with keys summary and operations. "
                 "Each operation must have action=create_or_update, path, reason, content. "
                 "Keep the change set small, coherent, and safe."
+                f"{guidance_block}"
             ),
             user_prompt=(
                 f"Goal:\n{request.goal}\n\n"

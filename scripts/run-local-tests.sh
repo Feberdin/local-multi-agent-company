@@ -7,9 +7,11 @@
 set -eu
 
 bash -n scripts/bootstrap.sh
+bash -n scripts/doctor.sh
 bash -n scripts/setup_unraid_ssh.sh
 bash -n scripts/harden_unraid_authorized_key.sh
 bash -n scripts/unraid/install-from-git.sh
+bash -n scripts/unraid/install-appdata.sh
 python3 -c "import xml.etree.ElementTree as ET; ET.parse('infra/unraid/templates/feberdin-agent-bootstrap.xml')"
 python3 -m ruff check .
 python3 -m pytest -q

@@ -7,12 +7,17 @@ How to debug: If research notes look incomplete, inspect the collected repo over
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from services.shared.agentic_lab.config import get_settings
-from services.shared.agentic_lab.guardrails import assess_source_quality, detect_prompt_injection_signals
+from services.shared.agentic_lab.guardrails import (
+    assess_source_quality,
+    detect_prompt_injection_signals,
+    sanitize_untrusted_text,
+)
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import (
@@ -21,11 +26,27 @@ from services.shared.agentic_lab.repo_tools import (
     read_text_file,
     write_report,
 )
-from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.schemas import (
+    Artifact,
+    HealthResponse,
+    SearchResultItem,
+    SourceRoutingDecision,
+    SourceRoutingRequest,
+    WorkerRequest,
+    WorkerResponse,
+)
+from services.shared.agentic_lab.search_providers import SearchProviderService
+from services.shared.agentic_lab.source_router import SourceRouter
+from services.shared.agentic_lab.trusted_sources import TrustedSourceService
+from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 llm = LLMClient(settings)
+trusted_source_service = TrustedSourceService(settings)
+search_provider_service = SearchProviderService(settings)
+source_router = SourceRouter(trusted_source_service, search_provider_service)
+worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Research Worker", version="0.1.0")
 
 
@@ -53,23 +74,60 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     }
 
     warnings: list[str] = []
+    source_plan = source_router.route(SourceRoutingRequest(query=request.goal))
+    web_results: list[SearchResultItem] = []
     web_sources: list[str] = []
+    provider_notes: list[str] = []
     if request.enable_web_research:
-        warnings.append(
-            "Web research was requested, but the MVP currently keeps internet lookup disabled unless you attach a dedicated search adapter."
-        )
+        if source_plan.fallback_reason and source_plan.general_web_allowed:
+            provider, web_results, provider_notes = await search_provider_service.search(
+                request.goal,
+                trusted_source_service,
+                trusted_source_service.load_active_profile(),
+            )
+            warnings.extend(provider_notes)
+            if provider is None:
+                warnings.append(
+                    "No trusted-source fallback provider produced usable results. "
+                    "The worker stayed conservative instead of broadening trust automatically."
+                )
+            else:
+                warnings.append(
+                    f"General web search fallback used provider `{provider.name}` "
+                    "because trusted sources were insufficient for the question."
+                )
+                web_sources = [item.url for item in web_results]
+        else:
+            warnings.append(
+                "General web fallback was not used because trusted sources already matched the question "
+                "or the active profile blocks fallback."
+            )
 
     task_logger.info("Collected repo overview with %s files", overview["file_count"])
 
     # Why this exists: research notes should be readable even without a working model backend.
     # What happens here: try an LLM summary first, then fall back to a deterministic repo snapshot summary.
     try:
-        research_notes = await _summarize_with_llm(request.goal, overview, file_samples)
+        guidance_block = worker_governance.guidance_prompt_block(request, "research")
+        research_notes = await _summarize_with_llm(
+            request.goal,
+            overview,
+            file_samples,
+            source_plan,
+            web_results,
+            guidance_block,
+        )
     except LLMError as exc:
         warnings.append(f"LLM summary unavailable, using heuristic research notes instead: {exc}")
-        research_notes = _heuristic_summary(request.goal, overview, file_samples)
+        research_notes = _heuristic_summary(request.goal, overview, file_samples, source_plan, web_results)
 
     prompt_injection_signals = detect_prompt_injection_signals(research_notes)
+    prompt_injection_signals.extend(
+        signal
+        for item in web_results
+        for signal in detect_prompt_injection_signals(f"{item.title}\n{item.snippet}")
+    )
+    prompt_injection_signals = sorted(set(prompt_injection_signals))
     source_quality = {source: assess_source_quality(source) for source in web_sources}
 
     report_text = _build_report(
@@ -78,6 +136,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         notes=research_notes,
         overview=overview,
         sampled_files=sampled_files,
+        source_plan=source_plan.model_dump(mode="json"),
+        web_results=web_results,
         warnings=warnings,
     )
     report_path = write_report(settings.task_report_dir(request.task_id), "research-notes.md", report_text)
@@ -91,6 +151,9 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             "candidate_files": sampled_files,
             "sources": {
                 "repository_files": sampled_files,
+                "trusted_source_plan": source_plan.model_dump(mode="json"),
+                "trusted_sources": [source.model_dump(mode="json") for source in source_plan.trusted_matches],
+                "general_web_results": [item.model_dump(mode="json") for item in web_results],
                 "web_sources": web_sources,
                 "source_quality": source_quality,
             },
@@ -110,24 +173,49 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     )
 
 
-async def _summarize_with_llm(goal: str, overview: dict, file_samples: dict[str, str]) -> str:
+async def _summarize_with_llm(
+    goal: str,
+    overview: dict,
+    file_samples: dict[str, str],
+    source_plan: SourceRoutingDecision,
+    web_results: list[SearchResultItem],
+    guidance_block: str,
+) -> str:
     system_prompt = (
         "You are a careful staff engineer performing repository research for an autonomous-but-controlled coding system. "
         "Summarize the architecture, likely change points, risks, and unknowns. "
-        "Do not invent files or claim certainty where the repository context is thin."
+        "Do not invent files or claim certainty where the repository context is thin. "
+        "Verhalte dich bei Coding-Recherchen strikt quellenbasiert: Nutze zuerst strukturierte offizielle APIs oder Registries, "
+        "danach offizielle Dokumentation, und allgemeine Websuche nur als klar markierten Fallback. "
+        "Wenn keine vertrauenswürdige Quelle verfügbar ist, melde Unsicherheit statt zu raten."
+        f"{guidance_block}"
     )
+    sanitized_web_results = [
+        {"title": item.title, "url": item.url, "snippet": sanitize_untrusted_text(item.snippet, max_length=500)}
+        for item in web_results
+    ]
     user_prompt = (
         f"Goal:\n{goal}\n\n"
         f"Repository overview:\n{overview}\n\n"
         f"Sampled file contents:\n{file_samples}\n\n"
-        "Return a concise markdown summary with sections: Architecture, Likely Change Points, Risks, Unknowns."
+        f"Trusted-source routing plan:\n{source_plan}\n\n"
+        f"General web fallback results (untrusted and optional):\n{sanitized_web_results}\n\n"
+        "Return a concise markdown summary with sections: Architecture, Likely Change Points, Trusted Sources, Risks, Unknowns."
     )
     return await llm.complete(system_prompt, user_prompt, worker_name="research", max_tokens=1400)
 
 
-def _heuristic_summary(goal: str, overview: dict, file_samples: dict[str, str]) -> str:
+def _heuristic_summary(
+    goal: str,
+    overview: dict,
+    file_samples: dict[str, str],
+    source_plan,
+    web_results: list[SearchResultItem],
+) -> str:
     important_files = ", ".join(overview.get("important_files", [])) or "no key entry files detected"
     sampled_names = ", ".join(file_samples.keys()) or "no sampled files"
+    trusted_sources = ", ".join(source.name for source in getattr(source_plan, "trusted_matches", [])) or "no trusted source matched"
+    web_fallback = ", ".join(item.url for item in web_results) or "no general-web fallback used"
     return (
         f"## Architecture\n"
         f"- Repository contains {overview.get('file_count', 0)} files.\n"
@@ -136,8 +224,12 @@ def _heuristic_summary(goal: str, overview: dict, file_samples: dict[str, str]) 
         f"## Likely Change Points\n"
         f"- Start with the files above and adjacent tests or workflow files.\n"
         f"- Reconcile the new goal against the last commit: {overview.get('last_commit', 'unknown')}.\n\n"
+        f"## Trusted Sources\n"
+        f"- Routed official sources: {trusted_sources}.\n"
+        f"- General web fallback: {web_fallback}.\n\n"
         f"## Risks\n"
         f"- Repository context may be incomplete if crucial files were not sampled.\n"
+        f"- External fallback content stays untrusted and should never override official sources.\n"
         f"- Dirty git status must be reviewed before automated edits.\n\n"
         f"## Unknowns\n"
         f"- Goal-specific dependencies, deployment contracts, and test expectations should be confirmed during planning.\n"
@@ -152,13 +244,19 @@ def _build_report(
     notes: str,
     overview: dict,
     sampled_files: list[str],
+    source_plan: dict,
+    web_results: list[SearchResultItem],
     warnings: list[str],
 ) -> str:
+    fallback_lines = "\n".join(f"- {item.title}: {item.url}" for item in web_results) if web_results else "- None"
+    serialized_source_plan = json.dumps(source_plan, indent=2, ensure_ascii=True)
     return (
         f"# Research Notes\n\n"
         f"## Goal\n{goal}\n\n"
         f"## Repository\n{repository}\n\n"
         f"## Notes\n{notes}\n\n"
+        f"## Trusted Source Plan\n```json\n{serialized_source_plan}\n```\n\n"
+        f"## General Web Fallback Results\n{fallback_lines}\n\n"
         f"## Repo Overview\n- File count: {overview.get('file_count', 0)}\n"
         f"- Important files: {', '.join(overview.get('important_files', [])) or 'none'}\n"
         f"- Sampled files: {', '.join(sampled_files) or 'none'}\n"
