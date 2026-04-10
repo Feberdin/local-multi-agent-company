@@ -83,13 +83,16 @@ class Settings(BaseSettings):
         alias="MODEL_ROUTING_CONFIG",
     )
     default_model_api_key: str = Field(default="", alias="MODEL_API_KEY")
+    default_model_api_key_file: Path | None = Field(default=None, alias="MODEL_API_KEY_FILE")
     default_model_provider: str = Field(default="qwen", alias="DEFAULT_MODEL_PROVIDER")
     mistral_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="MISTRAL_BASE_URL")
     qwen_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="QWEN_BASE_URL")
     mistral_model_name: str = Field(default="mistral-small3.2:latest", alias="MISTRAL_MODEL_NAME")
     qwen_model_name: str = Field(default="qwen3.5:35b-a3b", alias="QWEN_MODEL_NAME")
     mistral_api_key: str = Field(default="", alias="MISTRAL_API_KEY")
+    mistral_api_key_file: Path | None = Field(default=None, alias="MISTRAL_API_KEY_FILE")
     qwen_api_key: str = Field(default="", alias="QWEN_API_KEY")
+    qwen_api_key_file: Path | None = Field(default=None, alias="QWEN_API_KEY_FILE")
 
     coding_provider: str = Field(default="local_patch", alias="CODING_PROVIDER")
     openhands_enabled: bool = Field(default=False, alias="OPENHANDS_ENABLED")
@@ -98,8 +101,10 @@ class Settings(BaseSettings):
     web_research_enabled: bool = Field(default=False, alias="WEB_RESEARCH_ENABLED")
     web_search_base_url: str = Field(default="", alias="WEB_SEARCH_BASE_URL")
     web_search_api_key: str = Field(default="", alias="WEB_SEARCH_API_KEY")
+    web_search_api_key_file: Path | None = Field(default=None, alias="WEB_SEARCH_API_KEY_FILE")
 
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
+    github_token_file: Path | None = Field(default=None, alias="GITHUB_TOKEN_FILE")
     github_api_url: str = Field(default="https://api.github.com", alias="GITHUB_API_URL")
     github_mcp_enabled: bool = Field(default=False, alias="GITHUB_MCP_ENABLED")
     github_mcp_base_url: str = Field(default="http://github-mcp:8787", alias="GITHUB_MCP_BASE_URL")
@@ -136,6 +141,28 @@ class Settings(BaseSettings):
 
         for directory in (self.data_dir, self.reports_dir, self.workspace_root, self.staging_stack_root):
             directory.mkdir(parents=True, exist_ok=True)
+
+    def apply_secret_file_overrides(self) -> None:
+        """Load secret values from *_FILE paths when the plain environment variables are empty."""
+
+        self.default_model_api_key = self._resolve_secret_value(
+            self.default_model_api_key,
+            self.default_model_api_key_file,
+        )
+        self.mistral_api_key = self._resolve_secret_value(self.mistral_api_key, self.mistral_api_key_file)
+        self.qwen_api_key = self._resolve_secret_value(self.qwen_api_key, self.qwen_api_key_file)
+        self.web_search_api_key = self._resolve_secret_value(self.web_search_api_key, self.web_search_api_key_file)
+        self.github_token = self._resolve_secret_value(self.github_token, self.github_token_file)
+
+    def _resolve_secret_value(self, current_value: str, secret_file: Path | None) -> str:
+        """Prefer the explicit env value and otherwise read the first-line-like content from a mounted secret file."""
+
+        normalized_value = current_value.strip()
+        if normalized_value and "replace-me" not in normalized_value.lower():
+            return normalized_value
+        if secret_file is None or not secret_file.exists():
+            return normalized_value
+        return secret_file.read_text(encoding="utf-8").rstrip("\r\n")
 
     @property
     def database_url(self) -> str:
@@ -175,5 +202,6 @@ def get_settings() -> Settings:
     """Return cached settings because every service resolves the same environment repeatedly."""
 
     settings = Settings()
+    settings.apply_secret_file_overrides()
     settings.ensure_runtime_directories()
     return settings

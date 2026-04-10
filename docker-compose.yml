@@ -13,6 +13,7 @@ x-agent-service: &agent-service
     - ${HOST_DATA_DIR:-./data}:/data
     - ${HOST_REPORTS_DIR:-./reports}:/reports
     - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
+    - ${HOST_SECRETS_DIR:-./secrets}:/run/project-secrets:ro
     - ./:/app
   networks: [agent-control]
   restart: unless-stopped
@@ -135,6 +136,7 @@ services:
       - ${HOST_REPORTS_DIR:-./reports}:/reports
       - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
       - ${HOST_STAGING_STACK_ROOT:-./staging-stacks}:/staging-stacks
+      - ${HOST_SECRETS_DIR:-./secrets}:/run/project-secrets:ro
       - ./:/app
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/health', timeout=5).read()"]

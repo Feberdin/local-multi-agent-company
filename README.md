@@ -204,6 +204,37 @@ Das Routing liegt in [config/model-routing.example.yaml](/Users/joachim.stiegler
 - Merge nach `main` ist nicht automatisiert.
 - Shell-Kommandos im Test-Worker laufen nur über eine Allowlist.
 
+## Lokaler Secret-Store
+
+Für dieses Projekt ist ein **projektgebundener lokaler Secret-Ordner** sinnvoller als Tokens immer wieder in Deployments oder in die Repo-`.env` zu schreiben.
+
+Empfohlener Ort auf Unraid:
+
+- `/mnt/user/appdata/feberdin-agent-team/secrets`
+
+Prinzip:
+
+- ein Secret pro Datei
+- Verzeichnis bleibt außerhalb des Git-Repos
+- Docker mountet den Ordner read-only nach `/run/project-secrets`
+- der Python-Config-Layer unterstützt `*_FILE`-Variablen wie `GITHUB_TOKEN_FILE`
+
+Beispiele:
+
+```bash
+mkdir -p /mnt/user/appdata/feberdin-agent-team/secrets
+chmod 700 /mnt/user/appdata/feberdin-agent-team/secrets
+printf '%s' 'ghp_xxx' > /mnt/user/appdata/feberdin-agent-team/secrets/github_token
+chmod 600 /mnt/user/appdata/feberdin-agent-team/secrets/github_token
+```
+
+Danach reicht in `.env` der Dateipfad, nicht der Klartextwert:
+
+```env
+HOST_SECRETS_DIR=/mnt/user/appdata/feberdin-agent-team/secrets
+GITHUB_TOKEN_FILE=/run/project-secrets/github_token
+```
+
 ## Logs und Debugging
 
 - Laufzeit-Logs liegen im Docker-Log-Stream.

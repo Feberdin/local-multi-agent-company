@@ -16,9 +16,10 @@
 - risk-based Approval-Gate vor GitHub-Publikation
 - Staging-only Deployments per Default
 - Memory- und Report-Artefakte statt versteckter Agenten-Entscheidungen
+- projektgebundener Secret-Ordner außerhalb des Repos mit `*_FILE`-Support im Config-Layer
 
 ## Offene Erweiterungen
 
 - tieferer Dependency-Scanner
 - Allow-/Deny-Listen pro Ziel-Repository
-- granularere Secret-Store-Integration
+- spätere Integration eines dedizierten Secret-Managers wie Vault, SOPS oder 1Password Connect

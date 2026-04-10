@@ -14,5 +14,6 @@ mkdir -p "${HOST_DATA_DIR:-/mnt/user/appdata/feberdin-agent-team/data}"
 mkdir -p "${HOST_REPORTS_DIR:-/mnt/user/appdata/feberdin-agent-team/reports}"
 mkdir -p "${HOST_WORKSPACE_ROOT:-/mnt/user/appdata/feberdin-agent-team/workspace}"
 mkdir -p "${HOST_STAGING_STACK_ROOT:-/mnt/user/appdata/feberdin-agent-team/staging-stacks}"
+mkdir -p "${HOST_SECRETS_DIR:-/mnt/user/appdata/feberdin-agent-team/secrets}"
 
 echo "Unraid appdata folders are ready."

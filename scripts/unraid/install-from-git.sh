@@ -17,6 +17,7 @@ readonly DATA_DIR="${PROJECT_ROOT}/data"
 readonly REPORTS_DIR="${PROJECT_ROOT}/reports"
 readonly WORKSPACE_DIR="${PROJECT_ROOT}/workspace"
 readonly STAGING_STACKS_DIR="${PROJECT_ROOT}/staging-stacks"
+readonly SECRETS_DIR="${PROJECT_ROOT}/secrets"
 
 log_info() {
   printf '[INFO] %s\n' "$1"
@@ -56,7 +57,7 @@ ensure_prerequisites() {
 ensure_project_root() {
   # Security note:
   # This installer intentionally owns exactly one project root and all managed paths are derived from it.
-  mkdir -p "${PROJECT_ROOT}" "${DATA_DIR}" "${REPORTS_DIR}" "${WORKSPACE_DIR}" "${STAGING_STACKS_DIR}"
+  mkdir -p "${PROJECT_ROOT}" "${DATA_DIR}" "${REPORTS_DIR}" "${WORKSPACE_DIR}" "${STAGING_STACKS_DIR}" "${SECRETS_DIR}"
   log_info "Projektwurzel vorbereitet: ${PROJECT_ROOT}"
 }
 
@@ -146,6 +147,7 @@ print_next_steps() {
   printf '\n%s\n' "Nächste Schritte:"
   printf '%s\n' "  Projekt: ${REPO_DIR}"
   printf '%s\n' "  Konfiguration: ${REPO_DIR}/.env"
+  printf '%s\n' "  Secrets: ${SECRETS_DIR}"
   printf '%s\n' "  Start: cd ${REPO_DIR} && docker compose up --build -d"
 }
 

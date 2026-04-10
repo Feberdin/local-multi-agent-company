@@ -17,6 +17,7 @@ mkdir -p "${HOST_DATA_DIR:-./data}"
 mkdir -p "${HOST_REPORTS_DIR:-./reports}"
 mkdir -p "${HOST_WORKSPACE_ROOT:-./workspace}"
 mkdir -p "${HOST_STAGING_STACK_ROOT:-./staging-stacks}"
+mkdir -p "${HOST_SECRETS_DIR:-./secrets}"
 
 if [ "${BOOTSTRAP_UNRAID_SSH:-false}" = "true" ]; then
   echo "BOOTSTRAP_UNRAID_SSH=true erkannt."
