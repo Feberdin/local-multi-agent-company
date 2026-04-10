@@ -29,16 +29,33 @@ async def health() -> HealthResponse:
     return HealthResponse(service="web-ui")
 
 
+async def _load_dashboard_context(error_message: str | None = None) -> dict:
+    """Collect tasks and repository settings for the dashboard."""
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        tasks_response = await client.get(f"{settings.orchestrator_internal_url.rstrip('/')}/api/tasks")
+        tasks_response.raise_for_status()
+        repo_settings_response = await client.get(
+            f"{settings.orchestrator_internal_url.rstrip('/')}/api/settings/repository-access"
+        )
+        repo_settings_response.raise_for_status()
+        repo_settings = repo_settings_response.json()
+
+    return {
+        "tasks": tasks_response.json(),
+        "repository_access_settings": repo_settings,
+        "allowed_repositories_text": "\n".join(repo_settings.get("allowed_repositories", [])),
+        "error_message": error_message,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(f"{settings.orchestrator_internal_url.rstrip('/')}/api/tasks")
-        response.raise_for_status()
-        tasks = response.json()
+    context = await _load_dashboard_context()
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"request": request, "tasks": tasks},
+        context={"request": request, **context},
     )
 
 
@@ -61,13 +78,40 @@ async def create_task(
     goal: str = Form(...),
     repository: str = Form(...),
     local_repo_path: str = Form(...),
-) -> RedirectResponse:
-    payload = {"goal": goal, "repository": repository, "local_repo_path": local_repo_path}
+    allow_repository_modifications: bool = Form(False),
+) -> HTMLResponse | RedirectResponse:
+    payload = {
+        "goal": goal,
+        "repository": repository,
+        "local_repo_path": local_repo_path,
+        "allow_repository_modifications": allow_repository_modifications,
+    }
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(f"{settings.orchestrator_internal_url.rstrip('/')}/api/tasks", json=payload)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            detail = response.json().get("detail", "Die Aufgabe konnte nicht angelegt werden.")
+            context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
         task = response.json()
     return RedirectResponse(url=f"/tasks/{task['id']}", status_code=303)
+
+
+@app.post("/settings/repositories", response_class=HTMLResponse)
+async def update_repository_settings(
+    request: Request,
+    allowed_repositories_text: str = Form(""),
+) -> HTMLResponse | RedirectResponse:
+    repositories = [line.strip() for line in allowed_repositories_text.splitlines() if line.strip()]
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.put(
+            f"{settings.orchestrator_internal_url.rstrip('/')}/api/settings/repository-access",
+            json={"allowed_repositories": repositories},
+        )
+        if response.status_code >= 400:
+            detail = response.json().get("detail", "Die Einstellungen konnten nicht gespeichert werden.")
+            context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/tasks/{task_id}/run")

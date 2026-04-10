@@ -46,7 +46,7 @@ def test_command_allowlist_accepts_only_known_prefixes() -> None:
 
 def test_ensure_repo_path_is_safe_blocks_workspace_escape(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
+    workspace_root.mkdir(exist_ok=True)
     safe_repo = workspace_root / "repo"
     safe_repo.mkdir()
 

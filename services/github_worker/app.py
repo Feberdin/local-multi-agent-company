@@ -43,6 +43,10 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         )
 
     commit_message = f"{settings.git_commit_message_prefix}: {request.goal[:72]}"
+    worker_project_label = request.metadata.get("worker_project_label", "Feberdin local-multi-agent-company worker project")
+    commit_body = (
+        f"Created by {worker_project_label} after explicit repository modification approval."
+    )
     author_env = {
         **os.environ,
         "GIT_AUTHOR_NAME": settings.git_author_name,
@@ -53,7 +57,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
     try:
         run_command(["git", "add", "-A"], cwd=repo_path, env=author_env)
-        run_command(["git", "commit", "-m", commit_message], cwd=repo_path, env=author_env)
+        run_command(["git", "commit", "-m", commit_message, "-m", commit_body], cwd=repo_path, env=author_env)
         run_command(
             ["git", "push", "--set-upstream", "origin", request.branch_name or ""],
             cwd=repo_path,
@@ -109,6 +113,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
 
 def _build_pr_body(request: WorkerRequest, diff: dict) -> str:
+    worker_project_label = request.metadata.get("worker_project_label", "Feberdin local-multi-agent-company worker project")
     requirements = request.prior_results.get("requirements", {}).get("outputs", {})
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
     review = request.prior_results.get("reviewer", {}).get("outputs", {})
@@ -123,5 +128,8 @@ def _build_pr_body(request: WorkerRequest, diff: dict) -> str:
         f"## Review Notes\n{review.get('findings', [])}\n\n"
         f"## Test Results\n{tests.get('errors', []) or 'No test errors reported.'}\n\n"
         f"## Security\n{security.get('risk_flags', []) or 'No extra security flags reported.'}\n\n"
-        f"## Validation\n{validation.get('recommendation', 'Validation output unavailable.')}\n"
+        f"## Validation\n{validation.get('recommendation', 'Validation output unavailable.')}\n\n"
+        f"## Provenance\n"
+        f"These changes were created by the `{worker_project_label}` and should only exist after "
+        f"explicit repository modification approval.\n"
     )

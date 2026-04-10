@@ -235,6 +235,16 @@ HOST_SECRETS_DIR=/mnt/user/appdata/feberdin-agent-team/secrets
 GITHUB_TOKEN_FILE=/run/project-secrets/github_token
 ```
 
+## Repository-Allowlist und Änderungsfreigabe
+
+Das Dashboard enthält jetzt eine zentrale Allowlist für GitHub-Repositories.
+
+- Standard ist deny-by-default.
+- Worker dürfen nur Repositories ansehen, die im Webinterface unter `Einstellungen` explizit freigegeben wurden.
+- Änderungen an erlaubten Repositories benötigen zusätzlich eine ausdrückliche Bestätigung.
+- Ohne diese Bestätigung stoppt der Workflow vor dem Coding-Schritt und liefert zuerst Analyse- und Verbesserungsvorschläge.
+- Commits und PRs enthalten einen sichtbaren Herkunftshinweis auf das `Feberdin local-multi-agent-company worker project`.
+
 ## Logs und Debugging
 
 - Laufzeit-Logs liegen im Docker-Log-Stream.

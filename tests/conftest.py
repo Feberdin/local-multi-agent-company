@@ -13,6 +13,7 @@ import pytest
 
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import Base, configure_database, get_session_factory
+from services.shared.agentic_lab.policy_service import RepositoryPolicyService
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +33,8 @@ def isolated_runtime_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setenv("ORCHESTRATOR_DB_PATH", str(db_path))
 
     get_settings.cache_clear()
+    policy_service = RepositoryPolicyService(get_settings())
+    policy_service.save(["Feberdin/example-repo"])
     yield
     get_settings.cache_clear()
 

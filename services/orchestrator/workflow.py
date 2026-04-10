@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 
 from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
+from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, TaskDetail, TaskStatus, WorkerRequest
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.worker_client import WorkerCallError, call_worker
@@ -48,9 +49,15 @@ class WorkflowState(TypedDict, total=False):
 class WorkflowOrchestrator:
     """LangGraph wrapper that routes the Auftrag through the specialist worker team."""
 
-    def __init__(self, settings: Settings, task_service: TaskService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        task_service: TaskService,
+        policy_service: RepositoryPolicyService | None = None,
+    ) -> None:
         self.settings = settings
         self.task_service = task_service
+        self.policy_service = policy_service or RepositoryPolicyService(settings)
         self.logger = configure_logging(settings.service_name, settings.log_level)
         self.graph = self._build_graph().compile()
 
@@ -58,6 +65,17 @@ class WorkflowOrchestrator:
         """Load the latest persisted state and continue the workflow from the correct stage."""
 
         task = self.task_service.get_task(task_id)
+        try:
+            self.policy_service.assert_repository_allowed(task.repository)
+        except RepositoryPolicyError as exc:
+            failed = self.task_service.update_status(
+                task_id,
+                TaskStatus.FAILED,
+                message="Repository access policy blocked the task.",
+                details={"repository": task.repository, "error": str(exc)},
+                latest_error=str(exc),
+            )
+            return failed
         await self.graph.ainvoke(self._task_to_state(task))
         return self.task_service.get_task(task_id)
 
@@ -334,6 +352,14 @@ class WorkflowOrchestrator:
         )
 
     async def _coding_node(self, state: WorkflowState) -> WorkflowState:
+        if self._modification_approval_required(state):
+            task = self.task_service.set_approval_required(
+                state["task_id"],
+                reason=self._modification_approval_reason(state),
+                resume_target="coding",
+                gate_name="repository-modification",
+            )
+            return self._task_to_state(task)
         return await self._run_stage(
             state=state,
             worker_name="coding",
@@ -388,6 +414,7 @@ class WorkflowOrchestrator:
                 stage_state["task_id"],
                 reason=reason,
                 resume_target="github",
+                gate_name="risk-review",
             )
             return self._task_to_state(task)
         return stage_state
@@ -470,6 +497,18 @@ class WorkflowOrchestrator:
         review_requires = review_result.get("requires_human_approval", False)
         security_requires = security_result.get("requires_human_approval", False)
         return bool(state.get("risk_flags") or review_requires or security_requires)
+
+    def _modification_approval_required(self, state: WorkflowState) -> bool:
+        metadata = state.get("metadata", {})
+        return not metadata.get("allow_repository_modifications", False)
+
+    def _modification_approval_reason(self, state: WorkflowState) -> str:
+        metadata = state.get("metadata", {})
+        worker_project_label = metadata.get("worker_project_label", "Feberdin local-multi-agent-company worker project")
+        return (
+            f"Explizite Freigabe erforderlich: Das erlaubte Repository `{state['repository']}` darf erst geändert werden, "
+            f"wenn du bestätigst, dass das `{worker_project_label}` Änderungen vornehmen darf."
+        )
 
     def _approval_reason(self, state: WorkflowState) -> str:
         review_reason = state.get("worker_results", {}).get("reviewer", {}).get("approval_reason")

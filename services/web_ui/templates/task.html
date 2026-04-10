@@ -21,17 +21,23 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <span class="status status-{{ task.status|lower }}">{{ task.status }}</span>
       </section>
 
+      <section class="panel panel-note">
+        <h2>Repository-Freigabe</h2>
+        <p><strong>Änderungen erlaubt:</strong> {{ "Ja" if task.allow_repository_modifications else "Nein" }}</p>
+        <p class="muted">Änderungen werden sichtbar als Arbeit des <strong>{{ task.metadata.get("worker_project_label", "Feberdin local-multi-agent-company worker project") }}</strong> gekennzeichnet.</p>
+      </section>
+
       <section class="panel actions">
         <form method="post" action="/tasks/{{ task.id }}/run">
           <button type="submit">Workflow starten / fortsetzen</button>
         </form>
         {% if task.approval_required %}
         <form method="post" action="/tasks/{{ task.id }}/approve">
-          <input type="hidden" name="gate_name" value="risk-review">
+          <input type="hidden" name="gate_name" value="{{ task.current_approval_gate_name or 'risk-review' }}">
           <button type="submit">Freigeben</button>
         </form>
         <form method="post" action="/tasks/{{ task.id }}/reject">
-          <input type="hidden" name="gate_name" value="risk-review">
+          <input type="hidden" name="gate_name" value="{{ task.current_approval_gate_name or 'risk-review' }}">
           <input type="text" name="reason" placeholder="Ablehnungsgrund">
           <button type="submit" class="danger">Ablehnen</button>
         </form>
@@ -45,6 +51,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <article class="panel">
           <h2>Status</h2>
           <p><strong>Resume-Ziel:</strong> {{ task.resume_target or "keins" }}</p>
+          <p><strong>Approval-Gate:</strong> {{ task.current_approval_gate_name or "keins" }}</p>
           <p><strong>Freigabe nötig:</strong> {{ "Ja" if task.approval_required else "Nein" }}</p>
           <p><strong>Freigabegrund:</strong> {{ task.approval_reason or "keiner" }}</p>
           <p><strong>Letzter Fehler:</strong> {{ task.latest_error or "kein Fehler" }}</p>

@@ -20,6 +20,28 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
         <p class="lead">Neue Ziele erfassen, Fortschritt verfolgen und riskante Schritte bewusst freigeben.</p>
       </section>
 
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Einstellungen</h2>
+          <span class="muted">Project-only, deny by default</span>
+        </div>
+        <form method="post" action="/settings/repositories" class="stack">
+          <label>
+            Erlaubte GitHub-Repositories
+            <textarea name="allowed_repositories_text" rows="6" placeholder="feberdin/local-multi-agent-company&#10;feberdin/tesla-ha">{{ allowed_repositories_text }}</textarea>
+          </label>
+          <p class="muted">Ein Eintrag pro Zeile. Nur diese Repositories dürfen von Workern gelesen und analysiert werden.</p>
+          <button type="submit">Allowlist speichern</button>
+        </form>
+      </section>
+
       <section class="panel">
         <h2>Neue Aufgabe</h2>
         <form method="post" action="/tasks" class="stack">
@@ -35,6 +57,11 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
             Lokaler Workspace-Pfad
             <input type="text" name="local_repo_path" placeholder="/workspace/example-repo" required>
           </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="allow_repository_modifications" value="true">
+            <span>Ich bestätige ausdrücklich, dass dieses Worker-Projekt das erlaubte Repository ändern darf.</span>
+          </label>
+          <p class="muted">Ohne diese Bestätigung bleibt der Workflow vor dem Coding-Schritt stehen und liefert zunächst nur Analyse- und Verbesserungsvorschläge.</p>
           <button type="submit">Aufgabe anlegen</button>
         </form>
       </section>

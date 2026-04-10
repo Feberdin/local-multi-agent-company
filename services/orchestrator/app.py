@@ -17,9 +17,11 @@ from services.orchestrator.workflow import WorkflowOrchestrator
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import init_db
 from services.shared.agentic_lab.logging_utils import configure_logging
+from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.schemas import (
     ApprovalRequest,
     HealthResponse,
+    RepositoryAccessSettings,
     TaskCreateRequest,
     TaskDetail,
     TaskSummary,
@@ -29,7 +31,8 @@ from services.shared.agentic_lab.task_service import TaskService
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 task_service = TaskService()
-workflow = WorkflowOrchestrator(settings=settings, task_service=task_service)
+policy_service = RepositoryPolicyService(settings)
+workflow = WorkflowOrchestrator(settings=settings, task_service=task_service, policy_service=policy_service)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -63,6 +66,11 @@ async def get_task(task_id: str) -> TaskDetail:
 
 @app.post("/api/tasks", response_model=TaskSummary, status_code=201)
 async def create_task(request: TaskCreateRequest) -> TaskSummary:
+    try:
+        policy_service.assert_repository_allowed(request.repository)
+    except RepositoryPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     summary = task_service.create_task(request)
     return task_service.get_task(summary.id)
 
@@ -70,9 +78,14 @@ async def create_task(request: TaskCreateRequest) -> TaskSummary:
 @app.post("/api/tasks/{task_id}/run", response_model=TaskDetail)
 async def run_task(task_id: str) -> TaskDetail:
     try:
-        task_service.get_task(task_id)
+        task = task_service.get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        policy_service.assert_repository_allowed(task.repository)
+    except RepositoryPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     if task_id not in app.state.running_tasks:
         app.state.running_tasks.add(task_id)
@@ -91,6 +104,19 @@ async def record_approval(task_id: str, request: ApprovalRequest) -> TaskDetail:
         app.state.running_tasks.add(task_id)
         asyncio.create_task(_run_in_background(task_id))
     return updated
+
+
+@app.get("/api/settings/repository-access", response_model=RepositoryAccessSettings)
+async def get_repository_access_settings() -> RepositoryAccessSettings:
+    return policy_service.load()
+
+
+@app.put("/api/settings/repository-access", response_model=RepositoryAccessSettings)
+async def update_repository_access_settings(payload: RepositoryAccessSettings) -> RepositoryAccessSettings:
+    try:
+        return policy_service.save(payload.allowed_repositories)
+    except RepositoryPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 async def _run_in_background(task_id: str) -> None:
     """Execute the workflow and always release the in-memory run lock."""

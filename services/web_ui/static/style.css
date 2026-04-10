@@ -62,6 +62,16 @@ body {
   margin-bottom: 1.25rem;
 }
 
+.panel-alert {
+  border-color: #e7a79d;
+  background: #fff4f1;
+}
+
+.panel-note {
+  border-color: #e0c9b6;
+  background: #fff9f3;
+}
+
 .panel-header,
 .event-header,
 .actions {
@@ -87,6 +97,16 @@ label {
   display: grid;
   gap: 0.35rem;
   font-weight: 600;
+}
+
+.checkbox-row {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 0.75rem;
+}
+
+.checkbox-row input {
+  margin-top: 0.25rem;
 }
 
 input,

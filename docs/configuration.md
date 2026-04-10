@@ -80,3 +80,5 @@ WEB_SEARCH_API_KEY_FILE=/run/project-secrets/web_search_api_key
 - Externe Inhalte bleiben untrusted.
 - Keine Secrets im Repo.
 - Review- und Security-Risikoflags führen zu Freigabepunkten.
+- GitHub-Repositories müssen zusätzlich in der Dashboard-Allowlist explizit freigegeben werden.
+- Repository-Änderungen brauchen eine ausdrückliche Bestätigung, bevor der Coding-Worker schreibt.

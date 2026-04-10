@@ -70,6 +70,7 @@ class TaskCreateRequest(BaseModel):
     base_branch: str = "main"
     issue_number: int | None = None
     enable_web_research: bool = False
+    allow_repository_modifications: bool = False
     auto_deploy_staging: bool | None = None
     test_commands: list[str] = Field(default_factory=list)
     lint_commands: list[str] = Field(default_factory=list)
@@ -89,8 +90,10 @@ class TaskSummary(BaseModel):
     branch_name: str | None = None
     status: TaskStatus
     resume_target: str | None = None
+    current_approval_gate_name: str | None = None
     approval_required: bool = False
     approval_reason: str | None = None
+    allow_repository_modifications: bool = False
     pull_request_url: str | None = None
     latest_error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -130,6 +133,10 @@ class ApprovalRequest(BaseModel):
     decision: ApprovalDecision
     actor: str = "human-operator"
     reason: str | None = None
+
+
+class RepositoryAccessSettings(BaseModel):
+    allowed_repositories: list[str] = Field(default_factory=list)
 
 
 class WorkerRequest(BaseModel):

@@ -33,6 +33,8 @@ from services.shared.agentic_lab.schemas import (
     WorkerResponse,
 )
 
+WORKER_PROJECT_LABEL = "Feberdin local-multi-agent-company worker project"
+
 
 class TaskService:
     """Encapsulate all database writes so workflow code stays readable and consistent."""
@@ -69,6 +71,9 @@ class TaskService:
                     "repo_url": request.repo_url,
                     "issue_number": request.issue_number,
                     "enable_web_research": request.enable_web_research,
+                    "allow_repository_modifications": request.allow_repository_modifications,
+                    "current_approval_gate_name": None,
+                    "worker_project_label": WORKER_PROJECT_LABEL,
                     "auto_deploy_staging": (
                         request.auto_deploy_staging if request.auto_deploy_staging is not None else True
                     ),
@@ -219,7 +224,13 @@ class TaskService:
             session.refresh(record)
             return self.get_task(task_id)
 
-    def set_approval_required(self, task_id: str, reason: str, resume_target: str) -> TaskDetail:
+    def set_approval_required(
+        self,
+        task_id: str,
+        reason: str,
+        resume_target: str,
+        gate_name: str = "risk-review",
+    ) -> TaskDetail:
         """Pause the workflow until a human explicitly approves or rejects the gate."""
 
         with self.session() as session:
@@ -228,18 +239,21 @@ class TaskService:
             record.approval_required = True
             record.approval_reason = reason
             record.resume_target = resume_target
+            metadata = dict(record.metadata_json or {})
+            metadata["current_approval_gate_name"] = gate_name
+            record.metadata_json = metadata
             self._add_event(
                 session,
                 task_id,
                 TaskStatus.APPROVAL_REQUIRED.value,
                 "Human approval is required before the workflow can continue.",
-                {"reason": reason, "resume_target": resume_target},
+                {"reason": reason, "resume_target": resume_target, "gate_name": gate_name},
             )
             self._add_snapshot(
                 session,
                 task_id,
                 TaskStatus.APPROVAL_REQUIRED.value,
-                {"reason": reason, "resume_target": resume_target},
+                {"reason": reason, "resume_target": resume_target, "gate_name": gate_name},
             )
             session.commit()
             session.refresh(record)
@@ -262,10 +276,19 @@ class TaskService:
             if request.decision is ApprovalDecision.APPROVE:
                 record.approval_required = False
                 record.approval_reason = None
+                metadata = dict(record.metadata_json or {})
+                metadata["current_approval_gate_name"] = None
+                if request.gate_name == "repository-modification":
+                    metadata["allow_repository_modifications"] = True
+                    metadata["repository_modification_approved_by"] = request.actor
+                record.metadata_json = metadata
                 stage_message = f"Approval `{request.gate_name}` granted by {request.actor}."
             else:
                 record.status = TaskStatus.FAILED.value
                 record.latest_error = request.reason or "Human operator rejected the approval gate."
+                metadata = dict(record.metadata_json or {})
+                metadata["current_approval_gate_name"] = None
+                record.metadata_json = metadata
                 stage_message = f"Approval `{request.gate_name}` rejected by {request.actor}."
 
             self._add_event(
@@ -334,8 +357,10 @@ class TaskService:
             branch_name=record.branch_name,
             status=TaskStatus(record.status),
             resume_target=record.resume_target,
+            current_approval_gate_name=(record.metadata_json or {}).get("current_approval_gate_name"),
             approval_required=record.approval_required,
             approval_reason=record.approval_reason,
+            allow_repository_modifications=(record.metadata_json or {}).get("allow_repository_modifications", False),
             pull_request_url=record.pull_request_url,
             latest_error=record.latest_error,
             metadata=record.metadata_json or {},

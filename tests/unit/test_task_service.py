@@ -55,3 +55,31 @@ def test_task_service_tracks_approval_gates(isolated_session_factory) -> None:
     )
     assert approved.approval_required is False
     assert len(approved.approvals) == 1
+
+
+def test_task_service_marks_repository_modification_permission_after_approval(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Analyse the repository first and only change it after explicit approval.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+            allow_repository_modifications=False,
+        )
+    )
+
+    gated = service.set_approval_required(
+        summary.id,
+        "Explicit repository modification approval is required.",
+        "coding",
+        gate_name="repository-modification",
+    )
+    assert gated.current_approval_gate_name == "repository-modification"
+    assert gated.allow_repository_modifications is False
+
+    approved = service.record_approval(
+        summary.id,
+        ApprovalRequest(gate_name="repository-modification", decision=ApprovalDecision.APPROVE, actor="operator"),
+    )
+    assert approved.allow_repository_modifications is True
+    assert approved.current_approval_gate_name is None
