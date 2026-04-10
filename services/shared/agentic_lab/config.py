@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOGGER = logging.getLogger(__name__)
@@ -101,11 +101,27 @@ class Settings(BaseSettings):
         default="http://human-resources-worker:8106",
         alias="HUMAN_RESOURCES_WORKER_URL",
     )
-    worker_timeout_connect_seconds: float = Field(default=5.0, alias="WORKER_TIMEOUT_CONNECT_SECONDS")
-    worker_timeout_read_seconds: float = Field(default=240.0, alias="WORKER_TIMEOUT_READ_SECONDS")
-    worker_timeout_write_seconds: float = Field(default=20.0, alias="WORKER_TIMEOUT_WRITE_SECONDS")
-    worker_timeout_pool_seconds: float = Field(default=5.0, alias="WORKER_TIMEOUT_POOL_SECONDS")
+    worker_connect_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("WORKER_CONNECT_TIMEOUT_SECONDS", "WORKER_TIMEOUT_CONNECT_SECONDS"),
+    )
+    worker_stage_timeout_seconds: float = Field(
+        default=1800.0,
+        validation_alias=AliasChoices("WORKER_STAGE_TIMEOUT_SECONDS", "WORKER_TIMEOUT_READ_SECONDS"),
+    )
+    worker_write_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("WORKER_WRITE_TIMEOUT_SECONDS", "WORKER_TIMEOUT_WRITE_SECONDS"),
+    )
+    worker_pool_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("WORKER_POOL_TIMEOUT_SECONDS", "WORKER_TIMEOUT_POOL_SECONDS"),
+    )
     worker_retry_attempts: int = Field(default=3, alias="WORKER_RETRY_ATTEMPTS")
+    stage_heartbeat_interval_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("STAGE_HEARTBEAT_INTERVAL_SECONDS", "WORKER_HEARTBEAT_INTERVAL_SECONDS"),
+    )
 
     default_target_repo: str = Field(default="Feberdin/example-repo", alias="DEFAULT_TARGET_REPO")
     default_local_repo_path: str = Field(
@@ -121,11 +137,23 @@ class Settings(BaseSettings):
     default_model_api_key: str = Field(default="", alias="MODEL_API_KEY")
     default_model_api_key_file: Path | None = Field(default=None, alias="MODEL_API_KEY_FILE")
     default_model_provider: str = Field(default="mistral", alias="DEFAULT_MODEL_PROVIDER")
-    llm_timeout_connect_seconds: float = Field(default=5.0, alias="LLM_TIMEOUT_CONNECT_SECONDS")
-    llm_timeout_read_seconds: float = Field(default=60.0, alias="LLM_TIMEOUT_READ_SECONDS")
-    llm_timeout_write_seconds: float = Field(default=20.0, alias="LLM_TIMEOUT_WRITE_SECONDS")
-    llm_timeout_pool_seconds: float = Field(default=5.0, alias="LLM_TIMEOUT_POOL_SECONDS")
-    llm_request_deadline_seconds: float = Field(default=90.0, alias="LLM_REQUEST_DEADLINE_SECONDS")
+    llm_connect_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("LLM_CONNECT_TIMEOUT_SECONDS", "LLM_TIMEOUT_CONNECT_SECONDS"),
+    )
+    llm_read_timeout_seconds: float = Field(
+        default=1200.0,
+        validation_alias=AliasChoices("LLM_READ_TIMEOUT_SECONDS", "LLM_TIMEOUT_READ_SECONDS"),
+    )
+    llm_write_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("LLM_WRITE_TIMEOUT_SECONDS", "LLM_TIMEOUT_WRITE_SECONDS"),
+    )
+    llm_pool_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("LLM_POOL_TIMEOUT_SECONDS", "LLM_TIMEOUT_POOL_SECONDS"),
+    )
+    llm_request_deadline_seconds: float = Field(default=1500.0, alias="LLM_REQUEST_DEADLINE_SECONDS")
     mistral_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="MISTRAL_BASE_URL")
     qwen_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="QWEN_BASE_URL")
     mistral_model_name: str = Field(default="mistral-small3.2:latest", alias="MISTRAL_MODEL_NAME")
@@ -242,20 +270,20 @@ class Settings(BaseSettings):
         """Return the shared HTTP timeout profile for model backend calls."""
 
         return httpx.Timeout(
-            connect=self.llm_timeout_connect_seconds,
-            read=self.llm_timeout_read_seconds,
-            write=self.llm_timeout_write_seconds,
-            pool=self.llm_timeout_pool_seconds,
+            connect=self.llm_connect_timeout_seconds,
+            read=self.llm_read_timeout_seconds,
+            write=self.llm_write_timeout_seconds,
+            pool=self.llm_pool_timeout_seconds,
         )
 
     def worker_http_timeout(self) -> httpx.Timeout:
         """Return the shared HTTP timeout profile for orchestrator-to-worker calls."""
 
         return httpx.Timeout(
-            connect=self.worker_timeout_connect_seconds,
-            read=self.worker_timeout_read_seconds,
-            write=self.worker_timeout_write_seconds,
-            pool=self.worker_timeout_pool_seconds,
+            connect=self.worker_connect_timeout_seconds,
+            read=self.worker_stage_timeout_seconds,
+            write=self.worker_write_timeout_seconds,
+            pool=self.worker_pool_timeout_seconds,
         )
 
     def llm_timeout_summary(self, *, request_deadline_seconds: float | None = None) -> str:
@@ -263,10 +291,10 @@ class Settings(BaseSettings):
 
         deadline = request_deadline_seconds or self.llm_request_deadline_seconds
         return (
-            f"connect={self.llm_timeout_connect_seconds}s, "
-            f"read={self.llm_timeout_read_seconds}s, "
-            f"write={self.llm_timeout_write_seconds}s, "
-            f"pool={self.llm_timeout_pool_seconds}s, "
+            f"connect={self.llm_connect_timeout_seconds}s, "
+            f"read={self.llm_read_timeout_seconds}s, "
+            f"write={self.llm_write_timeout_seconds}s, "
+            f"pool={self.llm_pool_timeout_seconds}s, "
             f"deadline={deadline}s"
         )
 
@@ -274,10 +302,10 @@ class Settings(BaseSettings):
         """Return a compact timeout summary for worker transport diagnostics."""
 
         return (
-            f"connect={self.worker_timeout_connect_seconds}s, "
-            f"read={self.worker_timeout_read_seconds}s, "
-            f"write={self.worker_timeout_write_seconds}s, "
-            f"pool={self.worker_timeout_pool_seconds}s"
+            f"connect={self.worker_connect_timeout_seconds}s, "
+            f"stage_read={self.worker_stage_timeout_seconds}s, "
+            f"write={self.worker_write_timeout_seconds}s, "
+            f"pool={self.worker_pool_timeout_seconds}s"
         )
 
     @property

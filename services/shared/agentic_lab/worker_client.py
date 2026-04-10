@@ -35,6 +35,7 @@ async def call_worker(service_url: str, payload: WorkerRequest, attempts: int | 
             last_error = RuntimeError(
                 f"Worker at {service_url} timed out on attempt {attempt}/{total_attempts}. "
                 f"Configured worker transport timeouts: {settings.worker_timeout_summary()}. "
+                "This usually means the worker is still busy with a long model call or repository operation. "
                 f"Original error: {exc}"
             )
             if attempt == total_attempts:

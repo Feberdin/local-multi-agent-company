@@ -8,12 +8,15 @@ How to debug: If a task stops unexpectedly, compare the last persisted status, r
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
+from services.shared.agentic_lab.model_routing import resolve_worker_route
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, TaskDetail, TaskStatus, WorkerRequest
 from services.shared.agentic_lab.task_service import TaskService
@@ -45,6 +48,78 @@ class WorkflowState(TypedDict, total=False):
     deployment: DeploymentConfig | None
     pull_request_url: str | None
     latest_error: str | None
+
+
+WORKER_STAGE_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "requirements": {
+        "label": "Requirements",
+        "description": "Anforderungen, Annahmen, Risiken und Akzeptanzkriterien werden strukturiert.",
+    },
+    "cost": {
+        "label": "Ressourcenplanung",
+        "description": "Modell- und Ressourcenbedarf werden grob eingeschaetzt.",
+    },
+    "human_resources": {
+        "label": "Worker-Auswahl",
+        "description": "Spezialisierte Worker und ihr sinnvoller Einsatz werden geplant.",
+    },
+    "research": {
+        "label": "Recherche",
+        "description": "Repo-Kontext und bei Bedarf zulaessige Quellen werden ausgewertet.",
+    },
+    "architecture": {
+        "label": "Architektur",
+        "description": "Loesungsstruktur, Schnittstellen und Implementierungsrichtung werden vorbereitet.",
+    },
+    "data": {
+        "label": "Daten",
+        "description": "Datenlogik, Parsing oder Klassifikation werden vertieft betrachtet.",
+    },
+    "ux": {
+        "label": "UX",
+        "description": "Bedienfluss, UI-Risiken und Nutzerfuehrung werden bewertet.",
+    },
+    "coding": {
+        "label": "Coding",
+        "description": "Codeaenderungen werden vorbereitet oder umgesetzt.",
+    },
+    "reviewer": {
+        "label": "Review",
+        "description": "Korrektheit, Risiken und Wartbarkeit werden geprueft.",
+    },
+    "tester": {
+        "label": "Tests",
+        "description": "Tests, Linting und Typpruefung werden bewertet oder angestossen.",
+    },
+    "security": {
+        "label": "Security",
+        "description": "Sicherheits-, Secret- und Shell-Risiken werden untersucht.",
+    },
+    "validation": {
+        "label": "Validierung",
+        "description": "Das Ergebnis wird gegen Auftrag und Akzeptanzkriterien gespiegelt.",
+    },
+    "documentation": {
+        "label": "Dokumentation",
+        "description": "Verstaendliche Betriebs- und Uebergabedokumentation wird vorbereitet.",
+    },
+    "github": {
+        "label": "GitHub",
+        "description": "Commit, Push und Pull Request werden vorbereitet oder erstellt.",
+    },
+    "deploy": {
+        "label": "Staging Deploy",
+        "description": "Staging-Deployment und Rollout-Schritte laufen an.",
+    },
+    "qa": {
+        "label": "QA",
+        "description": "Smoke-Checks und Health-Pruefungen werden zusammengefasst.",
+    },
+    "memory": {
+        "label": "Memory",
+        "description": "Entscheidungen und Learnings werden dauerhaft festgehalten.",
+    },
+}
 
 
 class WorkflowOrchestrator:
@@ -298,6 +373,62 @@ class WorkflowOrchestrator:
         }
         return mapping[worker_name]
 
+    def _stage_metadata(self, worker_name: str) -> dict[str, str]:
+        """Return a short operator-facing label and description for the current worker stage."""
+
+        return WORKER_STAGE_DESCRIPTIONS.get(
+            worker_name,
+            {"label": worker_name.replace("_", " ").title(), "description": "Der Worker bearbeitet diese Stage."},
+        )
+
+    def _model_route_summary(self, worker_name: str) -> dict[str, Any]:
+        """Expose the currently resolved model route for debugging long local LLM calls."""
+
+        try:
+            provider, route = resolve_worker_route(self.settings, worker_name)
+        except Exception as exc:  # pragma: no cover - defensive only, route loading is tested separately.
+            return {"route_error": str(exc)}
+        return {
+            "provider": provider.name,
+            "model_name": provider.model_name,
+            "base_url": provider.base_url,
+            "request_timeout_seconds": route.request_timeout_seconds,
+            "reasoning": route.reasoning,
+        }
+
+    async def _stage_heartbeat(
+        self,
+        *,
+        task_id: str,
+        worker_name: str,
+        stage_status: TaskStatus,
+        service_url: str,
+        started_at: float,
+    ) -> None:
+        """Persist periodic progress events so the UI shows that a slow stage is still alive."""
+
+        interval = max(5.0, self.settings.stage_heartbeat_interval_seconds)
+        stage_meta = self._stage_metadata(worker_name)
+        while True:
+            await asyncio.sleep(interval)
+            elapsed_seconds = round(asyncio.get_running_loop().time() - started_at, 1)
+            self.task_service.append_event(
+                task_id,
+                stage=stage_status.value,
+                message=(
+                    f"{stage_meta['label']} laeuft weiter. "
+                    "Der Worker wartet moeglicherweise noch auf lokale Modellinferenz oder einen laengeren Verarbeitungsschritt."
+                ),
+                details={
+                    "worker_name": worker_name,
+                    "service_url": service_url,
+                    "stage_label": stage_meta["label"],
+                    "stage_description": stage_meta["description"],
+                    "elapsed_seconds": elapsed_seconds,
+                    "heartbeat": True,
+                },
+            )
+
     async def _requirements_node(self, state: WorkflowState) -> WorkflowState:
         return await self._run_stage(
             state=state,
@@ -530,28 +661,92 @@ class WorkflowOrchestrator:
 
         task_id = state["task_id"]
         logger = TaskLoggerAdapter(self.logger.logger, {"service": self.settings.service_name, "task_id": task_id})
+        stage_meta = self._stage_metadata(worker_name)
+        route_summary = self._model_route_summary(worker_name)
         self.task_service.update_status(
             task_id,
             stage_status,
-            message=f"{worker_name} stage started.",
-            details={"service_url": service_url},
+            message=f"{stage_meta['label']} gestartet.",
+            details={
+                "worker_name": worker_name,
+                "service_url": service_url,
+                "stage_label": stage_meta["label"],
+                "stage_description": stage_meta["description"],
+                "model_route": route_summary,
+            },
+        )
+        self.task_service.append_event(
+            task_id,
+            stage=stage_status.value,
+            message=(
+                f"Worker-Anfrage fuer {stage_meta['label']} wurde versendet. "
+                "Auf langsamer lokaler Hardware kann die naechste Antwort mehrere Minuten brauchen."
+            ),
+            details={
+                "worker_name": worker_name,
+                "service_url": service_url,
+                "stage_label": stage_meta["label"],
+                "stage_description": stage_meta["description"],
+                "model_route": route_summary,
+                "worker_timeout_summary": self.settings.worker_timeout_summary(),
+            },
         )
         logger.info("Starting %s stage against %s", worker_name, service_url)
 
         worker_request = self._build_worker_request(state, worker_name)
+        stage_started_at = asyncio.get_running_loop().time()
+        heartbeat_task = asyncio.create_task(
+            self._stage_heartbeat(
+                task_id=task_id,
+                worker_name=worker_name,
+                stage_status=stage_status,
+                service_url=service_url,
+                started_at=stage_started_at,
+            )
+        )
 
         try:
-            response = await call_worker(service_url, worker_request)
+            async with asyncio.timeout(self.settings.worker_stage_timeout_seconds):
+                response = await call_worker(service_url, worker_request)
+        except TimeoutError as exc:
+            logger.error("%s stage exceeded the configured stage timeout: %s", worker_name, exc)
+            failed_task = self.task_service.update_status(
+                task_id,
+                TaskStatus.FAILED,
+                message=f"{stage_meta['label']} hat das konfigurierte Stage-Zeitbudget ueberschritten.",
+                details={
+                    "worker_name": worker_name,
+                    "service_url": service_url,
+                    "stage_label": stage_meta["label"],
+                    "stage_description": stage_meta["description"],
+                    "worker_stage_timeout_seconds": self.settings.worker_stage_timeout_seconds,
+                    "worker_timeout_summary": self.settings.worker_timeout_summary(),
+                },
+                latest_error=(
+                    f"{stage_meta['label']} lief laenger als {self.settings.worker_stage_timeout_seconds}s. "
+                    "Erhoehe WORKER_STAGE_TIMEOUT_SECONDS fuer sehr langsame lokale Hardware."
+                ),
+            )
+            return self._task_to_state(failed_task)
         except WorkerCallError as exc:
             logger.error("%s stage failed: %s", worker_name, exc)
             failed_task = self.task_service.update_status(
                 task_id,
                 TaskStatus.FAILED,
-                message=f"{worker_name} stage failed.",
-                details={"error": str(exc)},
+                message=f"{stage_meta['label']} ist fehlgeschlagen.",
+                details={
+                    "worker_name": worker_name,
+                    "stage_label": stage_meta["label"],
+                    "stage_description": stage_meta["description"],
+                    "error": str(exc),
+                },
                 latest_error=str(exc),
             )
             return self._task_to_state(failed_task)
+        finally:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
 
         annotated_response = self.worker_governance_service.annotate_worker_response(
             worker_name,
@@ -564,9 +759,24 @@ class WorkflowOrchestrator:
             response=annotated_response,
         )
         self.task_service.store_worker_result(task_id, worker_name, annotated_response)
-        logger.info("%s stage completed successfully", worker_name)
+        elapsed_seconds = round(asyncio.get_running_loop().time() - stage_started_at, 1)
 
         if not annotated_response.success:
+            self.task_service.append_event(
+                task_id,
+                stage=stage_status.value,
+                message=f"{stage_meta['label']} meldete einen Fehlerzustand.",
+                details={
+                    "worker_name": worker_name,
+                    "stage_label": stage_meta["label"],
+                    "stage_description": stage_meta["description"],
+                    "elapsed_seconds": elapsed_seconds,
+                    "success": annotated_response.success,
+                    "warnings": annotated_response.warnings,
+                    "errors": annotated_response.errors,
+                },
+                level="WARNING",
+            )
             error_text = "; ".join(annotated_response.errors) or f"{worker_name} reported failure."
             failed_task = self.task_service.update_status(
                 task_id,
@@ -576,6 +786,22 @@ class WorkflowOrchestrator:
                 latest_error=error_text,
             )
             return self._task_to_state(failed_task)
+
+        self.task_service.append_event(
+            task_id,
+            stage=stage_status.value,
+            message=f"{stage_meta['label']} abgeschlossen.",
+            details={
+                "worker_name": worker_name,
+                "stage_label": stage_meta["label"],
+                "stage_description": stage_meta["description"],
+                "elapsed_seconds": elapsed_seconds,
+                "success": annotated_response.success,
+                "warnings": annotated_response.warnings,
+                "errors": annotated_response.errors,
+            },
+        )
+        logger.info("%s stage completed successfully", worker_name)
 
         return self._task_to_state(self.task_service.get_task(task_id))
 

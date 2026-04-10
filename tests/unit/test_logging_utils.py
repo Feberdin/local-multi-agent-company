@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from services.shared.agentic_lab.logging_utils import LoggingContextDefaultsFilter, configure_logging
+from services.shared.agentic_lab.logging_utils import ContextAwareFormatter, LoggingContextDefaultsFilter, configure_logging
 
 
 def test_configure_logging_backfills_service_and_task_for_foreign_loggers() -> None:
@@ -28,3 +28,22 @@ def test_configure_logging_backfills_service_and_task_for_foreign_loggers() -> N
 
     assert record.service == "httpx"
     assert record.task_id == "-"
+
+
+def test_context_aware_formatter_handles_foreign_logger_without_extra_fields() -> None:
+    formatter = ContextAwareFormatter("%(levelname)s [service=%(service)s task=%(task_id)s] %(message)s")
+    record = logging.LogRecord(
+        "httpcore",
+        logging.WARNING,
+        __file__,
+        99,
+        "plain foreign logger message",
+        (),
+        None,
+    )
+
+    formatted = formatter.format(record)
+
+    assert "service=httpcore" in formatted
+    assert "task=-" in formatted
+    assert "plain foreign logger message" in formatted

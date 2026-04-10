@@ -41,7 +41,7 @@ def test_load_model_routing_applies_worker_override(tmp_path: Path, monkeypatch)
     assert route.temperature == 0.3
     assert route.max_tokens == 777
     assert route.budget_tokens == 3333
-    assert route.request_timeout_seconds == 45.0
+    assert route.request_timeout_seconds == 1200.0
     assert route.reasoning == "medium"
 
 
@@ -65,7 +65,7 @@ def test_resolve_worker_route_prefers_mistral_for_requirements_and_reviewer(monk
 
     assert requirements_provider.name == "mistral"
     assert requirements_route.fallback_provider is None
-    assert requirements_route.request_timeout_seconds == 45.0
+    assert requirements_route.request_timeout_seconds == 1200.0
     assert reviewer_provider.name == "mistral"
     assert reviewer_route.fallback_provider is None
-    assert reviewer_route.request_timeout_seconds == 60.0
+    assert reviewer_route.request_timeout_seconds == 1200.0

@@ -89,3 +89,21 @@ def test_settings_ignore_permission_error_while_reading_secret(
 
     assert settings.github_token == ""
     assert "not readable" in caplog.text
+
+
+def test_settings_load_slow_runtime_timeout_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_CONNECT_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("LLM_READ_TIMEOUT_SECONDS", "1500")
+    monkeypatch.setenv("LLM_WRITE_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("LLM_POOL_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("WORKER_STAGE_TIMEOUT_SECONDS", "1800")
+    monkeypatch.setenv("STAGE_HEARTBEAT_INTERVAL_SECONDS", "25")
+
+    settings = Settings()
+
+    assert settings.llm_connect_timeout_seconds == 30
+    assert settings.llm_read_timeout_seconds == 1500
+    assert settings.llm_write_timeout_seconds == 60
+    assert settings.llm_pool_timeout_seconds == 60
+    assert settings.worker_stage_timeout_seconds == 1800
+    assert settings.stage_heartbeat_interval_seconds == 25

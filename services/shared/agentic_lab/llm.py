@@ -33,6 +33,17 @@ class LLMClient:
     ) -> None:
         self.settings = settings
         self.transport = transport
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Reuse one async HTTP client per worker process to avoid needless reconnect churn on slow hosts."""
+
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=self.settings.llm_http_timeout(),
+                transport=self.transport,
+            )
+        return self._client
 
     async def complete(
         self,
@@ -70,45 +81,46 @@ class LLMClient:
             }
             request_url = f"{base_url.rstrip('/')}/chat/completions"
             timeout_summary = self.settings.llm_timeout_summary(request_deadline_seconds=route.request_timeout_seconds)
-            async with httpx.AsyncClient(timeout=self.settings.llm_http_timeout(), transport=self.transport) as client:
-                try:
-                    async with asyncio.timeout(route.request_timeout_seconds):
-                        response = await client.post(
-                            request_url,
-                            headers=headers,
-                            json=payload,
-                        )
-                    response.raise_for_status()
-                    return response.json()
-                except TimeoutError as exc:
-                    raise LLMError(
-                        "LLM request exceeded the stage deadline for "
-                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
-                        f"Configured timeouts: {timeout_summary}."
-                    ) from exc
-                except httpx.TimeoutException as exc:
-                    raise LLMError(
-                        "LLM request timed out for "
-                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
-                        f"Configured timeouts: {timeout_summary}. Transport error: {exc}."
-                    ) from exc
-                except httpx.HTTPStatusError as exc:
-                    response_snippet = exc.response.text[:300].strip()
-                    raise LLMError(
-                        "LLM backend returned an HTTP error for "
-                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: "
-                        f"{exc.response.status_code} {response_snippet}"
-                    ) from exc
-                except httpx.HTTPError as exc:
-                    raise LLMError(
-                        "LLM transport failed for "
-                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
-                    ) from exc
-                except ValueError as exc:
-                    raise LLMError(
-                        "LLM backend returned invalid JSON for "
-                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
-                    ) from exc
+            client = self._get_client()
+            try:
+                async with asyncio.timeout(route.request_timeout_seconds):
+                    response = await client.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    )
+                response.raise_for_status()
+                return response.json()
+            except TimeoutError as exc:
+                raise LLMError(
+                    "LLM request exceeded the worker-stage deadline for "
+                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
+                    f"Configured timeouts: {timeout_summary}. "
+                    "On slow local hardware this usually means the model is still inferencing longer than the configured stage budget."
+                ) from exc
+            except httpx.TimeoutException as exc:
+                raise LLMError(
+                    "LLM transport timed out for "
+                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
+                    f"Configured timeouts: {timeout_summary}. Transport error: {exc}."
+                ) from exc
+            except httpx.HTTPStatusError as exc:
+                response_snippet = exc.response.text[:300].strip()
+                raise LLMError(
+                    "LLM backend returned an HTTP error for "
+                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: "
+                    f"{exc.response.status_code} {response_snippet}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise LLMError(
+                    "LLM transport failed for "
+                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
+                ) from exc
+            except ValueError as exc:
+                raise LLMError(
+                    "LLM backend returned invalid JSON for "
+                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
+                ) from exc
 
         errors: list[str] = []
         try:

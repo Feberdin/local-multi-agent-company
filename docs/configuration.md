@@ -16,16 +16,17 @@
 - `MODEL_API_KEY_FILE`
 - `MISTRAL_API_KEY_FILE`
 - `QWEN_API_KEY_FILE`
-- `LLM_TIMEOUT_CONNECT_SECONDS`
-- `LLM_TIMEOUT_READ_SECONDS`
-- `LLM_TIMEOUT_WRITE_SECONDS`
-- `LLM_TIMEOUT_POOL_SECONDS`
+- `LLM_CONNECT_TIMEOUT_SECONDS`
+- `LLM_READ_TIMEOUT_SECONDS`
+- `LLM_WRITE_TIMEOUT_SECONDS`
+- `LLM_POOL_TIMEOUT_SECONDS`
 - `LLM_REQUEST_DEADLINE_SECONDS`
-- `WORKER_TIMEOUT_CONNECT_SECONDS`
-- `WORKER_TIMEOUT_READ_SECONDS`
-- `WORKER_TIMEOUT_WRITE_SECONDS`
-- `WORKER_TIMEOUT_POOL_SECONDS`
+- `WORKER_CONNECT_TIMEOUT_SECONDS`
+- `WORKER_STAGE_TIMEOUT_SECONDS`
+- `WORKER_WRITE_TIMEOUT_SECONDS`
+- `WORKER_POOL_TIMEOUT_SECONDS`
 - `WORKER_RETRY_ATTEMPTS`
+- `STAGE_HEARTBEAT_INTERVAL_SECONDS`
 - `WEB_SEARCH_API_KEY_FILE`
 - `BRAVE_SEARCH_API_KEY`
 - `BRAVE_SEARCH_API_KEY_FILE`
@@ -39,13 +40,19 @@ Wichtige Defaults:
 - `ORCHESTRATOR_PORT=18080`
 - `WEB_UI_PORT=18088`
 - `DEFAULT_MODEL_PROVIDER=mistral`
-- `LLM_TIMEOUT_READ_SECONDS=60`
-- `LLM_REQUEST_DEADLINE_SECONDS=90`
-- `WORKER_TIMEOUT_READ_SECONDS=240`
+- `LLM_READ_TIMEOUT_SECONDS=1200`
+- `LLM_REQUEST_DEADLINE_SECONDS=1500`
+- `WORKER_STAGE_TIMEOUT_SECONDS=1800`
+- `STAGE_HEARTBEAT_INTERVAL_SECONDS=30`
 
 Regel:
 
 - Jeder Schlüssel darf in `.env` nur einmal vorkommen. Doppelte Einträge werden vom Runtime-Doctor und von den Services als Fehler behandelt.
+
+Hinweis zur Rueckwaertskompatibilitaet:
+
+- Die frueheren Variablennamen wie `LLM_TIMEOUT_READ_SECONDS` und `WORKER_TIMEOUT_READ_SECONDS` werden weiterhin akzeptiert.
+- Fuer neue Setups sollten nur noch die neuen Namen aus dieser Datei verwendet werden, damit die Konfiguration leichter lesbar bleibt.
 
 ## Empfohlener lokaler Secret-Store
 
@@ -150,10 +157,19 @@ Empfohlene Standardverteilung:
 
 Timeout-Hinweise:
 
-- `LLM_TIMEOUT_*` steuern die HTTP-Transportgrenzen zum OpenAI-kompatiblen Endpoint
+- `LLM_*_TIMEOUT_SECONDS` steuern die HTTP-Transportgrenzen zum OpenAI-kompatiblen Endpoint
 - `LLM_REQUEST_DEADLINE_SECONDS` begrenzt jeden einzelnen Modellaufruf zusaetzlich pro Stage
 - `request_timeout_seconds` im Routing kann pro Worker enger oder grosszuegiger gesetzt werden
-- `WORKER_TIMEOUT_*` steuern, wie lange der Orchestrator auf einen Worker warten darf
+- `WORKER_STAGE_TIMEOUT_SECONDS` begrenzt die gesamte Wartezeit des Orchestrators auf eine Worker-Stage
+- `WORKER_*_TIMEOUT_SECONDS` fuer Connect/Write/Pool steuern den HTTP-Transport zum Worker
+- `STAGE_HEARTBEAT_INTERVAL_SECONDS` bestimmt, wie oft laufende Stages sichtbare Heartbeat-Events in den Task schreiben
+
+Empfehlung fuer langsame lokale Hardware:
+
+- starte mit `DEFAULT_MODEL_PROVIDER=mistral`
+- lasse `requirements`, `reviewer`, `documentation` und `qa` auf `mistral-small3.2:latest`
+- nutze `qwen3.5:35b-a3b` nur fuer die schwereren Stufen oder nach bewusstem Override
+- erhoehe zuerst `LLM_READ_TIMEOUT_SECONDS`, `LLM_REQUEST_DEADLINE_SECONDS` und `WORKER_STAGE_TIMEOUT_SECONDS`, bevor du instabile Workarounds suchst
 
 ## GitHub
 

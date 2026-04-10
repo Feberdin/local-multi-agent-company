@@ -47,6 +47,17 @@ class LoggingContextDefaultsFilter(logging.Filter):
         return True
 
 
+class ContextAwareFormatter(logging.Formatter):
+    """Format log records safely even when third-party libraries do not provide our extra fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "service"):
+            record.service = record.name
+        if not hasattr(record, "task_id"):
+            record.task_id = _DEFAULT_TASK_ID
+        return super().format(record)
+
+
 class TaskLoggerAdapter(LoggerAdapter):
     """Attach service and task context to every log line without repeating boilerplate."""
 
@@ -71,7 +82,7 @@ def configure_logging(service_name: str, log_level: str = "INFO") -> TaskLoggerA
         if not any(isinstance(item, SensitiveDataFilter) for item in handler.filters):
             handler.addFilter(SensitiveDataFilter())
         handler.setFormatter(
-            logging.Formatter(
+            ContextAwareFormatter(
                 fmt="%(asctime)s %(levelname)s [service=%(service)s task=%(task_id)s] %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )

@@ -193,9 +193,56 @@ button.danger {
   gap: 0.75rem;
 }
 
+.stage-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.stage-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.95rem 1rem;
+  background: white;
+}
+
+.stage-card-running {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(177, 79, 39, 0.18);
+}
+
+.stage-card-complete {
+  border-color: #b7d7bf;
+  background: #f5fbf6;
+}
+
+.stage-card-failed,
+.stage-card-blocked {
+  border-color: #e7a79d;
+  background: #fff4f1;
+}
+
+.stage-card-skipped {
+  background: #f6f3ee;
+}
+
 .event {
   border-left: 4px solid var(--accent-soft);
   padding-left: 1rem;
+}
+
+.event-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.event-warning {
+  border-left-color: #e8be68;
+}
+
+.event-error {
+  border-left-color: var(--danger);
 }
 
 .status {
@@ -214,10 +261,34 @@ button.danger {
   color: var(--danger);
 }
 
+.status-running,
+.status-info {
+  background: #f3dfc8;
+  color: #8a431f;
+}
+
 .status-done,
-.status-staging_deployed {
+.status-staging_deployed,
+.status-complete {
   background: #d6ead8;
   color: #245232;
+}
+
+.status-waiting,
+.status-skipped {
+  background: #e7ece9;
+  color: #44504c;
+}
+
+.status-blocked,
+.status-warning {
+  background: #f6ead0;
+  color: #7c5a16;
+}
+
+.status-error {
+  background: #f6d0cb;
+  color: var(--danger);
 }
 
 .table-wrapper {

@@ -83,3 +83,26 @@ def test_task_service_marks_repository_modification_permission_after_approval(is
     )
     assert approved.allow_repository_modifications is True
     assert approved.current_approval_gate_name is None
+
+
+def test_task_service_append_event_keeps_long_running_stage_visible(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Run a slow local requirements extraction and keep the UI informed with heartbeat events.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+
+    before = service.get_task(summary.id)
+    updated = service.append_event(
+        summary.id,
+        stage="REQUIREMENTS",
+        message="Requirements stage still running.",
+        details={"worker_name": "requirements", "heartbeat": True},
+    )
+
+    assert updated.events[-1].message == "Requirements stage still running."
+    assert updated.events[-1].details["heartbeat"] is True
+    assert updated.updated_at >= before.updated_at

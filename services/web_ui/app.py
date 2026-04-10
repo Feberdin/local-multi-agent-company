@@ -8,6 +8,7 @@ How to debug: If a form stops working, inspect the orchestrator base URL, the ca
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.logging_utils import configure_logging
-from services.shared.agentic_lab.schemas import HealthResponse
+from services.shared.agentic_lab.schemas import HealthResponse, TaskStatus
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
@@ -31,6 +32,130 @@ app = FastAPI(title="Feberdin Agent Team Dashboard", version="0.1.0")
 WEB_UI_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(WEB_UI_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(WEB_UI_DIR / "templates"))
+
+WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
+    {
+        "worker_name": "requirements",
+        "label": "Requirements",
+        "description": "Auftrag, Annahmen und Akzeptanzkriterien werden strukturiert.",
+    },
+    {
+        "worker_name": "cost",
+        "label": "Ressourcenplanung",
+        "description": "Modell- und Ressourcenbedarf werden eingeschätzt.",
+    },
+    {
+        "worker_name": "human_resources",
+        "label": "Worker-Auswahl",
+        "description": "Empfohlene Spezialisten und ihr Einsatz werden festgelegt.",
+    },
+    {
+        "worker_name": "research",
+        "label": "Recherche",
+        "description": "Repository und erlaubte Quellen werden ausgewertet.",
+    },
+    {
+        "worker_name": "architecture",
+        "label": "Architektur",
+        "description": "Struktur, Schnittstellen und Umsetzungsschritte werden vorbereitet.",
+    },
+    {
+        "worker_name": "data",
+        "label": "Daten",
+        "description": "Datenlogik oder Parsing werden vertieft betrachtet, falls noetig.",
+    },
+    {
+        "worker_name": "ux",
+        "label": "UX",
+        "description": "Nutzerfuehrung und Bedienfluss werden bei UI-Themen geprueft.",
+    },
+    {
+        "worker_name": "coding",
+        "label": "Coding",
+        "description": "Codeaenderungen werden vorbereitet oder umgesetzt.",
+    },
+    {
+        "worker_name": "reviewer",
+        "label": "Review",
+        "description": "Korrektheit, Risiken und Wartbarkeit werden geprueft.",
+    },
+    {
+        "worker_name": "tester",
+        "label": "Tests",
+        "description": "Tests, Linting und Typpruefungen werden bewertet oder ausgefuehrt.",
+    },
+    {
+        "worker_name": "security",
+        "label": "Security",
+        "description": "Sicherheits- und Secret-Risiken werden ueberprueft.",
+    },
+    {
+        "worker_name": "validation",
+        "label": "Validierung",
+        "description": "Ergebnis und Auftrag werden gegenprueft.",
+    },
+    {
+        "worker_name": "documentation",
+        "label": "Dokumentation",
+        "description": "Betriebs- und Handover-Hinweise werden verdichtet.",
+    },
+    {
+        "worker_name": "github",
+        "label": "GitHub",
+        "description": "Commit, Push und Pull Request werden vorbereitet oder erstellt.",
+    },
+    {
+        "worker_name": "deploy",
+        "label": "Staging Deploy",
+        "description": "Der Staging-Rollout wird ausgefuehrt, falls aktiviert.",
+    },
+    {
+        "worker_name": "qa",
+        "label": "QA",
+        "description": "Smoke-Checks und Abnahmehinweise werden gesammelt.",
+    },
+    {
+        "worker_name": "memory",
+        "label": "Memory",
+        "description": "Entscheidungen und Learnings werden dauerhaft gespeichert.",
+    },
+)
+WORKER_SEQUENCE_INDEX = {item["worker_name"]: index for index, item in enumerate(WORKER_SEQUENCE)}
+WORKER_LABELS = {item["worker_name"]: item["label"] for item in WORKER_SEQUENCE}
+WORKER_DESCRIPTIONS = {item["worker_name"]: item["description"] for item in WORKER_SEQUENCE}
+STATUS_TO_WORKER_HINT = {
+    TaskStatus.REQUIREMENTS.value: "requirements",
+    TaskStatus.RESOURCE_PLANNING.value: "human_resources",
+    TaskStatus.RESEARCHING.value: "research",
+    TaskStatus.ARCHITECTING.value: "architecture",
+    TaskStatus.CODING.value: "coding",
+    TaskStatus.REVIEWING.value: "reviewer",
+    TaskStatus.TESTING.value: "tester",
+    TaskStatus.SECURITY_REVIEW.value: "security",
+    TaskStatus.VALIDATING.value: "validation",
+    TaskStatus.DOCUMENTING.value: "documentation",
+    TaskStatus.PR_CREATED.value: "github",
+    TaskStatus.STAGING_DEPLOYED.value: "deploy",
+    TaskStatus.QA_PENDING.value: "qa",
+    TaskStatus.MEMORY_UPDATING.value: "memory",
+}
+ACTIVE_TASK_STATUSES = {
+    TaskStatus.REQUIREMENTS.value,
+    TaskStatus.RESOURCE_PLANNING.value,
+    TaskStatus.RESEARCHING.value,
+    TaskStatus.ARCHITECTING.value,
+    TaskStatus.CODING.value,
+    TaskStatus.REVIEWING.value,
+    TaskStatus.TESTING.value,
+    TaskStatus.SECURITY_REVIEW.value,
+    TaskStatus.VALIDATING.value,
+    TaskStatus.DOCUMENTING.value,
+    TaskStatus.PR_CREATED.value,
+    TaskStatus.STAGING_DEPLOYED.value,
+    TaskStatus.QA_PENDING.value,
+    TaskStatus.MEMORY_UPDATING.value,
+}
+AUTO_REFRESH_SECONDS = 15
 
 
 def _orchestrator_timeout() -> httpx.Timeout:
@@ -67,6 +192,187 @@ def _response_json(response: httpx.Response, default_value: Any) -> Any:
         return response.json()
     except ValueError:
         return default_value
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse ISO timestamps from API responses without crashing the UI on malformed values."""
+
+    if isinstance(value, datetime):
+        return value
+    if value in {None, ""}:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_timestamp(value: Any) -> str:
+    """Render timestamps consistently so long-running stages remain readable at a glance."""
+
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return str(value or "unbekannt")
+    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _format_duration(seconds: float | int | None) -> str:
+    """Render elapsed seconds in a compact operator-friendly format."""
+
+    if seconds is None:
+        return "unbekannt"
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _current_worker_name(task: dict[str, Any]) -> str | None:
+    """Infer the active worker from the newest event first, then fall back to the coarse task status."""
+
+    for event in reversed(task.get("events", [])):
+        details = event.get("details") or {}
+        worker_name = details.get("worker_name")
+        if worker_name:
+            return str(worker_name)
+    if task.get("status") == TaskStatus.APPROVAL_REQUIRED.value and task.get("resume_target"):
+        return str(task["resume_target"])
+    return STATUS_TO_WORKER_HINT.get(str(task.get("status")))
+
+
+def _find_last_worker_event(task: dict[str, Any], worker_name: str | None) -> dict[str, Any] | None:
+    """Return the most recent event for a worker so the UI can show the last visible activity."""
+
+    if not worker_name:
+        return None
+    for event in reversed(task.get("events", [])):
+        details = event.get("details") or {}
+        if details.get("worker_name") == worker_name:
+            return event
+    return None
+
+
+def _running_since(task: dict[str, Any], worker_name: str | None) -> datetime | None:
+    """Estimate when the current worker became active by scanning the newest contiguous event block."""
+
+    if not worker_name:
+        return None
+    started_at: datetime | None = None
+    seen_current_worker = False
+    for event in reversed(task.get("events", [])):
+        details = event.get("details") or {}
+        event_worker = details.get("worker_name")
+        if event_worker == worker_name:
+            seen_current_worker = True
+            parsed = _parse_timestamp(event.get("created_at"))
+            if parsed is not None:
+                started_at = parsed
+            continue
+        if seen_current_worker:
+            break
+    return started_at
+
+
+def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build a deterministic per-worker timeline so slow stages remain readable and explainable."""
+
+    current_worker = _current_worker_name(task)
+    task_status = str(task.get("status", TaskStatus.NEW.value))
+    completed_workers = set(task.get("worker_results", {}).keys())
+    completed_indices = [WORKER_SEQUENCE_INDEX[name] for name in completed_workers if name in WORKER_SEQUENCE_INDEX]
+    last_completed_index = max(completed_indices) if completed_indices else -1
+    timeline: list[dict[str, Any]] = []
+
+    for step in WORKER_SEQUENCE:
+        worker_name = step["worker_name"]
+        latest_event = _find_last_worker_event(task, worker_name)
+        state = "waiting"
+        if worker_name in completed_workers:
+            state = "complete"
+        elif task_status == TaskStatus.FAILED.value and worker_name == current_worker:
+            state = "failed"
+        elif task_status == TaskStatus.APPROVAL_REQUIRED.value and worker_name == current_worker:
+            state = "blocked"
+        elif task_status in ACTIVE_TASK_STATUSES and worker_name == current_worker:
+            state = "running"
+        elif last_completed_index > WORKER_SEQUENCE_INDEX[worker_name]:
+            state = "skipped"
+
+        timeline.append(
+            {
+                **step,
+                "state": state,
+                "last_event_at_display": _format_timestamp(latest_event.get("created_at")) if latest_event else "noch keine Aktivitaet",
+                "last_event_message": latest_event.get("message") if latest_event else "Noch kein Ereignis fuer diesen Schritt vorhanden.",
+            }
+        )
+    return timeline
+
+
+def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prepare event timestamps and badges for the template without mutating the API contract."""
+
+    decorated: list[dict[str, Any]] = []
+    for event in task.get("events", []):
+        details = event.get("details") or {}
+        decorated.append(
+            {
+                **event,
+                "created_at_display": _format_timestamp(event.get("created_at")),
+                "level_lower": str(event.get("level", "info")).lower(),
+                "worker_label": WORKER_LABELS.get(str(details.get("worker_name")), str(details.get("worker_name", ""))),
+                "is_heartbeat": bool(details.get("heartbeat")),
+            }
+        )
+    return decorated
+
+
+def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Enrich a raw task payload with operator-focused progress details for the dashboard and detail page."""
+
+    decorated = dict(task)
+    current_worker = _current_worker_name(decorated)
+    last_event = decorated.get("events", [])[-1] if decorated.get("events") else None
+    running_since = _running_since(decorated, current_worker)
+    if running_since is not None:
+        running_for_seconds = round((datetime.now(UTC) - running_since).total_seconds(), 1)
+    else:
+        running_for_seconds = None
+
+    decorated["events"] = _decorate_events(decorated)
+    decorated["worker_timeline"] = _build_worker_timeline(decorated)
+    decorated["status_lower"] = str(decorated.get("status", "")).lower()
+    decorated["created_at_display"] = _format_timestamp(decorated.get("created_at"))
+    decorated["updated_at_display"] = _format_timestamp(decorated.get("updated_at"))
+    decorated["last_activity_at_display"] = (
+        _format_timestamp(last_event.get("created_at")) if last_event else decorated["updated_at_display"]
+    )
+    decorated["current_worker_name"] = current_worker
+    decorated["current_stage_label"] = WORKER_LABELS.get(current_worker or "", "Wartet auf den naechsten Schritt")
+    decorated["current_stage_description"] = WORKER_DESCRIPTIONS.get(
+        current_worker or "",
+        "Der Workflow wartet auf den naechsten sinnvollen Arbeitsschritt.",
+    )
+    decorated["current_stage_state"] = (
+        "blocked"
+        if decorated.get("status") == TaskStatus.APPROVAL_REQUIRED.value
+        else "failed"
+        if decorated.get("status") == TaskStatus.FAILED.value
+        else "running"
+        if decorated.get("status") in ACTIVE_TASK_STATUSES
+        else "complete"
+        if decorated.get("status") == TaskStatus.DONE.value
+        else "waiting"
+    )
+    decorated["running_since_display"] = _format_timestamp(running_since) if running_since else "noch nicht sichtbar"
+    decorated["running_for_display"] = _format_duration(running_for_seconds)
+    decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES
+    decorated["auto_refresh_seconds"] = AUTO_REFRESH_SECONDS if decorated["is_active"] else 0
+    return decorated
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -170,7 +476,7 @@ async def _load_dashboard_context(error_message: str | None = None, success_mess
     repo_settings_response = await _api_request("GET", "/api/settings/repository-access")
     suggestions_response = await _api_request("GET", "/api/suggestions")
 
-    tasks = _response_json(tasks_response, [])
+    tasks = [_decorate_task(task) for task in _response_json(tasks_response, [])]
     if tasks_response.status_code >= 400:
         messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht geladen werden."))
 
@@ -193,6 +499,33 @@ async def _load_dashboard_context(error_message: str | None = None, success_mess
         "pending_suggestions_count": len(pending_suggestions),
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
+    }
+
+
+async def _load_task_detail_context(
+    task_id: str,
+    *,
+    error_message: str | None = None,
+    success_message: str | None = None,
+) -> dict[str, Any]:
+    """Load and enrich one task detail plus related dashboard data for the detail page."""
+
+    response = await _api_request("GET", f"/api/tasks/{task_id}")
+    if response.status_code >= 400:
+        raise RuntimeError(_response_detail(response, f"Die Aufgabe `{task_id}` konnte nicht geladen werden."))
+    task = _decorate_task(_response_json(response, {}))
+    suggestion_context = await _load_suggestions_context(task_id=task_id)
+    messages = [error_message, suggestion_context.get("error_message")]
+    cleaned_suggestion_context = {
+        key: value
+        for key, value in suggestion_context.items()
+        if key not in {"error_message", "success_message"}
+    }
+    return {
+        "task": task,
+        **cleaned_suggestion_context,
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message or suggestion_context.get("success_message"),
     }
 
 
@@ -390,18 +723,17 @@ async def suggestions_page(request: Request, task_id: str | None = Query(default
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_detail(request: Request, task_id: str) -> HTMLResponse:
-    response = await _api_request("GET", f"/api/tasks/{task_id}")
-    if response.status_code >= 400:
+    try:
+        context = await _load_task_detail_context(task_id)
+    except RuntimeError as exc:
         context = await _load_dashboard_context(
-            error_message=_response_detail(response, f"Die Aufgabe `{task_id}` konnte nicht geladen werden."),
+            error_message=str(exc),
         )
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
-    task = _response_json(response, {})
-    suggestion_context = await _load_suggestions_context(task_id=task_id)
     return templates.TemplateResponse(
         request=request,
         name="task.html",
-        context={"request": request, "task": task, **suggestion_context},
+        context={"request": request, **context},
     )
 
 
@@ -795,26 +1127,63 @@ async def health_check_web_search_provider(request: Request, provider_id: str) -
 
 
 @app.post("/tasks/{task_id}/run")
-async def run_task(task_id: str) -> RedirectResponse:
-    await _api_request("POST", f"/api/tasks/{task_id}/run")
+async def run_task(request: Request, task_id: str) -> Response:
+    response = await _api_request("POST", f"/api/tasks/{task_id}/run")
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Der Workflow konnte nicht gestartet oder fortgesetzt werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
 @app.post("/tasks/{task_id}/approve")
-async def approve_task(task_id: str, gate_name: str = Form("risk-review")) -> RedirectResponse:
+async def approve_task(request: Request, task_id: str, gate_name: str = Form("risk-review")) -> Response:
     payload = {"gate_name": gate_name, "decision": "APPROVE", "actor": "dashboard"}
-    await _api_request("POST", f"/api/tasks/{task_id}/approvals", json_payload=payload)
+    response = await _api_request("POST", f"/api/tasks/{task_id}/approvals", json_payload=payload)
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Freigabe konnte nicht gespeichert werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
 @app.post("/tasks/{task_id}/reject")
 async def reject_task(
+    request: Request,
     task_id: str,
     gate_name: str = Form("risk-review"),
     reason: str = Form("Rejected from dashboard review."),
-) -> RedirectResponse:
+) -> Response:
     payload = {"gate_name": gate_name, "decision": "REJECT", "actor": "dashboard", "reason": reason}
-    await _api_request("POST", f"/api/tasks/{task_id}/approvals", json_payload=payload)
+    response = await _api_request("POST", f"/api/tasks/{task_id}/approvals", json_payload=payload)
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Ablehnung konnte nicht gespeichert werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 

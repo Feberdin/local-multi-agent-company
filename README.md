@@ -235,7 +235,7 @@ curl http://localhost:18088/health
 Das Routing liegt in [config/model-routing.example.yaml](/Users/joachim.stiegler/CodingFamily/config/model-routing.example.yaml).
 
 - `Mistral` ist Standard für leichte Extraktion, Doku, Routing-Hinweise und einfache Klassifikation.
-- `Qwen` ist Standard für Architektur, komplexes Coding, Review, Security und Validation.
+- `Qwen` ist fuer die schwereren Stufen wie Architektur, komplexes Coding, Security und Validation reserviert.
 - Pro Worker lassen sich definieren:
   - primäres Modell
   - Fallback-Modell
@@ -243,6 +243,28 @@ Das Routing liegt in [config/model-routing.example.yaml](/Users/joachim.stiegler
   - `max_tokens`
   - Budget-Hinweis
   - Reasoning-Tiefe
+
+Empfohlene Startwerte fuer langsame lokale Ollama-Hardware:
+
+```env
+DEFAULT_MODEL_PROVIDER=mistral
+LLM_CONNECT_TIMEOUT_SECONDS=30
+LLM_READ_TIMEOUT_SECONDS=1200
+LLM_WRITE_TIMEOUT_SECONDS=60
+LLM_POOL_TIMEOUT_SECONDS=60
+LLM_REQUEST_DEADLINE_SECONDS=1500
+WORKER_CONNECT_TIMEOUT_SECONDS=30
+WORKER_STAGE_TIMEOUT_SECONDS=1800
+WORKER_WRITE_TIMEOUT_SECONDS=60
+WORKER_POOL_TIMEOUT_SECONDS=60
+STAGE_HEARTBEAT_INTERVAL_SECONDS=30
+```
+
+Wichtig:
+
+- `requirements`, `reviewer`, `documentation` und `qa` laufen standardmaessig auf `mistral-small3.2:latest`
+- lange lokale Modelllaeufe erscheinen im UI jetzt nicht mehr wie ein Freeze, weil Heartbeat-Ereignisse und Auto-Refresh sichtbar bleiben
+- wenn ein Task trotzdem zu lange in einer Stage bleibt, zuerst die Laufzeitgrenzen erhoehen und erst danach das Routing aendern
 
 ## Sicherheit
 

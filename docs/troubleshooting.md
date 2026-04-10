@@ -98,13 +98,15 @@ Typische Timeout-Symptome:
 - Task bleibt lange in `REQUIREMENTS`, `REVIEWING` oder `DOCUMENTING`
 - `httpx.ReadTimeout` oder `httpcore.ReadTimeout` in Worker-Logs
 - der Orchestrator meldet spaeter einen Worker-Timeout oder eine fehlgeschlagene Stage
+- die Task-Detailansicht zeigt Heartbeats fuer denselben Schritt ueber mehrere Minuten
 
 Empfohlene Gegenmaßnahmen:
 
 - für leichtere Stufen `mistral-small3.2:latest` bevorzugen
 - `qwen3.5:35b-a3b` nur für schwerere Reasoning-Stufen oder explizite Overrides verwenden
-- `LLM_TIMEOUT_READ_SECONDS` und `LLM_REQUEST_DEADLINE_SECONDS` prüfen
-- `WORKER_TIMEOUT_READ_SECONDS` größer als die maximale Summe interner LLM-Fallbacks halten
+- `LLM_READ_TIMEOUT_SECONDS` und `LLM_REQUEST_DEADLINE_SECONDS` prüfen
+- `WORKER_STAGE_TIMEOUT_SECONDS` groesser als die realistische laengste Modelllaufzeit halten
+- `STAGE_HEARTBEAT_INTERVAL_SECONDS` nicht zu hoch setzen, damit der Fortschritt sichtbar bleibt
 - Worker-Logs prüfen:
   - `docker compose logs -f fmac-req`
   - `docker compose logs -f fmac-rsch`
@@ -115,6 +117,13 @@ Hinweis für schwächere Hardware:
 - starte konservativ mit `DEFAULT_MODEL_PROVIDER=mistral`
 - lasse `requirements`, `reviewer` und `documentation` auf Mistral
 - aktiviere Qwen nur dort, wo die zusätzliche Tiefe den höheren Laufzeitpreis wirklich rechtfertigt
+- sinnvolle Startwerte sind oft:
+  - `LLM_CONNECT_TIMEOUT_SECONDS=30`
+  - `LLM_READ_TIMEOUT_SECONDS=1200`
+  - `LLM_WRITE_TIMEOUT_SECONDS=60`
+  - `LLM_POOL_TIMEOUT_SECONDS=60`
+  - `LLM_REQUEST_DEADLINE_SECONDS=1500`
+  - `WORKER_STAGE_TIMEOUT_SECONDS=1800`
 
 ## Logging-Fehler mit `service`
 
@@ -131,6 +140,22 @@ Fix:
 
 - das Logging ergänzt diese Felder jetzt zentral für alle `LogRecord`s
 - dadurch bleiben strukturierte Logs erhalten, ohne dass Fremdlogger den Stack destabilisieren
+
+## Web-UI zeigt lange Stage nicht mehr als Freeze
+
+Aktuelles Verhalten:
+
+- die Task-Ansicht aktualisiert sich waehrend aktiver Stages automatisch
+- die aktuelle Stage zeigt Worker, Startzeit, Laufzeit und letzte Aktivitaet
+- Heartbeat-Ereignisse machen sichtbar, dass ein langsamer lokaler Modellaufruf noch lebt
+
+Pruefen:
+
+- Task im Browser oeffnen und etwa 15 bis 30 Sekunden offen lassen
+- schauen, ob neue Heartbeat-Ereignisse auftauchen
+- parallel:
+  - `docker compose logs -f fmac-orch`
+  - `docker compose logs -f fmac-req`
 
 ## GitHub-PR wird nicht erstellt
 

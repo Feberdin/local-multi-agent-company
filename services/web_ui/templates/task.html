@@ -9,6 +9,9 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if task.auto_refresh_seconds %}
+    <meta http-equiv="refresh" content="{{ task.auto_refresh_seconds }}">
+    {% endif %}
     <title>Task {{ task.id }}</title>
     <link rel="stylesheet" href="/static/style.css">
   </head>
@@ -27,7 +30,22 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <h1>{{ task.goal }}</h1>
         <p class="lead">{{ task.repository }} · Branch {{ task.branch_name or "n/a" }}</p>
         <span class="status status-{{ task.status|lower }}">{{ task.status }}</span>
+        <p class="muted">Aktueller Schritt: <strong>{{ task.current_stage_label }}</strong> · Letzte Aktivitaet {{ task.last_activity_at_display }}</p>
       </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
 
       <section class="panel panel-note">
         <h2>Repository-Freigabe</h2>
@@ -57,6 +75,39 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
 
       <section class="grid">
         <article class="panel">
+          <h2>Aktuelle Stage</h2>
+          <div class="stats-grid">
+            <p><strong>Schritt:</strong> {{ task.current_stage_label }}</p>
+            <p><strong>Worker:</strong> {{ task.current_worker_name or "noch keiner sichtbar" }}</p>
+            <p><strong>Zustand:</strong> <span class="status status-{{ task.current_stage_state }}">{{ task.current_stage_state }}</span></p>
+            <p><strong>Beschreibung:</strong> {{ task.current_stage_description }}</p>
+            <p><strong>Laeuft seit:</strong> {{ task.running_since_display }}</p>
+            <p><strong>Aktive Laufzeit:</strong> {{ task.running_for_display }}</p>
+            <p><strong>Letzte Aktivitaet:</strong> {{ task.last_activity_at_display }}</p>
+            <p><strong>Auto-Refresh:</strong> {{ task.auto_refresh_seconds ~ " Sekunden" if task.auto_refresh_seconds else "aus" }}</p>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Workflow-Fortschritt</h2>
+          <div class="stage-list">
+            {% for step in task.worker_timeline %}
+            <article class="stage-card stage-card-{{ step.state }}">
+              <div class="event-header">
+                <strong>{{ step.label }}</strong>
+                <span class="status status-{{ step.state }}">{{ step.state }}</span>
+              </div>
+              <p class="muted">{{ step.description }}</p>
+              <p><strong>Letzte Aktivitaet:</strong> {{ step.last_event_at_display }}</p>
+              <p class="muted">{{ step.last_event_message }}</p>
+            </article>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
           <h2>Status</h2>
           <p><strong>Resume-Ziel:</strong> {{ task.resume_target or "keins" }}</p>
           <p><strong>Approval-Gate:</strong> {{ task.current_approval_gate_name or "keins" }}</p>
@@ -64,6 +115,8 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           <p><strong>Freigabegrund:</strong> {{ task.approval_reason or "keiner" }}</p>
           <p><strong>Letzter Fehler:</strong> {{ task.latest_error or "kein Fehler" }}</p>
           <p><strong>Risikoflags:</strong> {{ task.risk_flags|join(", ") if task.risk_flags else "keine" }}</p>
+          <p><strong>Erstellt:</strong> {{ task.created_at_display }}</p>
+          <p><strong>Zuletzt aktualisiert:</strong> {{ task.updated_at_display }}</p>
         </article>
 
         <article class="panel">
@@ -83,13 +136,24 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <h2>Ereignisse</h2>
         <div class="timeline">
           {% for event in task.events %}
-          <article class="event">
+          <article class="event event-{{ event.level_lower }}">
             <div class="event-header">
               <strong>{{ event.stage }}</strong>
-              <span class="muted">{{ event.created_at }}</span>
+              <div class="event-meta">
+                {% if event.worker_label %}
+                <span class="muted">{{ event.worker_label }}</span>
+                {% endif %}
+                <span class="status status-{{ event.level_lower }}">{{ event.level }}</span>
+                {% if event.is_heartbeat %}
+                <span class="status status-running">heartbeat</span>
+                {% endif %}
+                <span class="muted">{{ event.created_at_display }}</span>
+              </div>
             </div>
             <p>{{ event.message }}</p>
+            {% if event.details %}
             <pre>{{ event.details | tojson(indent=2) }}</pre>
+            {% endif %}
           </article>
           {% else %}
           <p class="muted">Noch keine Ereignisse vorhanden.</p>

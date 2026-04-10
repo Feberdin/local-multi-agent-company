@@ -8,6 +8,7 @@ How to debug: If the UI and worker state disagree, compare the latest task row w
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -318,6 +319,23 @@ class TaskService:
             session.refresh(record)
             return self.get_task(task_id)
 
+    def append_event(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+        level: str = "INFO",
+    ) -> TaskDetail:
+        """Persist an event without changing the task status so long-running stages stay visible in the UI."""
+
+        with self.session() as session:
+            self._require_task(session, task_id)
+            self._add_event(session, task_id, stage, message, details or {}, level=level)
+            session.commit()
+        return self.get_task(task_id)
+
     def _require_task(self, session: Session, task_id: str) -> TaskRecord:
         record = session.get(TaskRecord, task_id)
         if record is None:
@@ -333,6 +351,8 @@ class TaskService:
         details: dict,
         level: str = "INFO",
     ) -> None:
+        record = self._require_task(session, task_id)
+        record.updated_at = datetime.now(UTC)
         session.add(
             TaskEventRecord(
                 task_id=task_id,
