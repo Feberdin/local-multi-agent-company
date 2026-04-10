@@ -60,6 +60,18 @@ ensure_project_root() {
   log_info "Projektwurzel vorbereitet: ${PROJECT_ROOT}"
 }
 
+directory_is_empty() {
+  local directory_path="$1"
+  local entries=()
+
+  # Why this exists:
+  # We want to allow cloning into a pre-created empty directory, but we must still block accidental reuse of a populated non-git path.
+  shopt -s nullglob dotglob
+  entries=("${directory_path}"/*)
+  shopt -u nullglob dotglob
+  [[ ${#entries[@]} -eq 0 ]]
+}
+
 clone_or_update_repo() {
   local current_remote
 
@@ -83,7 +95,13 @@ clone_or_update_repo() {
   fi
 
   if [[ -e "${REPO_DIR}" ]]; then
-    die "Der Zielpfad ${REPO_DIR} existiert, ist aber kein Git-Repo. Bitte prüfen oder entfernen."
+    if [[ -d "${REPO_DIR}" ]] && directory_is_empty "${REPO_DIR}"; then
+      log_info "Der Zielpfad ${REPO_DIR} existiert bereits als leerer Ordner. Verwende ihn als sicheres Klon-Ziel."
+      git clone --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${REPO_DIR}"
+      return
+    fi
+
+    die "Der Zielpfad ${REPO_DIR} existiert bereits und ist kein leeres Git-Repo. Bitte den Inhalt prüfen, sichern oder den Ordner gezielt leeren."
   fi
 
   log_info "Klone ${REPO_URL} nach ${REPO_DIR}"

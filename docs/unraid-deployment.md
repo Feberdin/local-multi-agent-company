@@ -33,6 +33,7 @@ Verhalten:
 - legt den dedizierten Projektpfad unter `PROJECT_ROOT` an
 - erstellt `data`, `reports`, `workspace` und `staging-stacks`
 - klont oder aktualisiert das Repo in `PROJECT_ROOT/repo`
+- akzeptiert auch einen bereits vorhandenen, aber leeren Ordner `PROJECT_ROOT/repo`
 - erzeugt `.env` aus `.env.example`, wenn sie noch fehlt
 - startet den Stack nur, wenn `AUTO_START_STACK=true` gesetzt ist
 
