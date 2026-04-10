@@ -33,6 +33,42 @@ app.mount("/static", StaticFiles(directory=str(WEB_UI_DIR / "static")), name="st
 templates = Jinja2Templates(directory=str(WEB_UI_DIR / "templates"))
 
 
+def _orchestrator_timeout() -> httpx.Timeout:
+    """Keep UI requests snappy so the dashboard can degrade gracefully instead of hanging."""
+
+    return httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+
+
+def _error_response(method: str, url: str, detail: str, *, status_code: int = 503) -> httpx.Response:
+    """Build a synthetic JSON response so route handlers can stay simple even on backend failures."""
+
+    return httpx.Response(status_code, request=httpx.Request(method, url), json={"detail": detail})
+
+
+def _response_detail(response: httpx.Response, default_message: str) -> str:
+    """Return a human-readable error detail without assuming the backend returned valid JSON."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if isinstance(payload, dict) and payload.get("detail"):
+        return str(payload["detail"])
+    response_text = response.text.strip()
+    if response_text:
+        return f"{default_message} Backend-Antwort: {response_text[:300]}"
+    return default_message
+
+
+def _response_json(response: httpx.Response, default_value: Any) -> Any:
+    """Return parsed JSON or a safe default when a degraded backend response is not JSON."""
+
+    try:
+        return response.json()
+    except ValueError:
+        return default_value
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(service="web-ui")
@@ -99,37 +135,63 @@ def _default_worker_guidance_form_values() -> dict[str, Any]:
 
 
 async def _api_request(method: str, path: str, *, json_payload: dict | None = None) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.request(
+    url = f"{settings.orchestrator_internal_url.rstrip('/')}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_orchestrator_timeout()) as client:
+            return await client.request(method, url, json=json_payload)
+    except httpx.TimeoutException as exc:
+        logger.warning("Web UI request to orchestrator timed out for %s %s: %s", method, path, exc)
+        return _error_response(
             method,
-            f"{settings.orchestrator_internal_url.rstrip('/')}{path}",
-            json=json_payload,
+            url,
+            (
+                "Der Orchestrator hat nicht rechtzeitig geantwortet. "
+                "Das Dashboard zeigt deshalb eine degradierte Ansicht. "
+                "Prüfe `docker compose logs -f fmac-orch`."
+            ),
+            status_code=504,
         )
-        return response
+    except httpx.HTTPError as exc:
+        logger.warning("Web UI request to orchestrator failed for %s %s: %s", method, path, exc)
+        return _error_response(
+            method,
+            url,
+            (
+                "Der Orchestrator ist derzeit nicht erreichbar. "
+                "Das Dashboard bleibt nutzbar, zeigt aber nur reduzierte Daten. "
+                "Prüfe `docker compose ps` und `docker compose logs -f fmac-orch`."
+            ),
+        )
 
 
 async def _load_dashboard_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=20) as client:
-        tasks_response = await client.get(f"{settings.orchestrator_internal_url.rstrip('/')}/api/tasks")
-        tasks_response.raise_for_status()
-        repo_settings_response = await client.get(
-            f"{settings.orchestrator_internal_url.rstrip('/')}/api/settings/repository-access"
+    messages = [error_message] if error_message else []
+    tasks_response = await _api_request("GET", "/api/tasks")
+    repo_settings_response = await _api_request("GET", "/api/settings/repository-access")
+    suggestions_response = await _api_request("GET", "/api/suggestions")
+
+    tasks = _response_json(tasks_response, [])
+    if tasks_response.status_code >= 400:
+        messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht geladen werden."))
+
+    repo_settings = _response_json(repo_settings_response, {"allowed_repositories": []})
+    if repo_settings_response.status_code >= 400:
+        messages.append(
+            _response_detail(repo_settings_response, "Die Repository-Allowlist konnte nicht geladen werden.")
         )
-        repo_settings_response.raise_for_status()
-        repo_settings = repo_settings_response.json()
-        suggestions_response = await client.get(
-            f"{settings.orchestrator_internal_url.rstrip('/')}/api/suggestions",
-            params={"status": "pending"},
-        )
-        suggestions_response.raise_for_status()
-        pending_suggestions = suggestions_response.json()
+
+    pending_suggestions = _response_json(suggestions_response, [])
+    if suggestions_response.status_code >= 400:
+        messages.append(_response_detail(suggestions_response, "Die Mitarbeiterideen konnten nicht geladen werden."))
+    else:
+        pending_suggestions = [item for item in pending_suggestions if item.get("status") == "pending"]
 
     return {
-        "tasks": tasks_response.json(),
+        "tasks": tasks,
         "repository_access_settings": repo_settings,
         "allowed_repositories_text": "\n".join(repo_settings.get("allowed_repositories", [])),
         "pending_suggestions_count": len(pending_suggestions),
-        "error_message": error_message,
+        "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }
 
@@ -144,8 +206,7 @@ async def _load_trusted_sources_context(
     import_payload: str | None = None,
 ) -> dict[str, Any]:
     registry_response = await _api_request("GET", "/api/settings/trusted-sources")
-    registry_response.raise_for_status()
-    registry = registry_response.json()
+    registry = _response_json(registry_response, {"profiles": [], "active_profile_id": None})
     profiles = registry.get("profiles", [])
     active_profile_id = registry.get("active_profile_id")
     active_profile = next((profile for profile in profiles if profile["id"] == active_profile_id), None)
@@ -159,13 +220,17 @@ async def _load_trusted_sources_context(
         form_values["deny_paths_text"] = "\n".join(edit_source.get("deny_paths", []))
         form_values["tags_text"] = "\n".join(edit_source.get("tags", []))
 
+    messages = [error_message] if error_message else []
+    if registry_response.status_code >= 400:
+        messages.append(_response_detail(registry_response, "Trusted Sources konnten nicht geladen werden."))
+
     return {
         "registry": registry,
         "profiles": profiles,
         "active_profile": active_profile,
         "sources": sources,
         "source_form_values": form_values,
-        "error_message": error_message,
+        "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
         "dry_run_result": dry_run_result,
         "source_test_result": source_test_result,
@@ -181,8 +246,17 @@ async def _load_web_search_context(
     provider_test_result: dict | None = None,
 ) -> dict[str, Any]:
     settings_response = await _api_request("GET", "/api/settings/web-search")
-    settings_response.raise_for_status()
-    provider_settings = settings_response.json()
+    provider_settings = _response_json(
+        settings_response,
+        {
+            "providers": [],
+            "primary_web_search_provider": "",
+            "fallback_web_search_provider": "",
+            "require_trusted_sources_first": True,
+            "allow_general_web_search_fallback": True,
+            "provider_host_allowlist": [],
+        },
+    )
     providers = provider_settings.get("providers", [])
     edit_provider = next((provider for provider in providers if provider["id"] == edit_provider_id), None)
 
@@ -191,11 +265,15 @@ async def _load_web_search_context(
         form_values.update(edit_provider)
         form_values["default_categories_text"] = "\n".join(edit_provider.get("default_categories", []))
 
+    messages = [error_message] if error_message else []
+    if settings_response.status_code >= 400:
+        messages.append(_response_detail(settings_response, "Web-Search-Provider konnten nicht geladen werden."))
+
     return {
         "web_search_settings": provider_settings,
         "providers": providers,
         "provider_form_values": form_values,
-        "error_message": error_message,
+        "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
         "provider_test_result": provider_test_result,
     }
@@ -208,8 +286,7 @@ async def _load_worker_guidance_context(
     success_message: str | None = None,
 ) -> dict[str, Any]:
     registry_response = await _api_request("GET", "/api/settings/worker-guidance")
-    registry_response.raise_for_status()
-    registry = registry_response.json()
+    registry = _response_json(registry_response, {"workers": []})
     workers = registry.get("workers", [])
     if edit_worker_name is None and workers:
         edit_worker_name = workers[0]["worker_name"]
@@ -221,11 +298,15 @@ async def _load_worker_guidance_context(
         form_values["operator_recommendations_text"] = "\n".join(edit_worker.get("operator_recommendations", []))
         form_values["decision_preferences_text"] = "\n".join(edit_worker.get("decision_preferences", []))
 
+    messages = [error_message] if error_message else []
+    if registry_response.status_code >= 400:
+        messages.append(_response_detail(registry_response, "Die Worker-Guidance konnte nicht geladen werden."))
+
     return {
         "worker_guidance_registry": registry,
         "workers": workers,
         "worker_guidance_form_values": form_values,
-        "error_message": error_message,
+        "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }
 
@@ -237,8 +318,7 @@ async def _load_suggestions_context(
     success_message: str | None = None,
 ) -> dict[str, Any]:
     suggestions_response = await _api_request("GET", "/api/suggestions/registry")
-    suggestions_response.raise_for_status()
-    registry = suggestions_response.json()
+    registry = _response_json(suggestions_response, {"suggestions": []})
     suggestions = registry.get("suggestions", [])
     if task_id is not None:
         suggestions = [item for item in suggestions if item.get("task_id") == task_id]
@@ -247,13 +327,17 @@ async def _load_suggestions_context(
     approved = [item for item in suggestions if item.get("status") == "approved"]
     rejected = [item for item in suggestions if item.get("status") == "rejected"]
 
+    messages = [error_message] if error_message else []
+    if suggestions_response.status_code >= 400:
+        messages.append(_response_detail(suggestions_response, "Die Mitarbeiterideen konnten nicht geladen werden."))
+
     return {
         "suggestion_registry": registry,
         "suggestions": suggestions,
         "pending_suggestions": pending,
         "approved_suggestions": approved,
         "rejected_suggestions": rejected,
-        "error_message": error_message,
+        "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }
 
@@ -307,8 +391,12 @@ async def suggestions_page(request: Request, task_id: str | None = Query(default
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_detail(request: Request, task_id: str) -> HTMLResponse:
     response = await _api_request("GET", f"/api/tasks/{task_id}")
-    response.raise_for_status()
-    task = response.json()
+    if response.status_code >= 400:
+        context = await _load_dashboard_context(
+            error_message=_response_detail(response, f"Die Aufgabe `{task_id}` konnte nicht geladen werden."),
+        )
+        return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
+    task = _response_json(response, {})
     suggestion_context = await _load_suggestions_context(task_id=task_id)
     return templates.TemplateResponse(
         request=request,
@@ -339,10 +427,10 @@ async def create_task(
     }
     response = await _api_request("POST", "/api/tasks", json_payload=payload)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Aufgabe konnte nicht angelegt werden.")
+        detail = _response_detail(response, "Die Aufgabe konnte nicht angelegt werden.")
         context = await _load_dashboard_context(error_message=detail)
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
-    task = response.json()
+    task = _response_json(response, {})
     return RedirectResponse(url=f"/tasks/{task['id']}", status_code=303)
 
 
@@ -358,7 +446,7 @@ async def update_repository_settings(
         json_payload={"allowed_repositories": repositories},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Einstellungen konnten nicht gespeichert werden.")
+        detail = _response_detail(response, "Die Einstellungen konnten nicht gespeichert werden.")
         context = await _load_dashboard_context(error_message=detail)
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
     return RedirectResponse(url="/", status_code=303)
@@ -390,7 +478,7 @@ async def update_worker_guidance(
     }
     response = await _api_request("PUT", f"/api/settings/worker-guidance/{worker_name}", json_payload=payload)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Worker-Guidance konnte nicht gespeichert werden.")
+        detail = _response_detail(response, "Die Worker-Guidance konnte nicht gespeichert werden.")
         context = await _load_worker_guidance_context(edit_worker_name=worker_name, error_message=detail)
         context["worker_guidance_form_values"].update(payload)
         context["worker_guidance_form_values"]["operator_recommendations_text"] = operator_recommendations_text
@@ -414,7 +502,7 @@ async def update_trusted_source_profile(
         json_payload={"profile_id": profile_id},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Das Profil konnte nicht gewechselt werden.")
+        detail = _response_detail(response, "Das Profil konnte nicht gewechselt werden.")
         context = await _load_trusted_sources_context(error_message=detail)
         return templates.TemplateResponse(
             request=request,
@@ -468,7 +556,7 @@ async def upsert_trusted_source(
     path = f"/api/settings/trusted-sources/sources/{source_id}" if source_id else "/api/settings/trusted-sources/sources"
     response = await _api_request(method, path, json_payload=payload)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Quelle konnte nicht gespeichert werden.")
+        detail = _response_detail(response, "Die Quelle konnte nicht gespeichert werden.")
         context = await _load_trusted_sources_context(
             edit_source_id=source_id or None,
             error_message=detail,
@@ -499,7 +587,7 @@ async def toggle_trusted_source(request: Request, source_id: str) -> Response:
     source["enabled"] = not source.get("enabled", False)
     response = await _api_request("PUT", f"/api/settings/trusted-sources/sources/{source_id}", json_payload=source)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Status der Quelle konnte nicht geändert werden.")
+        detail = _response_detail(response, "Der Status der Quelle konnte nicht geändert werden.")
         context = await _load_trusted_sources_context(edit_source_id=source_id, error_message=detail)
         return templates.TemplateResponse(
             request=request,
@@ -513,7 +601,7 @@ async def toggle_trusted_source(request: Request, source_id: str) -> Response:
 async def delete_trusted_source(request: Request, source_id: str) -> Response:
     response = await _api_request("DELETE", f"/api/settings/trusted-sources/sources/{source_id}")
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Quelle konnte nicht gelöscht werden.")
+        detail = _response_detail(response, "Die Quelle konnte nicht gelöscht werden.")
         context = await _load_trusted_sources_context(error_message=detail)
         return templates.TemplateResponse(
             request=request,
@@ -534,7 +622,7 @@ async def import_trusted_sources(
         json_payload={"payload_json": payload_json},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Import konnte nicht verarbeitet werden.")
+        detail = _response_detail(response, "Der Import konnte nicht verarbeitet werden.")
         context = await _load_trusted_sources_context(error_message=detail, import_payload=payload_json)
         return templates.TemplateResponse(
             request=request,
@@ -558,10 +646,10 @@ async def dry_run_trusted_sources(
         payload["question_type"] = question_type
     response = await _api_request("POST", "/api/settings/trusted-sources/dry-run", json_payload=payload)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Dry-Run konnte nicht ausgeführt werden.")
+        detail = _response_detail(response, "Dry-Run konnte nicht ausgeführt werden.")
         context = await _load_trusted_sources_context(error_message=detail)
         return templates.TemplateResponse(request=request, name="trusted_sources.html", context={"request": request, **context})
-    context = await _load_trusted_sources_context(dry_run_result=response.json())
+    context = await _load_trusted_sources_context(dry_run_result=_response_json(response, {}))
     return templates.TemplateResponse(request=request, name="trusted_sources.html", context={"request": request, **context})
 
 
@@ -577,10 +665,10 @@ async def test_trusted_source(
         json_payload={"source_id": source_id, "query": query},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Quellentest ist fehlgeschlagen.")
+        detail = _response_detail(response, "Der Quellentest ist fehlgeschlagen.")
         context = await _load_trusted_sources_context(edit_source_id=source_id, error_message=detail)
         return templates.TemplateResponse(request=request, name="trusted_sources.html", context={"request": request, **context})
-    context = await _load_trusted_sources_context(edit_source_id=source_id, source_test_result=response.json())
+    context = await _load_trusted_sources_context(edit_source_id=source_id, source_test_result=_response_json(response, {}))
     return templates.TemplateResponse(request=request, name="trusted_sources.html", context={"request": request, **context})
 
 
@@ -594,8 +682,11 @@ async def update_web_search_core_settings(
     provider_host_allowlist_text: str = Form(""),
 ) -> Response:
     current_response = await _api_request("GET", "/api/settings/web-search")
-    current_response.raise_for_status()
-    current = current_response.json()
+    if current_response.status_code >= 400:
+        detail = _response_detail(current_response, "Die aktuellen Web-Search-Einstellungen konnten nicht geladen werden.")
+        context = await _load_web_search_context(error_message=detail)
+        return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
+    current = _response_json(current_response, {})
     current.update(
         {
             "primary_web_search_provider": primary_web_search_provider,
@@ -607,7 +698,7 @@ async def update_web_search_core_settings(
     )
     response = await _api_request("PUT", "/api/settings/web-search", json_payload=current)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Web-Search-Einstellungen konnten nicht gespeichert werden.")
+        detail = _response_detail(response, "Die Web-Search-Einstellungen konnten nicht gespeichert werden.")
         context = await _load_web_search_context(error_message=detail)
         return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
     return RedirectResponse(url="/web-search", status_code=303)
@@ -655,7 +746,7 @@ async def upsert_web_search_provider(
     path = f"/api/settings/web-search/providers/{provider_id}" if provider_id else "/api/settings/web-search/providers"
     response = await _api_request(method_name, path, json_payload=payload)
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Provider konnte nicht gespeichert werden.")
+        detail = _response_detail(response, "Der Provider konnte nicht gespeichert werden.")
         context = await _load_web_search_context(edit_provider_id=provider_id or None, error_message=detail)
         context["provider_form_values"].update(payload)
         context["provider_form_values"]["default_categories_text"] = default_categories_text
@@ -667,7 +758,7 @@ async def upsert_web_search_provider(
 async def delete_web_search_provider(request: Request, provider_id: str) -> Response:
     response = await _api_request("DELETE", f"/api/settings/web-search/providers/{provider_id}")
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Provider konnte nicht gelöscht werden.")
+        detail = _response_detail(response, "Der Provider konnte nicht gelöscht werden.")
         context = await _load_web_search_context(error_message=detail)
         return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
     return RedirectResponse(url="/web-search", status_code=303)
@@ -685,10 +776,10 @@ async def test_web_search_provider(
         json_payload={"provider_id": provider_id, "query": query},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Providertest ist fehlgeschlagen.")
+        detail = _response_detail(response, "Der Providertest ist fehlgeschlagen.")
         context = await _load_web_search_context(edit_provider_id=provider_id, error_message=detail)
         return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
-    context = await _load_web_search_context(edit_provider_id=provider_id, provider_test_result=response.json())
+    context = await _load_web_search_context(edit_provider_id=provider_id, provider_test_result=_response_json(response, {}))
     return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
 
 
@@ -696,10 +787,10 @@ async def test_web_search_provider(
 async def health_check_web_search_provider(request: Request, provider_id: str) -> HTMLResponse:
     response = await _api_request("POST", f"/api/settings/web-search/health/{provider_id}")
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Der Health-Check ist fehlgeschlagen.")
+        detail = _response_detail(response, "Der Health-Check ist fehlgeschlagen.")
         context = await _load_web_search_context(edit_provider_id=provider_id, error_message=detail)
         return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
-    context = await _load_web_search_context(edit_provider_id=provider_id, provider_test_result=response.json())
+    context = await _load_web_search_context(edit_provider_id=provider_id, provider_test_result=_response_json(response, {}))
     return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
 
 
@@ -740,7 +831,7 @@ async def approve_suggestion(
         json_payload={"decision": "approved", "actor": "ceo-dashboard", "note": note},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Anregung konnte nicht freigegeben werden.")
+        detail = _response_detail(response, "Die Anregung konnte nicht freigegeben werden.")
         context = await _load_suggestions_context(task_id=task_id or None, error_message=detail)
         return templates.TemplateResponse(
             request=request,
@@ -764,7 +855,7 @@ async def reject_suggestion(
         json_payload={"decision": "rejected", "actor": "ceo-dashboard", "note": note},
     )
     if response.status_code >= 400:
-        detail = response.json().get("detail", "Die Anregung konnte nicht abgelehnt werden.")
+        detail = _response_detail(response, "Die Anregung konnte nicht abgelehnt werden.")
         context = await _load_suggestions_context(task_id=task_id or None, error_message=detail)
         return templates.TemplateResponse(
             request=request,

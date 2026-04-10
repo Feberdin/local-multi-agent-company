@@ -7,6 +7,7 @@ How to debug: If model calls fail, inspect the base URL, API key, request payloa
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -24,8 +25,14 @@ class LLMError(RuntimeError):
 class LLMClient:
     """Small wrapper around an OpenAI-compatible chat completions endpoint."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.settings = settings
+        self.transport = transport
 
     async def complete(
         self,
@@ -47,7 +54,7 @@ class LLMClient:
         request_temperature = temperature if temperature is not None else route.temperature
         request_max_tokens = max_tokens if max_tokens is not None else route.max_tokens
 
-        async def _request(base_url: str, model_name: str, api_key: str) -> dict[str, Any]:
+        async def _request(provider_name: str, base_url: str, model_name: str, api_key: str) -> dict[str, Any]:
             headers = {"Content-Type": "application/json"}
             if api_key and "replace-me" not in api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
@@ -61,29 +68,67 @@ class LLMClient:
                 "temperature": request_temperature,
                 "max_tokens": request_max_tokens,
             }
-            async with httpx.AsyncClient(timeout=90) as client:
-                response = await client.post(
-                    f"{base_url.rstrip('/')}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-                response.raise_for_status()
-                return response.json()
+            request_url = f"{base_url.rstrip('/')}/chat/completions"
+            timeout_summary = self.settings.llm_timeout_summary(request_deadline_seconds=route.request_timeout_seconds)
+            async with httpx.AsyncClient(timeout=self.settings.llm_http_timeout(), transport=self.transport) as client:
+                try:
+                    async with asyncio.timeout(route.request_timeout_seconds):
+                        response = await client.post(
+                            request_url,
+                            headers=headers,
+                            json=payload,
+                        )
+                    response.raise_for_status()
+                    return response.json()
+                except TimeoutError as exc:
+                    raise LLMError(
+                        "LLM request exceeded the stage deadline for "
+                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
+                        f"Configured timeouts: {timeout_summary}."
+                    ) from exc
+                except httpx.TimeoutException as exc:
+                    raise LLMError(
+                        "LLM request timed out for "
+                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
+                        f"Configured timeouts: {timeout_summary}. Transport error: {exc}."
+                    ) from exc
+                except httpx.HTTPStatusError as exc:
+                    response_snippet = exc.response.text[:300].strip()
+                    raise LLMError(
+                        "LLM backend returned an HTTP error for "
+                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: "
+                        f"{exc.response.status_code} {response_snippet}"
+                    ) from exc
+                except httpx.HTTPError as exc:
+                    raise LLMError(
+                        "LLM transport failed for "
+                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
+                    ) from exc
+                except ValueError as exc:
+                    raise LLMError(
+                        "LLM backend returned invalid JSON for "
+                        f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
+                    ) from exc
 
+        errors: list[str] = []
         try:
-            data = await _request(provider.base_url, provider.model_name, provider.api_key)
-        except httpx.HTTPError as primary_error:
+            data = await _request(provider.name, provider.base_url, provider.model_name, provider.api_key)
+        except LLMError as primary_error:
+            errors.append(str(primary_error))
             if fallback_provider is None:
-                raise LLMError(f"Primary model provider `{provider.name}` failed: {primary_error}") from primary_error
+                raise LLMError(str(primary_error)) from primary_error
             try:
                 data = await _request(
+                    fallback_provider.name,
                     fallback_provider.base_url,
                     fallback_provider.model_name,
                     fallback_provider.api_key,
                 )
-            except httpx.HTTPError as fallback_error:
+            except LLMError as fallback_error:
+                errors.append(str(fallback_error))
                 raise LLMError(
-                    f"Both primary `{provider.name}` and fallback `{fallback_provider.name}` model providers failed."
+                    "All configured model providers failed for "
+                    f"`{worker_name}`. " + " | ".join(errors)
                 ) from fallback_error
 
         try:

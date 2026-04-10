@@ -1,29 +1,32 @@
 # Purpose: Example worker-to-model routing for the Feberdin multi-agent team.
 # Input/Output: The shared LLM client reads this file to map worker roles to primary and fallback local models.
-# Invariants: Complex architecture, coding, review, security, and validation default to Qwen; lighter extraction and documentation default to Mistral.
+# Invariants: Lightweight stages default to Mistral for lower latency; Qwen is reserved for clearly heavier reasoning stages unless operators override the file explicitly.
 # Debugging: If a worker uses the wrong model, inspect its entry here and the provider environment variables in `.env`.
 
 workers:
   requirements:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.1
     max_tokens: 1400
     budget_tokens: 5000
+    request_timeout_seconds: 45
     reasoning: low
   cost:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.0
     max_tokens: 900
     budget_tokens: 2500
+    request_timeout_seconds: 40
     reasoning: low
   human_resources:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.0
     max_tokens: 900
     budget_tokens: 2500
+    request_timeout_seconds: 40
     reasoning: low
   research:
     primary_provider: qwen
@@ -31,6 +34,7 @@ workers:
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
+    request_timeout_seconds: 120
     reasoning: high
   architecture:
     primary_provider: qwen
@@ -38,20 +42,23 @@ workers:
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
+    request_timeout_seconds: 120
     reasoning: high
   data:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 4000
+    request_timeout_seconds: 60
     reasoning: medium
   ux:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.2
     max_tokens: 1400
     budget_tokens: 4500
+    request_timeout_seconds: 60
     reasoning: medium
   coding:
     primary_provider: qwen
@@ -59,20 +66,31 @@ workers:
     temperature: 0.05
     max_tokens: 2600
     budget_tokens: 12000
+    request_timeout_seconds: 150
     reasoning: high
   reviewer:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider:
     temperature: 0.0
     max_tokens: 1800
     budget_tokens: 8000
-    reasoning: high
+    request_timeout_seconds: 60
+    reasoning: medium
   tester:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 4000
+    request_timeout_seconds: 45
+    reasoning: low
+  qa:
+    primary_provider: mistral
+    fallback_provider:
+    temperature: 0.0
+    max_tokens: 1200
+    budget_tokens: 4000
+    request_timeout_seconds: 45
     reasoning: low
   security:
     primary_provider: qwen
@@ -80,6 +98,7 @@ workers:
     temperature: 0.0
     max_tokens: 1800
     budget_tokens: 7000
+    request_timeout_seconds: 90
     reasoning: high
   validation:
     primary_provider: qwen
@@ -87,25 +106,29 @@ workers:
     temperature: 0.0
     max_tokens: 1600
     budget_tokens: 6000
+    request_timeout_seconds: 90
     reasoning: high
   documentation:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.1
     max_tokens: 1800
     budget_tokens: 6000
+    request_timeout_seconds: 60
     reasoning: medium
   memory:
     primary_provider: mistral
-    fallback_provider: qwen
+    fallback_provider:
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 3000
+    request_timeout_seconds: 45
     reasoning: low
   default:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider:
     temperature: 0.1
     max_tokens: 1800
     budget_tokens: 6000
+    request_timeout_seconds: 60
     reasoning: medium

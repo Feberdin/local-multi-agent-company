@@ -61,3 +61,31 @@ def test_settings_ignore_unreadable_secret_file(monkeypatch, tmp_path: Path, cap
 
     assert settings.github_token == ""
     assert "not readable" in caplog.text
+
+
+def test_settings_ignore_permission_error_while_reading_secret(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unreadable_path = tmp_path / "github_token"
+    unreadable_path.write_text("should-not-be-readable", encoding="utf-8")
+    caplog.set_level("WARNING")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", str(unreadable_path))
+
+    original_read_text = Path.read_text
+
+    def fake_read_text(path: Path, *args, **kwargs) -> str:
+        if path == unreadable_path:
+            raise PermissionError("permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    settings = Settings()
+    settings.apply_secret_file_overrides()
+
+    assert settings.github_token == ""
+    assert "not readable" in caplog.text

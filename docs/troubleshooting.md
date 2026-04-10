@@ -73,6 +73,12 @@ chmod 750 /mnt/user/appdata/feberdin-agent-team/secrets
 chmod 640 /mnt/user/appdata/feberdin-agent-team/secrets/*
 ```
 
+Aktuelles Verhalten:
+
+- fehlende oder nicht lesbare optionale Secret-Dateien blockieren den Start nicht mehr automatisch
+- der Dienst loggt stattdessen eine Warnung und arbeitet ohne diesen Wert weiter
+- wenn ein bestimmter Key fuer einen externen Dienst wirklich Pflicht ist, erscheint der Folgefehler erst an der konkreten Integrationsstelle
+
 Die `.env` darf jeden Schlüssel nur einmal enthalten. Doppelte Schlüssel werden jetzt als Fehler behandelt, damit Port- und Pfadkonflikte nicht still überdeckt werden.
 
 ## Worker startet nicht
@@ -86,6 +92,45 @@ Die `.env` darf jeden Schlüssel nur einmal enthalten. Doppelte Schlüssel werde
 - `MISTRAL_BASE_URL` und `QWEN_BASE_URL` prüfen
 - Routing-Datei und Worker-Zuordnung prüfen
 - Erreichbarkeit des lokalen OpenAI-kompatiblen Endpoints verifizieren
+
+Typische Timeout-Symptome:
+
+- Task bleibt lange in `REQUIREMENTS`, `REVIEWING` oder `DOCUMENTING`
+- `httpx.ReadTimeout` oder `httpcore.ReadTimeout` in Worker-Logs
+- der Orchestrator meldet spaeter einen Worker-Timeout oder eine fehlgeschlagene Stage
+
+Empfohlene Gegenmaßnahmen:
+
+- für leichtere Stufen `mistral-small3.2:latest` bevorzugen
+- `qwen3.5:35b-a3b` nur für schwerere Reasoning-Stufen oder explizite Overrides verwenden
+- `LLM_TIMEOUT_READ_SECONDS` und `LLM_REQUEST_DEADLINE_SECONDS` prüfen
+- `WORKER_TIMEOUT_READ_SECONDS` größer als die maximale Summe interner LLM-Fallbacks halten
+- Worker-Logs prüfen:
+  - `docker compose logs -f fmac-req`
+  - `docker compose logs -f fmac-rsch`
+  - `docker compose logs -f fmac-orch`
+
+Hinweis für schwächere Hardware:
+
+- starte konservativ mit `DEFAULT_MODEL_PROVIDER=mistral`
+- lasse `requirements`, `reviewer` und `documentation` auf Mistral
+- aktiviere Qwen nur dort, wo die zusätzliche Tiefe den höheren Laufzeitpreis wirklich rechtfertigt
+
+## Logging-Fehler mit `service`
+
+Typisches Symptom:
+
+- `ValueError: Formatting field not found in record: 'service'`
+- ausgelöst durch `httpx`, `httpcore`, `anyio` oder andere Fremdlogger
+
+Ursache:
+
+- der Formatter erwartete bisher Felder wie `service` und `task_id`, die Third-Party-Logger nicht automatisch setzen
+
+Fix:
+
+- das Logging ergänzt diese Felder jetzt zentral für alle `LogRecord`s
+- dadurch bleiben strukturierte Logs erhalten, ohne dass Fremdlogger den Stack destabilisieren
 
 ## GitHub-PR wird nicht erstellt
 

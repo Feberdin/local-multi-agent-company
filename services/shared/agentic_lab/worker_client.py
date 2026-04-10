@@ -11,6 +11,7 @@ import asyncio
 
 import httpx
 
+from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.schemas import WorkerRequest, WorkerResponse
 
 
@@ -18,20 +19,31 @@ class WorkerCallError(RuntimeError):
     """Raised when a worker call fails even after retries."""
 
 
-async def call_worker(service_url: str, payload: WorkerRequest, attempts: int = 3) -> WorkerResponse:
+async def call_worker(service_url: str, payload: WorkerRequest, attempts: int | None = None) -> WorkerResponse:
     """POST the worker request and retry transient failures with small backoff."""
 
+    settings = get_settings()
+    total_attempts = attempts or settings.worker_retry_attempts
     last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, total_attempts + 1):
         try:
-            async with httpx.AsyncClient(timeout=180) as client:
+            async with httpx.AsyncClient(timeout=settings.worker_http_timeout()) as client:
                 response = await client.post(f"{service_url.rstrip('/')}/run", json=payload.model_dump())
                 response.raise_for_status()
                 return WorkerResponse.model_validate(response.json())
+        except httpx.TimeoutException as exc:
+            last_error = RuntimeError(
+                f"Worker at {service_url} timed out on attempt {attempt}/{total_attempts}. "
+                f"Configured worker transport timeouts: {settings.worker_timeout_summary()}. "
+                f"Original error: {exc}"
+            )
+            if attempt == total_attempts:
+                break
+            await asyncio.sleep(attempt * 1.5)
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
-            if attempt == attempts:
+            if attempt == total_attempts:
                 break
             await asyncio.sleep(attempt * 1.5)
 
-    raise WorkerCallError(f"Worker at {service_url} failed after {attempts} attempts: {last_error}")
+    raise WorkerCallError(f"Worker at {service_url} failed after {total_attempts} attempts: {last_error}")

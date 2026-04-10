@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -100,6 +101,11 @@ class Settings(BaseSettings):
         default="http://human-resources-worker:8106",
         alias="HUMAN_RESOURCES_WORKER_URL",
     )
+    worker_timeout_connect_seconds: float = Field(default=5.0, alias="WORKER_TIMEOUT_CONNECT_SECONDS")
+    worker_timeout_read_seconds: float = Field(default=240.0, alias="WORKER_TIMEOUT_READ_SECONDS")
+    worker_timeout_write_seconds: float = Field(default=20.0, alias="WORKER_TIMEOUT_WRITE_SECONDS")
+    worker_timeout_pool_seconds: float = Field(default=5.0, alias="WORKER_TIMEOUT_POOL_SECONDS")
+    worker_retry_attempts: int = Field(default=3, alias="WORKER_RETRY_ATTEMPTS")
 
     default_target_repo: str = Field(default="Feberdin/example-repo", alias="DEFAULT_TARGET_REPO")
     default_local_repo_path: str = Field(
@@ -114,7 +120,12 @@ class Settings(BaseSettings):
     )
     default_model_api_key: str = Field(default="", alias="MODEL_API_KEY")
     default_model_api_key_file: Path | None = Field(default=None, alias="MODEL_API_KEY_FILE")
-    default_model_provider: str = Field(default="qwen", alias="DEFAULT_MODEL_PROVIDER")
+    default_model_provider: str = Field(default="mistral", alias="DEFAULT_MODEL_PROVIDER")
+    llm_timeout_connect_seconds: float = Field(default=5.0, alias="LLM_TIMEOUT_CONNECT_SECONDS")
+    llm_timeout_read_seconds: float = Field(default=60.0, alias="LLM_TIMEOUT_READ_SECONDS")
+    llm_timeout_write_seconds: float = Field(default=20.0, alias="LLM_TIMEOUT_WRITE_SECONDS")
+    llm_timeout_pool_seconds: float = Field(default=5.0, alias="LLM_TIMEOUT_POOL_SECONDS")
+    llm_request_deadline_seconds: float = Field(default=90.0, alias="LLM_REQUEST_DEADLINE_SECONDS")
     mistral_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="MISTRAL_BASE_URL")
     qwen_base_url: str = Field(default="http://192.168.57.10:11434/v1", alias="QWEN_BASE_URL")
     mistral_model_name: str = Field(default="mistral-small3.2:latest", alias="MISTRAL_MODEL_NAME")
@@ -218,6 +229,56 @@ class Settings(BaseSettings):
                 secret_file,
             )
             return effective_value
+        except OSError as exc:
+            LOGGER.warning(
+                "Secret file '%s' could not be read (%s). "
+                "The service will continue without this secret because it is optional by default.",
+                secret_file,
+                exc,
+            )
+            return effective_value
+
+    def llm_http_timeout(self) -> httpx.Timeout:
+        """Return the shared HTTP timeout profile for model backend calls."""
+
+        return httpx.Timeout(
+            connect=self.llm_timeout_connect_seconds,
+            read=self.llm_timeout_read_seconds,
+            write=self.llm_timeout_write_seconds,
+            pool=self.llm_timeout_pool_seconds,
+        )
+
+    def worker_http_timeout(self) -> httpx.Timeout:
+        """Return the shared HTTP timeout profile for orchestrator-to-worker calls."""
+
+        return httpx.Timeout(
+            connect=self.worker_timeout_connect_seconds,
+            read=self.worker_timeout_read_seconds,
+            write=self.worker_timeout_write_seconds,
+            pool=self.worker_timeout_pool_seconds,
+        )
+
+    def llm_timeout_summary(self, *, request_deadline_seconds: float | None = None) -> str:
+        """Return a compact timeout summary for operator-visible error messages."""
+
+        deadline = request_deadline_seconds or self.llm_request_deadline_seconds
+        return (
+            f"connect={self.llm_timeout_connect_seconds}s, "
+            f"read={self.llm_timeout_read_seconds}s, "
+            f"write={self.llm_timeout_write_seconds}s, "
+            f"pool={self.llm_timeout_pool_seconds}s, "
+            f"deadline={deadline}s"
+        )
+
+    def worker_timeout_summary(self) -> str:
+        """Return a compact timeout summary for worker transport diagnostics."""
+
+        return (
+            f"connect={self.worker_timeout_connect_seconds}s, "
+            f"read={self.worker_timeout_read_seconds}s, "
+            f"write={self.worker_timeout_write_seconds}s, "
+            f"pool={self.worker_timeout_pool_seconds}s"
+        )
 
     @property
     def database_url(self) -> str:

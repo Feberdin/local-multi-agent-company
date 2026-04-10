@@ -1,7 +1,8 @@
 """
 Purpose: Verify that worker-to-model routing stays configurable and resolves stable provider defaults.
 Input/Output: Tests load the routing config with temporary overrides and resolve providers for representative workers.
-Important invariants: Complex workers must keep their stronger-model default unless explicitly overridden.
+Important invariants: Lightweight stages should prefer the faster local model by default.
+Heavy reasoning stages can still opt into the larger backend.
 How to debug: If these tests fail, inspect `config/model-routing.example.yaml` and `services/shared/agentic_lab/model_routing.py`.
 """
 
@@ -40,10 +41,11 @@ def test_load_model_routing_applies_worker_override(tmp_path: Path, monkeypatch)
     assert route.temperature == 0.3
     assert route.max_tokens == 777
     assert route.budget_tokens == 3333
+    assert route.request_timeout_seconds == 45.0
     assert route.reasoning == "medium"
 
 
-def test_resolve_worker_route_uses_expected_default_provider(monkeypatch) -> None:
+def test_resolve_worker_route_keeps_heavy_stage_on_qwen_by_default(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_ROUTING_CONFIG", "/tmp/nonexistent-model-routing.yaml")
     settings = Settings()
 
@@ -52,3 +54,18 @@ def test_resolve_worker_route_uses_expected_default_provider(monkeypatch) -> Non
     assert provider.name == "qwen"
     assert route.primary_provider == "qwen"
     assert route.reasoning == "high"
+
+
+def test_resolve_worker_route_prefers_mistral_for_requirements_and_reviewer(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_ROUTING_CONFIG", "/tmp/nonexistent-model-routing.yaml")
+    settings = Settings()
+
+    requirements_provider, requirements_route = resolve_worker_route(settings, "requirements")
+    reviewer_provider, reviewer_route = resolve_worker_route(settings, "reviewer")
+
+    assert requirements_provider.name == "mistral"
+    assert requirements_route.fallback_provider is None
+    assert requirements_route.request_timeout_seconds == 45.0
+    assert reviewer_provider.name == "mistral"
+    assert reviewer_route.fallback_provider is None
+    assert reviewer_route.request_timeout_seconds == 60.0

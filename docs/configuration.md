@@ -16,6 +16,16 @@
 - `MODEL_API_KEY_FILE`
 - `MISTRAL_API_KEY_FILE`
 - `QWEN_API_KEY_FILE`
+- `LLM_TIMEOUT_CONNECT_SECONDS`
+- `LLM_TIMEOUT_READ_SECONDS`
+- `LLM_TIMEOUT_WRITE_SECONDS`
+- `LLM_TIMEOUT_POOL_SECONDS`
+- `LLM_REQUEST_DEADLINE_SECONDS`
+- `WORKER_TIMEOUT_CONNECT_SECONDS`
+- `WORKER_TIMEOUT_READ_SECONDS`
+- `WORKER_TIMEOUT_WRITE_SECONDS`
+- `WORKER_TIMEOUT_POOL_SECONDS`
+- `WORKER_RETRY_ATTEMPTS`
 - `WEB_SEARCH_API_KEY_FILE`
 - `BRAVE_SEARCH_API_KEY`
 - `BRAVE_SEARCH_API_KEY_FILE`
@@ -28,6 +38,10 @@ Wichtige Defaults:
 
 - `ORCHESTRATOR_PORT=18080`
 - `WEB_UI_PORT=18088`
+- `DEFAULT_MODEL_PROVIDER=mistral`
+- `LLM_TIMEOUT_READ_SECONDS=60`
+- `LLM_REQUEST_DEADLINE_SECONDS=90`
+- `WORKER_TIMEOUT_READ_SECONDS=240`
 
 Regel:
 
@@ -125,7 +139,21 @@ Im Dashboard pflegbar:
   - `temperature`
   - `max_tokens`
   - `budget_tokens`
+  - `request_timeout_seconds`
   - `reasoning`
+
+Empfohlene Standardverteilung:
+
+- `requirements`, `reviewer`, `documentation`, `qa` und sonstige leichte Hilfsstufen bevorzugen `mistral-small3.2:latest`
+- `research`, `architecture`, `coding`, `security` und `validation` duerfen `qwen3.5:35b-a3b` nutzen
+- Unbekannte oder neue Worker fallen konservativ auf den sicheren Default statt automatisch auf das groessere Modell
+
+Timeout-Hinweise:
+
+- `LLM_TIMEOUT_*` steuern die HTTP-Transportgrenzen zum OpenAI-kompatiblen Endpoint
+- `LLM_REQUEST_DEADLINE_SECONDS` begrenzt jeden einzelnen Modellaufruf zusaetzlich pro Stage
+- `request_timeout_seconds` im Routing kann pro Worker enger oder grosszuegiger gesetzt werden
+- `WORKER_TIMEOUT_*` steuern, wie lange der Orchestrator auf einen Worker warten darf
 
 ## GitHub
 
