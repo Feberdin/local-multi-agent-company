@@ -1,0 +1,38 @@
+# Purpose: Baseline continuous integration for the agent-team repository itself.
+# Input/Output: GitHub Actions installs dependencies and runs linting, typing, and tests on every push and PR.
+# Invariants: CI never deploys and never requires self-hosted infrastructure.
+# Debugging: If CI fails during install, compare the dependency set in `pyproject.toml` with this workflow.
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: Pytest
+        run: python -m pytest -q
+
+      - name: Mypy
+        run: python -m mypy services

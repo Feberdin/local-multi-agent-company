@@ -1,0 +1,22 @@
+# Purpose: Optional GitHub self-hosted runner stack for Unraid-based CI and staging deployment jobs.
+# Input/Output: Docker Compose can start this stack separately from the main agent services.
+# Invariants: Runner registration tokens stay in `.env` or a secret store and are never committed.
+# Debugging: If jobs never pick up, verify the runner labels and repository/org registration settings.
+
+services:
+  github-runner:
+    image: ${GITHUB_RUNNER_IMAGE:-myoung34/github-runner:latest}
+    container_name: feberdin-github-runner
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_URL: https://github.com/${DEFAULT_TARGET_REPO}
+      RUNNER_NAME: feberdin-unraid-runner
+      LABELS: ${SELF_HOSTED_RUNNER_LABELS}
+      DISABLE_AUTO_UPDATE: "true"
+      EPHEMERAL: "false"
+    volumes:
+      - ${HOST_DATA_DIR:-/mnt/user/appdata/feberdin-agent-team/data}/github-runner/config:/config
+      - ${HOST_DATA_DIR:-/mnt/user/appdata/feberdin-agent-team/data}/github-runner/work:/tmp/github-runner

@@ -1,0 +1,62 @@
+<!--
+Purpose: Dashboard homepage for task creation and high-level task visibility.
+Input/Output: Receives task summaries from the web UI service and renders a list plus a creation form.
+Important invariants: Operators should immediately see task status and the next likely action.
+How to debug: If the page renders without tasks, inspect the orchestrator `/api/tasks` response.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Feberdin Agent Team</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <p class="eyebrow">Feberdin Homelab</p>
+        <h1>Agent Team Dashboard</h1>
+        <p class="lead">Neue Ziele erfassen, Fortschritt verfolgen und riskante Schritte bewusst freigeben.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Neue Aufgabe</h2>
+        <form method="post" action="/tasks" class="stack">
+          <label>
+            Ziel
+            <textarea name="goal" rows="4" placeholder="Beispiel: Füge einen Healthcheck hinzu und ergänze CI-Prüfungen." required></textarea>
+          </label>
+          <label>
+            GitHub-Repository
+            <input type="text" name="repository" placeholder="Feberdin/example-repo" required>
+          </label>
+          <label>
+            Lokaler Workspace-Pfad
+            <input type="text" name="local_repo_path" placeholder="/workspace/example-repo" required>
+          </label>
+          <button type="submit">Aufgabe anlegen</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Aufgaben</h2>
+          <span class="muted">{{ tasks|length }} Einträge</span>
+        </div>
+        <div class="task-list">
+          {% for task in tasks %}
+          <a class="task-card" href="/tasks/{{ task.id }}">
+            <span class="status status-{{ task.status|lower }}">{{ task.status }}</span>
+            <strong>{{ task.goal }}</strong>
+            <span class="muted">{{ task.repository }}</span>
+            <span class="muted">{{ task.updated_at }}</span>
+          </a>
+          {% else %}
+          <p class="muted">Noch keine Aufgaben vorhanden.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

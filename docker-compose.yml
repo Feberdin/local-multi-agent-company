@@ -1,0 +1,301 @@
+# Purpose: Main Unraid-friendly compose stack for the Feberdin multi-agent development company.
+# Input/Output: Docker Compose starts the orchestrator, worker team, dashboard, and optional adapters with persistent volumes.
+# Invariants: All stateful data is stored in mounted appdata paths, and every service exposes a health endpoint.
+# Debugging: If startup ordering fails, inspect the worker health endpoints and the shared `agent-control` network first.
+
+x-agent-service: &agent-service
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.agent-service
+  env_file: [".env"]
+  user: "${PUID:-99}:${PGID:-100}"
+  volumes:
+    - ${HOST_DATA_DIR:-./data}:/data
+    - ${HOST_REPORTS_DIR:-./reports}:/reports
+    - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
+    - ./:/app
+  networks: [agent-control]
+  restart: unless-stopped
+
+services:
+  orchestrator:
+    <<: *agent-service
+    command: ["uvicorn", "services.orchestrator.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      SERVICE_NAME: orchestrator
+      SERVICE_PORT: 8080
+    ports:
+      - "${ORCHESTRATOR_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  requirements-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.requirements_worker.app:app", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      SERVICE_NAME: requirements-worker
+      SERVICE_PORT: 8090
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  research-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.research_worker.app:app", "--host", "0.0.0.0", "--port", "8091"]
+    environment:
+      SERVICE_NAME: research-worker
+      SERVICE_PORT: 8091
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  architecture-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.architecture_worker.app:app", "--host", "0.0.0.0", "--port", "8092"]
+    environment:
+      SERVICE_NAME: architecture-worker
+      SERVICE_PORT: 8092
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  coding-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.coding_worker.app:app", "--host", "0.0.0.0", "--port", "8093"]
+    environment:
+      SERVICE_NAME: coding-worker
+      SERVICE_PORT: 8093
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8093/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  reviewer-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.reviewer_worker.app:app", "--host", "0.0.0.0", "--port", "8094"]
+    environment:
+      SERVICE_NAME: reviewer-worker
+      SERVICE_PORT: 8094
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8094/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  test-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.test_worker.app:app", "--host", "0.0.0.0", "--port", "8095"]
+    environment:
+      SERVICE_NAME: test-worker
+      SERVICE_PORT: 8095
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  github-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.github_worker.app:app", "--host", "0.0.0.0", "--port", "8096"]
+    environment:
+      SERVICE_NAME: github-worker
+      SERVICE_PORT: 8096
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8096/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  deploy-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.deploy_worker.app:app", "--host", "0.0.0.0", "--port", "8097"]
+    environment:
+      SERVICE_NAME: deploy-worker
+      SERVICE_PORT: 8097
+    volumes:
+      - ${HOST_DATA_DIR:-./data}:/data
+      - ${HOST_REPORTS_DIR:-./reports}:/reports
+      - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
+      - ${HOST_STAGING_STACK_ROOT:-./staging-stacks}:/staging-stacks
+      - ./:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  qa-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.qa_worker.app:app", "--host", "0.0.0.0", "--port", "8098"]
+    environment:
+      SERVICE_NAME: qa-worker
+      SERVICE_PORT: 8098
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8098/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  security-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.security_worker.app:app", "--host", "0.0.0.0", "--port", "8099"]
+    environment:
+      SERVICE_NAME: security-worker
+      SERVICE_PORT: 8099
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  validation-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.validation_worker.app:app", "--host", "0.0.0.0", "--port", "8100"]
+    environment:
+      SERVICE_NAME: validation-worker
+      SERVICE_PORT: 8100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  documentation-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.documentation_worker.app:app", "--host", "0.0.0.0", "--port", "8101"]
+    environment:
+      SERVICE_NAME: documentation-worker
+      SERVICE_PORT: 8101
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  memory-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.memory_worker.app:app", "--host", "0.0.0.0", "--port", "8102"]
+    environment:
+      SERVICE_NAME: memory-worker
+      SERVICE_PORT: 8102
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8102/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  data-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.data_worker.app:app", "--host", "0.0.0.0", "--port", "8103"]
+    environment:
+      SERVICE_NAME: data-worker
+      SERVICE_PORT: 8103
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8103/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  ux-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.ux_worker.app:app", "--host", "0.0.0.0", "--port", "8104"]
+    environment:
+      SERVICE_NAME: ux-worker
+      SERVICE_PORT: 8104
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8104/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  cost-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.cost_worker.app:app", "--host", "0.0.0.0", "--port", "8105"]
+    environment:
+      SERVICE_NAME: cost-worker
+      SERVICE_PORT: 8105
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8105/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  human-resources-worker:
+    <<: *agent-service
+    command: ["uvicorn", "services.human_resources_worker.app:app", "--host", "0.0.0.0", "--port", "8106"]
+    environment:
+      SERVICE_NAME: human-resources-worker
+      SERVICE_PORT: 8106
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8106/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  web-ui:
+    <<: *agent-service
+    command: ["uvicorn", "services.web_ui.app:app", "--host", "0.0.0.0", "--port", "8088"]
+    environment:
+      SERVICE_NAME: web-ui
+      SERVICE_PORT: 8088
+      ORCHESTRATOR_INTERNAL_URL: http://orchestrator:8080
+    ports:
+      - "${WEB_UI_PORT:-8088}:8088"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  openhands:
+    image: ${OPENHANDS_IMAGE:-ghcr.io/all-hands-ai/openhands:latest}
+    profiles: ["optional-ai"]
+    env_file: [".env"]
+    user: "${PUID:-99}:${PGID:-100}"
+    restart: unless-stopped
+    volumes:
+      - ${HOST_WORKSPACE_ROOT:-./workspace}:/workspace
+    networks: [agent-control]
+
+  github-mcp:
+    image: ${GITHUB_MCP_IMAGE:-ghcr.io/github/github-mcp-server:latest}
+    profiles: ["optional-integrations"]
+    env_file: [".env"]
+    restart: unless-stopped
+    networks: [agent-control]
+
+networks:
+  agent-control:
+    driver: bridge

@@ -1,0 +1,48 @@
+# Purpose: Example per-repository onboarding profile for repos managed by the agent team.
+# Input/Output: Operators copy and adapt this file for each repository the system may clone, test, and deploy.
+# Invariants: Commands remain explicit, staging stays separate from production, and secrets are referenced externally.
+# Debugging: If a specific repo behaves oddly, check that its local path, test commands, and staging health URL match reality.
+
+repository:
+  full_name: Feberdin/example-repo
+  local_path: /workspace/example-repo
+  clone_url: git@github.com:Feberdin/example-repo.git
+  default_branch: main
+  issue_input_enabled: true
+
+quality:
+  lint_commands:
+    - ruff check .
+  typing_commands:
+    - mypy .
+  test_commands:
+    - pytest -q
+
+deployment:
+  strategy: docker_compose
+  target: staging
+  project_dir: /mnt/user/appdata/feberdin-staging/example-repo
+  compose_file: docker-compose.staging.yml
+  healthcheck_url: http://unraid-staging.local:9000/health
+
+smoke_checks:
+  - name: api-health
+    url: http://unraid-staging.local:9000/health
+    expected_status: 200
+    expected_substring: ok
+
+model_preferences:
+  coding:
+    primary_provider: qwen
+    fallback_provider: mistral
+  reviewer:
+    primary_provider: qwen
+    fallback_provider: mistral
+  documentation:
+    primary_provider: mistral
+    fallback_provider: qwen
+
+team_hints:
+  enable_data_worker: false
+  enable_ux_worker: false
+  enable_staging_deploy: true

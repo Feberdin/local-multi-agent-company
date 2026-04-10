@@ -1,0 +1,1 @@
+"""Validation worker service package."""

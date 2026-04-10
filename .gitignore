@@ -1,0 +1,30 @@
+# Purpose: Ignore local caches, secrets, build output, and runtime state for the multi-agent system.
+# Input/Output: Git excludes generated files from commits and PRs.
+# Invariants: Secrets and runtime databases never belong in version control.
+# Debugging: If a file is missing from Git unexpectedly, inspect this file first.
+
+.env
+.env.local
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.vscode/
+.idea/
+data/
+logs/
+reports/
+workspace/
+tmp/
+node_modules/

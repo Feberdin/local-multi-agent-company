@@ -1,0 +1,33 @@
+# Purpose: Central allow/deny rules for worker command execution and path risk handling.
+# Input/Output: Workers load this file to decide which commands are allowed and which paths need review.
+# Invariants: Infrastructure, workflow, and Unraid deployment paths are always treated as review-sensitive.
+# Debugging: If a worker blocks an expected command, check the `allowed_command_prefixes` list here first.
+
+allowed_command_prefixes:
+  - pytest
+  - ruff
+  - mypy
+  - npm
+  - python
+  - python3
+
+denied_path_prefixes:
+  - /etc
+  - /var/run
+  - /root
+
+review_required_path_prefixes:
+  - infra/
+  - .github/workflows/
+  - docker/
+  - scripts/unraid/
+  - config/
+
+dangerous_tokens:
+  - rm -rf
+  - curl | sh
+  - wget | sh
+  - drop table
+  - truncate table
+  - chmod 777
+  - mkfs

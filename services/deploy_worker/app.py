@@ -1,0 +1,91 @@
+"""
+Purpose: Deploy worker for controlled Unraid staging deployments through an auditable shell wrapper.
+Input/Output: Receives deployment settings and returns deployment logs plus the target healthcheck URL.
+Important invariants: Only staging deployment is allowed automatically; production deployment is out of scope for this worker.
+How to debug: If deployment fails, inspect the invoked script, SSH connectivity, and the returned stderr captured here.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI
+
+from services.shared.agentic_lab.config import get_settings
+from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
+from services.shared.agentic_lab.repo_tools import CommandError, run_command, write_report
+from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+
+settings = get_settings()
+logger = configure_logging(settings.service_name, settings.log_level)
+app = FastAPI(title="Feberdin Deploy Worker", version="0.1.0")
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health() -> HealthResponse:
+    return HealthResponse(service="deploy-worker")
+
+
+@app.post("/run", response_model=WorkerResponse)
+async def run(request: WorkerRequest) -> WorkerResponse:
+    task_logger = TaskLoggerAdapter(logger.logger, {"service": "deploy-worker", "task_id": request.task_id})
+    deployment = request.deployment.model_dump() if request.deployment else {}
+    project_dir = deployment.get("project_dir") or settings.staging_project_dir
+    compose_file = deployment.get("compose_file") or settings.staging_compose_file
+    healthcheck_url = deployment.get("healthcheck_url") or settings.staging_healthcheck_url
+    branch_name = request.branch_name or settings.staging_git_branch
+
+    if request.metadata.get("deployment_target") == "production":
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Production deployment is intentionally blocked.",
+            errors=["The deploy worker is restricted to staging targets only."],
+            requires_human_approval=True,
+            approval_reason="Production deployment requires a separate approved workflow.",
+        )
+
+    script_path = Path("/app/scripts/unraid/deploy-staging.sh")
+    try:
+        completed = run_command(
+            [
+                "/bin/sh",
+                str(script_path),
+                request.local_repo_path,
+                project_dir,
+                compose_file,
+                branch_name,
+                settings.staging_ssh_user,
+                settings.staging_host,
+                str(settings.staging_ssh_port),
+            ],
+            timeout=900,
+        )
+    except CommandError as exc:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Staging deployment failed.",
+            errors=[str(exc)],
+        )
+
+    report = {
+        "stdout": completed.stdout[-6000:],
+        "stderr": completed.stderr[-6000:],
+        "healthcheck_url": healthcheck_url,
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "deploy-report.json", report)
+    task_logger.info("Staging deployment script completed.")
+
+    return WorkerResponse(
+        worker="deploy",
+        summary="Staging deployment completed.",
+        outputs={"healthcheck_url": healthcheck_url, "project_dir": project_dir, "branch_name": branch_name},
+        artifacts=[
+            Artifact(
+                name="deploy-report",
+                path=str(report_path),
+                description="Staging deployment stdout, stderr, and healthcheck target.",
+            )
+        ],
+    )

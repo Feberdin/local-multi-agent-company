@@ -1,0 +1,1 @@
+"""Architecture worker service package."""

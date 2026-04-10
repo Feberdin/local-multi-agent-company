@@ -1,0 +1,186 @@
+/*
+Purpose: Lightweight dashboard styling that stays readable on desktop and mobile.
+Input/Output: The browser uses these rules to render the minimal operator UI.
+Important invariants: Status indicators must remain legible, and destructive actions should be visually distinct.
+How to debug: If layout breaks on Unraid's embedded browser or mobile, start with spacing and grid rules here.
+*/
+
+:root {
+  --bg: #f3efe6;
+  --panel: #fffdf8;
+  --ink: #172321;
+  --muted: #586561;
+  --accent: #b14f27;
+  --accent-soft: #f4d8c8;
+  --danger: #912018;
+  --line: #ded5c8;
+  --shadow: 0 14px 30px rgba(23, 35, 33, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(177, 79, 39, 0.15), transparent 30%),
+    linear-gradient(180deg, #f7f2eb 0%, var(--bg) 100%);
+  color: var(--ink);
+}
+
+.layout {
+  width: min(1080px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+
+.hero {
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.lead,
+.muted {
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel-header,
+.event-header,
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.stack {
+  display: grid;
+  gap: 0.9rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+input,
+textarea,
+button,
+.button-link {
+  font: inherit;
+  border-radius: 14px;
+}
+
+input,
+textarea {
+  border: 1px solid var(--line);
+  padding: 0.85rem 1rem;
+  background: white;
+}
+
+button,
+.button-link {
+  border: none;
+  background: var(--accent);
+  color: white;
+  padding: 0.85rem 1.1rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+.task-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.task-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  text-decoration: none;
+  color: inherit;
+  background: white;
+}
+
+.timeline {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.event {
+  border-left: 4px solid var(--accent-soft);
+  padding-left: 1rem;
+}
+
+.status {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: #dde7e3;
+}
+
+.status-approval_required,
+.status-failed {
+  background: #f6d0cb;
+  color: var(--danger);
+}
+
+.status-done,
+.status-staging_deployed {
+  background: #d6ead8;
+  color: #245232;
+}
+
+pre {
+  overflow-x: auto;
+  background: #f8f6f1;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem;
+}
+
+@media (max-width: 700px) {
+  .layout {
+    width: min(100%, calc(100% - 1rem));
+    padding-top: 1rem;
+  }
+
+  .actions {
+    align-items: stretch;
+  }
+}

@@ -1,0 +1,30 @@
+# Purpose: Shared container image for all Python services in the agent system.
+# Input/Output: Docker builds a reusable runtime image with dependencies and the project source tree.
+# Invariants: The image runs as a non-root user and keeps runtime state in mounted volumes.
+# Debugging: If a service fails before binding its port, inspect the dependency install stage here first.
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Why this exists: git is needed for repo operations, and curl-like healthchecks are handled in Python.
+# What happens here: install only the small set of OS packages the workers need for repo and process tasks.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md /app/
+COPY config /app/config
+COPY scripts /app/scripts
+COPY services /app/services
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install .
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser

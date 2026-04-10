@@ -1,0 +1,11 @@
+# Purpose: Optional staging-specific compose overrides for operators who want explicit profile enablement.
+# Input/Output: Compose merges this file when you pass `-f infra/compose/staging.override.yml`.
+# Invariants: Optional integrations stay disabled by default and must be turned on intentionally.
+# Debugging: If an optional integration does not appear, confirm that its profile is enabled and its image is valid.
+
+services:
+  openhands:
+    profiles: ["optional-ai", "staging"]
+
+  github-mcp:
+    profiles: ["optional-integrations", "staging"]

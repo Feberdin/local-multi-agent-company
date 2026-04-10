@@ -1,0 +1,63 @@
+# Purpose: Developer-friendly overrides for iterative local work outside the final Unraid staging layout.
+# Input/Output: Docker Compose automatically merges this file for local development.
+# Invariants: The override keeps log verbosity high and source mounts live during debugging.
+# Debugging: If behavior differs between local and Unraid runs, compare this file with `docker-compose.yml`.
+
+services:
+  orchestrator:
+    environment:
+      LOG_LEVEL: DEBUG
+  requirements-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  research-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  architecture-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  coding-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  reviewer-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  test-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  github-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  deploy-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  qa-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  security-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  validation-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  documentation-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  memory-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  data-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  ux-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  cost-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  human-resources-worker:
+    environment:
+      LOG_LEVEL: DEBUG
+  web-ui:
+    environment:
+      LOG_LEVEL: DEBUG

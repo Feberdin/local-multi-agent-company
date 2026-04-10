@@ -1,0 +1,32 @@
+# Purpose: Pull request validation workflow with optional manual dispatch support.
+# Input/Output: Runs the same repository checks that reviewers expect before merge discussions.
+# Invariants: This workflow remains non-deploying and safe to run on shared GitHub infrastructure.
+# Debugging: If PR checks pass locally but fail here, compare Python versions and dependency installation order.
+
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+jobs:
+  review-gate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run local validation script
+        run: ./scripts/run-local-tests.sh

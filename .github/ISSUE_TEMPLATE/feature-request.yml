@@ -1,0 +1,25 @@
+name: Feature Request
+description: Beschreibe ein Ziel oder Feature für das Agent-Team.
+title: "[Feature]: "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Ziel
+      description: Was soll gebaut oder verbessert werden?
+      placeholder: Formuliere das Ergebnis, nicht nur die Implementierungsidee.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Akzeptanzkriterien
+      description: Woran erkennen wir, dass die Aufgabe erledigt ist?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Kontext
+      description: Welche Dateien, Services oder Deploy-Pfade sind betroffen?

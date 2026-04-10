@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Feberdin Agent Team Bootstrap</Name>
+  <Repository>docker:cli</Repository>
+  <Registry>https://hub.docker.com/_/docker</Registry>
+  <Network>bridge</Network>
+  <MyIP />
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Feberdin</Support>
+  <Project>https://github.com/Feberdin</Project>
+  <Overview>
+    Installs or updates the Feberdin multi-agent project under one dedicated Unraid appdata root.
+    This template is a bootstrap helper, not the long-running application stack itself.
+    It downloads a bootstrap script with curl from your Git repository, clones or updates the repo,
+    prepares the project folders, and can optionally start docker compose on the Unraid host.
+  </Overview>
+  <Category>Tools:</Category>
+  <WebUI />
+  <TemplateURL />
+  <Icon />
+  <ExtraParams>--rm</ExtraParams>
+  <PostArgs>-lc 'apk add --no-cache bash curl git &gt;/dev/null &amp;&amp; export PROJECT_ROOT="/project" &amp;&amp; curl -fsSL "$BOOTSTRAP_SCRIPT_URL" | bash'</PostArgs>
+  <CPUset />
+  <DateInstalled>0</DateInstalled>
+  <DonateText />
+  <DonateLink />
+  <Requires>Docker enabled in Unraid. Mount /var/run/docker.sock only if AUTO_START_STACK=true.</Requires>
+  <Config Name="Project Root" Target="/project" Default="/mnt/user/appdata/feberdin-agent-team" Mode="rw" Description="Dedicated host root for repo, data, reports, workspace, and staging-stacks." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/feberdin-agent-team</Config>
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Description="Optional. Required only when AUTO_START_STACK=true so the bootstrap can run docker compose on the Unraid host." Type="Path" Display="advanced" Required="false" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="Bootstrap Script URL" Target="BOOTSTRAP_SCRIPT_URL" Default="" Description="Raw URL to scripts/unraid/install-from-git.sh in your Git repository. Example: https://raw.githubusercontent.com/OWNER/REPO/main/scripts/unraid/install-from-git.sh" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Repository URL" Target="REPO_URL" Default="" Description="Git clone URL of the project repository to install. Example: https://github.com/OWNER/REPO.git" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Repository Ref" Target="REPO_REF" Default="main" Description="Git branch or tag to install or update." Type="Variable" Display="always" Required="true" Mask="false">main</Config>
+  <Config Name="Auto Start Stack" Target="AUTO_START_STACK" Default="false" Description="Set to true only if the bootstrap container is allowed to start docker compose on the Unraid host." Type="Variable" Display="always" Required="true" Mask="false">false</Config>
+</Container>

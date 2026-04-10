@@ -1,0 +1,93 @@
+# Purpose: Human-readable service-level configuration example for operators and future extensions.
+# Input/Output: This file documents how environment variables map to runtime behavior.
+# Invariants: Secrets shown below are placeholders only and must be replaced at deploy time.
+# Debugging: Compare this file with your `.env` values when service URLs or staging paths do not line up.
+
+application:
+  environment: staging
+  log_level: INFO
+  runtime_paths:
+    data_dir: /data
+    reports_dir: /reports
+    workspace_root: /workspace
+    staging_stack_root: /staging-stacks
+
+orchestrator:
+  database_url: sqlite:////data/orchestrator.db
+  auto_deploy_staging: true
+  worker_sequence:
+    - requirements
+    - cost
+    - human_resources
+    - research
+    - architecture
+    - data
+    - ux
+    - coding
+    - reviewer
+    - tester
+    - security
+    - validation
+    - documentation
+    - github
+    - deploy
+    - qa
+    - memory
+  require_approval_for:
+    - secret_changes
+    - infrastructure_changes
+    - destructive_actions
+
+llm:
+  provider: openai-compatible
+  routing_config: /app/config/model-routing.example.yaml
+  providers:
+    mistral:
+      base_url: http://192.168.57.10:11434/v1
+      model: mistral-small3.2:latest
+    qwen:
+      base_url: http://192.168.57.10:11434/v1
+      model: qwen3.5:35b-a3b
+  api_key: ${MODEL_API_KEY}
+  coding_provider: local_patch
+  optional_openhands:
+    enabled: false
+    base_url: http://openhands:3000
+
+github:
+  repository_default: Feberdin/example-repo
+  token: ${GITHUB_TOKEN}
+  api_url: https://api.github.com
+  optional_mcp:
+    enabled: false
+    base_url: http://github-mcp:8787
+
+staging:
+  host: unraid-staging.local
+  ssh_user: appuser
+  ssh_port: 22
+  project_dir: /mnt/user/appdata/feberdin-staging/example-app
+  compose_file: docker-compose.staging.yml
+  healthcheck_url: http://unraid-staging.local:9000/health
+
+team_roles:
+  required:
+    - orchestrator
+    - requirements
+    - research
+    - architecture
+    - coding
+    - reviewer
+    - tester
+    - security
+    - validation
+    - github
+    - documentation
+  optional:
+    - deploy
+    - qa
+    - memory
+    - data
+    - ux
+    - cost
+    - human_resources

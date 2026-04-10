@@ -1,0 +1,344 @@
+"""
+Purpose: High-level task persistence and audit operations for the orchestrator.
+Input/Output: The orchestrator uses this service to create tasks, update statuses, store worker results, and record approvals.
+Important invariants: Every meaningful state change is logged as both an event and a snapshot for later recovery and debugging.
+How to debug: If the UI and worker state disagree, compare the latest task row with the newest event and snapshot entries.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from services.shared.agentic_lab.db import (
+    ApprovalRecord,
+    TaskEventRecord,
+    TaskRecord,
+    TaskSnapshotRecord,
+    get_session_factory,
+)
+from services.shared.agentic_lab.repo_tools import create_branch_name
+from services.shared.agentic_lab.schemas import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalResponse,
+    DeploymentConfig,
+    TaskCreateRequest,
+    TaskDetail,
+    TaskEventResponse,
+    TaskStatus,
+    TaskSummary,
+    WorkerResponse,
+)
+
+
+class TaskService:
+    """Encapsulate all database writes so workflow code stays readable and consistent."""
+
+    def __init__(self, session_factory=None) -> None:
+        self.session_factory = session_factory or get_session_factory()
+
+    def session(self) -> Session:
+        return self.session_factory()
+
+    def create_task(self, request: TaskCreateRequest) -> TaskSummary:
+        """Create a new orchestrated task with deterministic branch naming and safe defaults."""
+
+        with self.session() as session:
+            task_id = str(uuid4())
+            local_repo_path = request.local_repo_path or f"/workspace/{request.repository.split('/')[-1]}"
+            branch_name = create_branch_name(request.goal, task_id)
+            record = TaskRecord(
+                id=task_id,
+                goal=request.goal,
+                repository=request.repository,
+                repo_url=request.repo_url,
+                local_repo_path=local_repo_path,
+                base_branch=request.base_branch,
+                branch_name=branch_name,
+                status=TaskStatus.NEW.value,
+                enable_web_research=request.enable_web_research,
+                auto_deploy_staging=(
+                    request.auto_deploy_staging if request.auto_deploy_staging is not None else True
+                ),
+                issue_number=request.issue_number,
+                metadata_json={
+                    **request.metadata,
+                    "repo_url": request.repo_url,
+                    "issue_number": request.issue_number,
+                    "enable_web_research": request.enable_web_research,
+                    "auto_deploy_staging": (
+                        request.auto_deploy_staging if request.auto_deploy_staging is not None else True
+                    ),
+                    "test_commands": request.test_commands,
+                    "lint_commands": request.lint_commands,
+                    "typing_commands": request.typing_commands,
+                },
+                smoke_checks_json=[item.model_dump() for item in request.smoke_checks],
+                deployment_json=request.deployment.model_dump() if request.deployment else None,
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+
+            self._add_event(
+                session,
+                task_id=record.id,
+                stage=TaskStatus.NEW.value,
+                message="Task created and waiting to run.",
+                details={"repository": record.repository, "branch_name": record.branch_name},
+            )
+            self._add_snapshot(session, record.id, TaskStatus.NEW.value, {"created": True})
+            session.commit()
+            return self._to_summary(record)
+
+    def list_tasks(self) -> list[TaskSummary]:
+        """Return newest tasks first for the dashboard."""
+
+        with self.session() as session:
+            records = session.query(TaskRecord).order_by(TaskRecord.created_at.desc()).all()
+            return [self._to_summary(record) for record in records]
+
+    def get_task(self, task_id: str) -> TaskDetail:
+        """Return a full task detail view with events and approvals."""
+
+        with self.session() as session:
+            record = session.get(TaskRecord, task_id)
+            if record is None:
+                raise KeyError(f"Task {task_id} was not found.")
+            events = [
+                TaskEventResponse(
+                    id=item.id,
+                    task_id=item.task_id,
+                    level=item.level,
+                    stage=item.stage,
+                    message=item.message,
+                    details=item.details_json,
+                    created_at=item.created_at,
+                )
+                for item in sorted(record.events, key=lambda entry: entry.created_at)
+            ]
+            approvals = [
+                ApprovalResponse(
+                    gate_name=item.gate_name,
+                    decision=ApprovalDecision(item.decision),
+                    reason=item.reason,
+                    actor=item.actor,
+                    created_at=item.created_at,
+                )
+                for item in sorted(record.approvals, key=lambda entry: entry.created_at)
+            ]
+            return TaskDetail(
+                **self._to_summary(record).model_dump(),
+                worker_results=record.worker_results_json or {},
+                risk_flags=record.risk_flags_json or [],
+                events=events,
+                approvals=approvals,
+                smoke_checks=record.smoke_checks_json or [],
+                deployment=(
+                    DeploymentConfig.model_validate(record.deployment_json)
+                    if record.deployment_json
+                    else None
+                ),
+            )
+
+    def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        *,
+        message: str,
+        details: dict | None = None,
+        resume_target: str | None = None,
+        latest_error: str | None = None,
+    ) -> TaskDetail:
+        """Update task status, log an event, and store a checkpoint snapshot."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            record.status = status.value
+            record.resume_target = resume_target
+            record.latest_error = latest_error
+            self._add_event(session, task_id, status.value, message, details or {})
+            self._add_snapshot(
+                session,
+                task_id,
+                status.value,
+                {
+                    "resume_target": resume_target,
+                    "latest_error": latest_error,
+                    "details": details or {},
+                },
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def store_worker_result(
+        self,
+        task_id: str,
+        worker_name: str,
+        result: WorkerResponse,
+    ) -> TaskDetail:
+        """Persist worker output, warnings, errors, and newly discovered risk flags."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            worker_results = dict(record.worker_results_json or {})
+            worker_results[worker_name] = result.model_dump()
+            record.worker_results_json = worker_results
+
+            merged_flags = set(record.risk_flags_json or [])
+            merged_flags.update(result.risk_flags)
+            record.risk_flags_json = sorted(merged_flags)
+
+            if result.errors:
+                record.latest_error = "; ".join(result.errors)
+
+            self._add_event(
+                session,
+                task_id,
+                worker_name.upper(),
+                result.summary,
+                {
+                    "warnings": result.warnings,
+                    "errors": result.errors,
+                    "risk_flags": result.risk_flags,
+                    "artifacts": [artifact.model_dump() for artifact in result.artifacts],
+                },
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                record.status,
+                {"worker_name": worker_name, "result": result.model_dump()},
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def set_approval_required(self, task_id: str, reason: str, resume_target: str) -> TaskDetail:
+        """Pause the workflow until a human explicitly approves or rejects the gate."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            record.status = TaskStatus.APPROVAL_REQUIRED.value
+            record.approval_required = True
+            record.approval_reason = reason
+            record.resume_target = resume_target
+            self._add_event(
+                session,
+                task_id,
+                TaskStatus.APPROVAL_REQUIRED.value,
+                "Human approval is required before the workflow can continue.",
+                {"reason": reason, "resume_target": resume_target},
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                TaskStatus.APPROVAL_REQUIRED.value,
+                {"reason": reason, "resume_target": resume_target},
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def record_approval(self, task_id: str, request: ApprovalRequest) -> TaskDetail:
+        """Record an operator decision and reopen or fail the task accordingly."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            approval = ApprovalRecord(
+                task_id=task_id,
+                gate_name=request.gate_name,
+                decision=request.decision.value,
+                actor=request.actor,
+                reason=request.reason,
+            )
+            session.add(approval)
+
+            if request.decision is ApprovalDecision.APPROVE:
+                record.approval_required = False
+                record.approval_reason = None
+                stage_message = f"Approval `{request.gate_name}` granted by {request.actor}."
+            else:
+                record.status = TaskStatus.FAILED.value
+                record.latest_error = request.reason or "Human operator rejected the approval gate."
+                stage_message = f"Approval `{request.gate_name}` rejected by {request.actor}."
+
+            self._add_event(
+                session,
+                task_id,
+                "APPROVAL",
+                stage_message,
+                {"decision": request.decision.value, "reason": request.reason},
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                record.status,
+                {"approval": request.model_dump(), "updated_at": datetime.now(UTC).isoformat()},
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def set_pull_request(self, task_id: str, pull_request_url: str) -> TaskDetail:
+        """Persist the draft pull request URL after GitHub creation succeeds."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            record.pull_request_url = pull_request_url
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def _require_task(self, session: Session, task_id: str) -> TaskRecord:
+        record = session.get(TaskRecord, task_id)
+        if record is None:
+            raise KeyError(f"Task {task_id} was not found.")
+        return record
+
+    def _add_event(
+        self,
+        session: Session,
+        task_id: str,
+        stage: str,
+        message: str,
+        details: dict,
+        level: str = "INFO",
+    ) -> None:
+        session.add(
+            TaskEventRecord(
+                task_id=task_id,
+                level=level,
+                stage=stage,
+                message=message,
+                details_json=details,
+            )
+        )
+
+    def _add_snapshot(self, session: Session, task_id: str, status: str, state: dict) -> None:
+        session.add(TaskSnapshotRecord(task_id=task_id, status=status, state_json=state))
+
+    def _to_summary(self, record: TaskRecord) -> TaskSummary:
+        return TaskSummary(
+            id=record.id,
+            goal=record.goal,
+            repository=record.repository,
+            repo_url=record.repo_url,
+            local_repo_path=record.local_repo_path,
+            base_branch=record.base_branch,
+            branch_name=record.branch_name,
+            status=TaskStatus(record.status),
+            resume_target=record.resume_target,
+            approval_required=record.approval_required,
+            approval_reason=record.approval_reason,
+            pull_request_url=record.pull_request_url,
+            latest_error=record.latest_error,
+            metadata=record.metadata_json or {},
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )

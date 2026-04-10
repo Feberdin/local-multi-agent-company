@@ -1,0 +1,29 @@
+name: Bug Report
+description: Melde einen Fehler oder eine Regression.
+title: "[Bug]: "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Was passiert aktuell?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+      description: Was sollte stattdessen passieren?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Schritte zum Reproduzieren
+      description: Wie kann der Fehler zuverlässig nachgestellt werden?
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Hinweise
+      description: Welche Logs, Commit-Refs oder Staging-URLs sind relevant?

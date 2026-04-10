@@ -1,0 +1,86 @@
+<!--
+Purpose: Detailed task page with logs, reports, PR links, and approval controls.
+Input/Output: Receives one task detail object and renders the current workflow state and audit trail.
+Important invariants: Approval buttons must stay explicit and visible only when needed.
+How to debug: If events or reports seem missing, inspect the orchestrator task detail payload first.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Task {{ task.id }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <p class="eyebrow">Task {{ task.id }}</p>
+        <h1>{{ task.goal }}</h1>
+        <p class="lead">{{ task.repository }} · Branch {{ task.branch_name or "n/a" }}</p>
+        <span class="status status-{{ task.status|lower }}">{{ task.status }}</span>
+      </section>
+
+      <section class="panel actions">
+        <form method="post" action="/tasks/{{ task.id }}/run">
+          <button type="submit">Workflow starten / fortsetzen</button>
+        </form>
+        {% if task.approval_required %}
+        <form method="post" action="/tasks/{{ task.id }}/approve">
+          <input type="hidden" name="gate_name" value="risk-review">
+          <button type="submit">Freigeben</button>
+        </form>
+        <form method="post" action="/tasks/{{ task.id }}/reject">
+          <input type="hidden" name="gate_name" value="risk-review">
+          <input type="text" name="reason" placeholder="Ablehnungsgrund">
+          <button type="submit" class="danger">Ablehnen</button>
+        </form>
+        {% endif %}
+        {% if task.pull_request_url %}
+        <a class="button-link" href="{{ task.pull_request_url }}" target="_blank" rel="noreferrer">Pull Request öffnen</a>
+        {% endif %}
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Status</h2>
+          <p><strong>Resume-Ziel:</strong> {{ task.resume_target or "keins" }}</p>
+          <p><strong>Freigabe nötig:</strong> {{ "Ja" if task.approval_required else "Nein" }}</p>
+          <p><strong>Freigabegrund:</strong> {{ task.approval_reason or "keiner" }}</p>
+          <p><strong>Letzter Fehler:</strong> {{ task.latest_error or "kein Fehler" }}</p>
+          <p><strong>Risikoflags:</strong> {{ task.risk_flags|join(", ") if task.risk_flags else "keine" }}</p>
+        </article>
+
+        <article class="panel">
+          <h2>Worker-Ergebnisse</h2>
+          {% for name, result in task.worker_results.items() %}
+          <details>
+            <summary>{{ name }}</summary>
+            <pre>{{ result | tojson(indent=2) }}</pre>
+          </details>
+          {% else %}
+          <p class="muted">Noch keine Worker-Ergebnisse vorhanden.</p>
+          {% endfor %}
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Ereignisse</h2>
+        <div class="timeline">
+          {% for event in task.events %}
+          <article class="event">
+            <div class="event-header">
+              <strong>{{ event.stage }}</strong>
+              <span class="muted">{{ event.created_at }}</span>
+            </div>
+            <p>{{ event.message }}</p>
+            <pre>{{ event.details | tojson(indent=2) }}</pre>
+          </article>
+          {% else %}
+          <p class="muted">Noch keine Ereignisse vorhanden.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
