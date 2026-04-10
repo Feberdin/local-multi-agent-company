@@ -7,12 +7,15 @@ How to debug: If services point at the wrong URLs, repos, or volumes, inspect th
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOGGER = logging.getLogger(__name__)
 
 
 def validate_runtime_env_file(env_file: Path = Path(".env")) -> None:
@@ -198,11 +201,23 @@ class Settings(BaseSettings):
         """Prefer the explicit env value and otherwise read the first-line-like content from a mounted secret file."""
 
         normalized_value = current_value.strip()
-        if normalized_value and "replace-me" not in normalized_value.lower():
-            return normalized_value
-        if secret_file is None or not secret_file.exists():
-            return normalized_value
-        return secret_file.read_text(encoding="utf-8").rstrip("\r\n")
+        effective_value = normalized_value if normalized_value and "replace-me" not in normalized_value.lower() else ""
+        if effective_value:
+            return effective_value
+        if secret_file is None:
+            return effective_value
+        try:
+            if not secret_file.exists():
+                return effective_value
+            return secret_file.read_text(encoding="utf-8").rstrip("\r\n")
+        except PermissionError:
+            LOGGER.warning(
+                "Secret file '%s' is not readable for the current service user. "
+                "The service will continue without this secret. "
+                "Fix the host-side permissions or adjust PUID/PGID if the secret is required.",
+                secret_file,
+            )
+            return effective_value
 
     @property
     def database_url(self) -> str:

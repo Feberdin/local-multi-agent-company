@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from services.shared.agentic_lab.config import Settings
 
 
@@ -36,3 +38,26 @@ def test_settings_prefers_explicit_env_over_secret_file(monkeypatch, tmp_path: P
     settings.apply_secret_file_overrides()
 
     assert settings.github_token == "ghp_from_env"
+
+
+def test_settings_ignore_unreadable_secret_file(monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    unreadable_path = tmp_path / "unreadable_token"
+    caplog.set_level("WARNING")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", str(unreadable_path))
+
+    original_exists = Path.exists
+
+    def fake_exists(path: Path) -> bool:
+        if path == unreadable_path:
+            raise PermissionError("permission denied")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    settings = Settings()
+    settings.apply_secret_file_overrides()
+
+    assert settings.github_token == ""
+    assert "not readable" in caplog.text

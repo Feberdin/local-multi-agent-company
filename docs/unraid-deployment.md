@@ -20,7 +20,7 @@ Wenn auf dem Host bereits andere Dienste auf diesen Ports laufen, ändere `ORCHE
 1. Repo auf Unraid bereitstellen
 2. `.env` aus `.env.example` erzeugen
 3. `./scripts/unraid/install-appdata.sh`
-4. `./scripts/doctor.sh`
+4. `bash ./scripts/doctor.sh`
 5. `docker compose up -d --build --force-recreate`
 
 ## Installation direkt aus Git
@@ -90,6 +90,7 @@ Der wichtigste Vorab-Check ist jetzt [scripts/doctor.sh](/Users/joachim.stiegler
 Manuelle Kontrolle des finalen Compose-Modells:
 
 ```bash
+bash ./scripts/doctor.sh
 docker compose config
 ```
 

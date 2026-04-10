@@ -43,17 +43,21 @@ Für Unraid ist ein projektgebundener Secret-Ordner sinnvoll:
 Empfehlung:
 
 - ein Secret pro Datei
-- `chmod 700` auf dem Ordner
-- `chmod 600` auf jeder Secret-Datei
+- der Container-User aus `PUID` und `PGID` muss den Ordner lesen und betreten koennen
+- sichere Startwerte fuer `PUID=99` und `PGID=100`:
+  - `chown -R 99:100 /mnt/user/appdata/feberdin-agent-team/secrets`
+  - `chmod 750 /mnt/user/appdata/feberdin-agent-team/secrets`
+  - `chmod 640 /mnt/user/appdata/feberdin-agent-team/secrets/*`
 - Klartextwerte nur dort ablegen, nicht im Git-Repo
 
 Beispiel:
 
 ```bash
 mkdir -p /mnt/user/appdata/feberdin-agent-team/secrets
-chmod 700 /mnt/user/appdata/feberdin-agent-team/secrets
+chown -R 99:100 /mnt/user/appdata/feberdin-agent-team/secrets
+chmod 750 /mnt/user/appdata/feberdin-agent-team/secrets
 printf '%s' 'ghp_xxx' > /mnt/user/appdata/feberdin-agent-team/secrets/github_token
-chmod 600 /mnt/user/appdata/feberdin-agent-team/secrets/github_token
+chmod 640 /mnt/user/appdata/feberdin-agent-team/secrets/github_token
 ```
 
 Dann in `.env`:
@@ -147,7 +151,7 @@ Im Dashboard pflegbar:
 Beispiel:
 
 ```bash
-./scripts/doctor.sh
+bash ./scripts/doctor.sh
 ```
 
 ## Security

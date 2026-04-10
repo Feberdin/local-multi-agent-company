@@ -10,6 +10,9 @@ readonly ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ENV_FILE="${ROOT_DIR}/.env"
 readonly SKIP_PORT_CHECK="${SKIP_PORT_CHECK:-false}"
 
+# shellcheck source=./lib/env.sh
+. "${ROOT_DIR}/scripts/lib/env.sh"
+
 COMPOSE_FILE_OUTPUT=""
 COMPOSE_TOOL=()
 
@@ -64,38 +67,9 @@ die() {
   exit 1
 }
 
-validate_env_duplicates() {
-  local duplicates
-
-  duplicates="$(awk -F= '
-    /^[[:space:]]*#/ || /^[[:space:]]*$/ || !/=/{next}
-    {
-      key=$1
-      sub(/^[[:space:]]+/, "", key)
-      sub(/[[:space:]]+$/, "", key)
-      seen[key]++
-    }
-    END {
-      for (key in seen) {
-        if (seen[key] > 1) {
-          print key
-        }
-      }
-    }
-  ' "${ENV_FILE}" | sort)"
-
-  if [[ -n "${duplicates}" ]]; then
-    die "Die .env enthält doppelte Schlüssel: $(printf '%s' "${duplicates}" | tr '\n' ' '). Bitte jeden Schlüssel nur einmal definieren."
-  fi
-}
-
 load_env() {
   [[ -f "${ENV_FILE}" ]] || die "Es fehlt ${ENV_FILE}. Bitte zuerst .env.example nach .env kopieren."
-  validate_env_duplicates
-  set -a
-  # shellcheck disable=SC1090
-  . "${ENV_FILE}"
-  set +a
+  load_env_file "${ENV_FILE}" || die "Die .env konnte nicht geladen werden. Bitte Syntax und doppelte Schlüssel prüfen."
 }
 
 require_directory_writable() {
@@ -190,6 +164,29 @@ assert_port_free() {
   fi
 }
 
+warn_if_secret_path_looks_unreadable() {
+  local env_var_name="$1"
+  local container_path="$2"
+  local host_path path_mode
+
+  [[ -n "${container_path}" ]] || return 0
+  case "${container_path}" in
+    /run/project-secrets/*)
+      host_path="${HOST_SECRETS_DIR:-}/$(basename "${container_path}")"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  [[ -n "${HOST_SECRETS_DIR:-}" && -d "${HOST_SECRETS_DIR}" ]] || return 0
+  [[ -e "${host_path}" ]] || return 0
+
+  if path_mode="$(stat -c '%a' "${HOST_SECRETS_DIR}" 2>/dev/null)" && [[ "${path_mode}" == "700" ]]; then
+    log_info "Hinweis: ${env_var_name} zeigt auf ${host_path}. Ein Secret-Ordner mit Modus 700 ist fuer Container mit PUID=${PUID:-99} oft nicht lesbar."
+  fi
+}
+
 main() {
   load_env
 
@@ -197,6 +194,13 @@ main() {
   require_directory_writable "HOST_REPORTS_DIR" "${HOST_REPORTS_DIR:-}"
   require_directory_writable "HOST_WORKSPACE_ROOT" "${HOST_WORKSPACE_ROOT:-}"
   require_directory_writable "HOST_STAGING_STACK_ROOT" "${HOST_STAGING_STACK_ROOT:-}"
+
+  warn_if_secret_path_looks_unreadable "MODEL_API_KEY_FILE" "${MODEL_API_KEY_FILE:-}"
+  warn_if_secret_path_looks_unreadable "MISTRAL_API_KEY_FILE" "${MISTRAL_API_KEY_FILE:-}"
+  warn_if_secret_path_looks_unreadable "QWEN_API_KEY_FILE" "${QWEN_API_KEY_FILE:-}"
+  warn_if_secret_path_looks_unreadable "WEB_SEARCH_API_KEY_FILE" "${WEB_SEARCH_API_KEY_FILE:-}"
+  warn_if_secret_path_looks_unreadable "BRAVE_SEARCH_API_KEY_FILE" "${BRAVE_SEARCH_API_KEY_FILE:-}"
+  warn_if_secret_path_looks_unreadable "GITHUB_TOKEN_FILE" "${GITHUB_TOKEN_FILE:-}"
 
   discover_compose_tool
   render_compose_config

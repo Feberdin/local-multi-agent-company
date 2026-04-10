@@ -2,7 +2,7 @@
 
 ## Preflight zuerst
 
-- `./scripts/doctor.sh`
+- `bash ./scripts/doctor.sh`
 - `docker compose config`
 
 Wenn der Doctor fehlschlägt, zuerst diesen Fehler beheben. Viele Runtime-Probleme sind in Wirklichkeit Konfigurations- oder Mount-Probleme.
@@ -21,7 +21,7 @@ Ursache:
 
 Prüfen:
 
-- `./scripts/doctor.sh`
+- `bash ./scripts/doctor.sh`
 - `docker compose config | grep -n "/staging-stacks"`
 - `docker inspect <container-name> --format '{{json .Mounts}}'`
 
@@ -51,7 +51,27 @@ Typisches Symptom:
 
 Prüfen:
 
-- `./scripts/doctor.sh`
+- `bash ./scripts/doctor.sh`
+
+## Secret-Dateien nicht lesbar
+
+Typisches Symptom:
+
+- `PermissionError` auf `/run/project-secrets/...`
+- Orchestrator oder Worker starten nur im Restart-Loop
+
+Ursache:
+
+- der Secret-Ordner ist fuer `PUID` und `PGID` nicht lesbar
+- ein `root:root`-Ordner mit `700` und Dateien mit `600` blockiert Container, die als `99:100` laufen
+
+Fix auf Unraid:
+
+```bash
+chown -R 99:100 /mnt/user/appdata/feberdin-agent-team/secrets
+chmod 750 /mnt/user/appdata/feberdin-agent-team/secrets
+chmod 640 /mnt/user/appdata/feberdin-agent-team/secrets/*
+```
 
 Die `.env` darf jeden Schlüssel nur einmal enthalten. Doppelte Schlüssel werden jetzt als Fehler behandelt, damit Port- und Pfadkonflikte nicht still überdeckt werden.
 

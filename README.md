@@ -121,7 +121,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 4. Preflight prüfen:
 
    ```bash
-   ./scripts/doctor.sh
+   bash ./scripts/doctor.sh
    ```
 
 5. Stack starten:
@@ -209,7 +209,7 @@ Wichtige Defaults:
 Wichtige Diagnosebefehle:
 
 ```bash
-./scripts/doctor.sh
+bash ./scripts/doctor.sh
 docker compose config
 docker compose up -d --build --force-recreate
 docker compose ps
@@ -260,10 +260,16 @@ Beispiele:
 
 ```bash
 mkdir -p /mnt/user/appdata/feberdin-agent-team/secrets
-chmod 700 /mnt/user/appdata/feberdin-agent-team/secrets
+chown -R 99:100 /mnt/user/appdata/feberdin-agent-team/secrets
+chmod 750 /mnt/user/appdata/feberdin-agent-team/secrets
 printf '%s' 'ghp_xxx' > /mnt/user/appdata/feberdin-agent-team/secrets/github_token
-chmod 600 /mnt/user/appdata/feberdin-agent-team/secrets/github_token
+chmod 640 /mnt/user/appdata/feberdin-agent-team/secrets/github_token
 ```
+
+Wichtig:
+
+- Bei `PUID=99` und `PGID=100` müssen Verzeichnis und Dateien fuer diesen Container-User lesbar sein.
+- Ein Verzeichnis mit `700` und Dateien mit `600`, die `root:root` gehoeren, sind fuer den Container oft **nicht** lesbar.
 
 Danach reicht in `.env` der Dateipfad, nicht der Klartextwert:
 

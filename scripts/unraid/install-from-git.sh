@@ -150,7 +150,7 @@ print_next_steps() {
   printf '%s\n' "  Projekt: ${REPO_DIR}"
   printf '%s\n' "  Konfiguration: ${REPO_DIR}/.env"
   printf '%s\n' "  Secrets: ${SECRETS_DIR}"
-  printf '%s\n' "  Preflight: cd ${REPO_DIR} && ./scripts/doctor.sh"
+  printf '%s\n' "  Preflight: cd ${REPO_DIR} && bash ./scripts/doctor.sh"
   printf '%s\n' "  Start: cd ${REPO_DIR} && docker compose up --build -d"
 }
 
