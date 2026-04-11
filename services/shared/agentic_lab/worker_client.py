@@ -19,6 +19,28 @@ class WorkerCallError(RuntimeError):
     """Raised when a worker call fails even after retries."""
 
 
+def _http_error_detail(service_url: str, exc: Exception, attempt: int, total_attempts: int) -> RuntimeError:
+    """Translate worker HTTP and validation failures into clearer operator-facing text."""
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        response_text = exc.response.text.strip()
+        response_preview = f" Response: {response_text[:400]}" if response_text else ""
+        return RuntimeError(
+            f"Worker at {service_url} returned HTTP {exc.response.status_code} on attempt {attempt}/{total_attempts}: "
+            f"{exc}.{response_preview}"
+        )
+
+    if isinstance(exc, httpx.HTTPError):
+        return RuntimeError(
+            f"Worker at {service_url} failed on attempt {attempt}/{total_attempts}: {exc}"
+        )
+
+    error_text = str(exc).strip() or exc.__class__.__name__
+    return RuntimeError(
+        f"Worker at {service_url} returned an invalid response on attempt {attempt}/{total_attempts}: {error_text}"
+    )
+
+
 async def call_worker(service_url: str, payload: WorkerRequest, attempts: int | None = None) -> WorkerResponse:
     """POST the worker request and retry transient failures with small backoff."""
 
@@ -42,7 +64,7 @@ async def call_worker(service_url: str, payload: WorkerRequest, attempts: int | 
                 break
             await asyncio.sleep(attempt * 1.5)
         except (httpx.HTTPError, ValueError) as exc:
-            last_error = exc
+            last_error = _http_error_detail(service_url, exc, attempt, total_attempts)
             if attempt == total_attempts:
                 break
             await asyncio.sleep(attempt * 1.5)

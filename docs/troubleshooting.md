@@ -231,3 +231,38 @@ Wichtig:
 
 - Docker-Host-Logs selbst sind nicht im ZIP, weil die Web-UI keinen Docker-Socket mountet
 - falls du sie zusaetzlich brauchst, im Debug-Center die `Host-Log-Befehle` mitnehmen und auf Unraid ausfuehren
+
+## Research-Worker endet mit HTTP 500
+
+Typische Symptome:
+
+- `latest_error` enthaelt nur `Worker at http://research-worker:8091 failed after 3 attempts`
+- unter `/reports/<task-id>` fehlen `research-notes.md`
+- Requirements, Cost und HR haben schon Reports geschrieben, Research aber nicht
+
+Haeufige Ursache:
+
+- der bestehende Workspace-Checkout ist nicht sauber genug fuer `git fetch/checkout/pull`
+- frueher fuehrte das zu einem nackten 500er aus dem Research-Worker
+
+Aktuelles Verhalten:
+
+- der Research-Worker versucht zuerst weiter normal zu aktualisieren
+- wenn nur das Refresh des bestehenden Checkouts scheitert, arbeitet er jetzt lesend mit dem vorhandenen Repo weiter
+- falls trotzdem etwas Unerwartetes passiert, liefert er einen normalen Worker-Fehler mit echter Ursache statt eines stillen 500ers
+
+Pruefen:
+
+- `docker compose logs --tail=200 research-worker`
+- `docker compose logs --tail=200 orchestrator`
+- im Debug-Center das Task-Bundle der betroffenen Aufgabe herunterladen
+
+## Brave Search ist optional und inzwischen praktisch kostenpflichtig
+
+Wichtig:
+
+- Brave wird in diesem Stack standardmaessig nur als optionaler Fallback behandelt
+- der Provider ist ab Werk deaktiviert
+- ohne `BRAVE_SEARCH_API_KEY` kann Brave nicht serverseitig genutzt werden
+- laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen
+- fuer lokale Hobby-Stacks ist es oft sinnvoller, Brave deaktiviert zu lassen und nur Trusted Sources oder eine eigene SearXNG-Instanz zu verwenden

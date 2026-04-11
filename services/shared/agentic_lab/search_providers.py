@@ -396,7 +396,8 @@ class SearchProviderService:
         api_key = self._provider_secret(provider)
         if not api_key:
             raise SearchProviderError(
-                f"Brave provider `{provider.name}` requires a server-side API key in ENV `{provider.auth_env_var}`."
+                f"Brave provider `{provider.name}` requires a server-side API key in ENV `{provider.auth_env_var}`. "
+                "Brave is optional in this stack and should only be enabled if you explicitly want that external fallback."
             )
         headers["X-Subscription-Token"] = api_key
         params: dict[str, str | int] = {

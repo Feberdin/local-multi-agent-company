@@ -125,6 +125,7 @@ Hinweis:
 - Ein typischer JSON-Endpunkt ist `http://<host>:8080/search` oder `https://<host>/search`.
 - Wenn deine lokalen Modelle ohne Auth laufen, bleiben `MODEL_API_KEY`, `MISTRAL_API_KEY` und `QWEN_API_KEY` leer.
 - `BRAVE_SEARCH_API_KEY` wird nur benötigt, wenn Brave wirklich aktiviert wird.
+- Laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen. Plane Brave daher bewusst als optionalen Bezahl-Fallback ein, nicht als kostenlosen Pflichtbaustein.
 
 ## Worker Guidance
 

@@ -367,6 +367,12 @@ Wichtig zu Keys:
 - `BRAVE_SEARCH_API_KEY`: nur nötig, wenn Brave aktiviert wird
 - `MODEL_API_KEY`, `MISTRAL_API_KEY`, `QWEN_API_KEY`: nur nötig, wenn dein lokaler Modell-Endpoint Auth verlangt
 
+Hinweis zu Brave:
+
+- Brave bleibt in diesem Stack ein optionaler Fallback und ist standardmaessig deaktiviert.
+- Nach der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen.
+- Fuer Home-Labs ist deshalb eine eigene SearXNG-Instanz oder reine Trusted-Source-Nutzung oft die einfachere Ausgangslage.
+
 ## Worker Guidance und Mitarbeiterideen
 
 Das Dashboard enthält jetzt zwei zusätzliche Führungsbereiche:

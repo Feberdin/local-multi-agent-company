@@ -99,6 +99,12 @@ Aktivierung:
 3. optional Brave ENV-Key serverseitig setzen
 4. Health-Check und Testabfrage ausführen
 
+Hinweis zu Brave:
+
+- Brave bleibt in diesem Projekt bewusst optional.
+- Laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen.
+- Fuer lokale oder sparsame Setups ist es oft sinnvoller, zunaechst nur Trusted Sources und optional eine eigene SearXNG-Instanz zu betreiben.
+
 ## Keys: was du wirklich brauchst
 
 Für dein aktuelles Setup typischerweise:

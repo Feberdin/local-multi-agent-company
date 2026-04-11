@@ -31,39 +31,49 @@ async def health() -> HealthResponse:
 @app.post("/run", response_model=WorkerResponse)
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "requirements-worker", "task_id": request.task_id})
-    guidance_block = worker_governance.guidance_prompt_block(request, "requirements")
-
     try:
-        outputs = await llm.complete_json(
-            system_prompt=(
-                "You are a requirements engineer. Return JSON with keys summary, requirements, wishes, assumptions, "
-                "risks, acceptance_criteria, open_questions, recommended_workers."
-                f"{guidance_block}"
-            ),
-            user_prompt=(
-                f"Original Auftrag:\n{request.goal}\n\n"
-                f"Repository: {request.repository}\n"
-                "Separate hard requirements, optional wishes, assumptions, and risks clearly."
-            ),
-            worker_name="requirements",
-        )
-    except LLMError as exc:
-        task_logger.warning("LLM requirements extraction unavailable: %s", exc)
-        outputs = _heuristic_requirements(request.goal, request.repository)
+        guidance_block = worker_governance.guidance_prompt_block(request, "requirements")
 
-    report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
-    return WorkerResponse(
-        worker="requirements",
-        summary="Requirements package created.",
-        outputs=outputs,
-        artifacts=[
-            Artifact(
-                name="requirements",
-                path=str(report_path),
-                description="Structured requirements, assumptions, risks, and acceptance criteria.",
+        try:
+            outputs = await llm.complete_json(
+                system_prompt=(
+                    "You are a requirements engineer. Return JSON with keys summary, requirements, wishes, assumptions, "
+                    "risks, acceptance_criteria, open_questions, recommended_workers."
+                    f"{guidance_block}"
+                ),
+                user_prompt=(
+                    f"Original Auftrag:\n{request.goal}\n\n"
+                    f"Repository: {request.repository}\n"
+                    "Separate hard requirements, optional wishes, assumptions, and risks clearly."
+                ),
+                worker_name="requirements",
             )
-        ],
-    )
+        except LLMError as exc:
+            task_logger.warning("LLM requirements extraction unavailable: %s", exc)
+            outputs = _heuristic_requirements(request.goal, request.repository)
+
+        report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
+        return WorkerResponse(
+            worker="requirements",
+            summary="Requirements package created.",
+            outputs=outputs,
+            artifacts=[
+                Artifact(
+                    name="requirements",
+                    path=str(report_path),
+                    description="Structured requirements, assumptions, risks, and acceptance criteria.",
+                )
+            ],
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime guard for operator-visible failures.
+        task_logger.exception("Requirements worker failed unexpectedly: %s", exc)
+        return WorkerResponse(
+            worker="requirements",
+            success=False,
+            summary="Requirements extraction failed before the report could be completed.",
+            errors=[f"{exc.__class__.__name__}: {exc}"],
+            outputs={"repository": request.repository},
+        )
 
 
 def _heuristic_requirements(goal: str, repository: str) -> dict:

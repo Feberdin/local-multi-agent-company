@@ -21,6 +21,7 @@ from services.shared.agentic_lab.guardrails import (
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import (
+    CommandError,
     collect_repo_overview,
     ensure_repository_checkout,
     read_text_file,
@@ -58,119 +59,144 @@ async def health() -> HealthResponse:
 @app.post("/run", response_model=WorkerResponse)
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "research-worker", "task_id": request.task_id})
-    repo_path = ensure_repository_checkout(
-        repository=request.repository,
-        repo_path=Path(request.local_repo_path),
-        workspace_root=settings.workspace_root,
-        base_branch=request.base_branch,
-        repo_url=request.repo_url,
-    )
-    overview = collect_repo_overview(repo_path)
-    sampled_files = overview["important_files"] or overview["sample_files"][:8]
-    file_samples = {
-        path: read_text_file(repo_path, path)
-        for path in sampled_files
-        if (repo_path / path).exists() and (repo_path / path).is_file()
-    }
-
+    repo_path = Path(request.local_repo_path)
     warnings: list[str] = []
-    source_plan = source_router.route(SourceRoutingRequest(query=request.goal))
-    web_results: list[SearchResultItem] = []
-    web_sources: list[str] = []
-    provider_notes: list[str] = []
-    if request.enable_web_research:
-        if source_plan.fallback_reason and source_plan.general_web_allowed:
-            provider, web_results, provider_notes = await search_provider_service.search(
-                request.goal,
-                trusted_source_service,
-                trusted_source_service.load_active_profile(),
+    try:
+        try:
+            repo_path = ensure_repository_checkout(
+                repository=request.repository,
+                repo_path=repo_path,
+                workspace_root=settings.workspace_root,
+                base_branch=request.base_branch,
+                repo_url=request.repo_url,
             )
-            warnings.extend(provider_notes)
-            if provider is None:
-                warnings.append(
-                    "No trusted-source fallback provider produced usable results. "
-                    "The worker stayed conservative instead of broadening trust automatically."
+        except CommandError as exc:
+            if (repo_path / ".git").exists():
+                warning = (
+                    "The repository checkout could not be refreshed with `git fetch/checkout/pull`. "
+                    "Research continues with the existing workspace checkout instead. "
+                    f"Cause: {exc}"
                 )
+                task_logger.warning(warning)
+                warnings.append(warning)
+            else:
+                raise
+
+        overview = collect_repo_overview(repo_path)
+        sampled_files = overview["important_files"] or overview["sample_files"][:8]
+        file_samples = {
+            path: read_text_file(repo_path, path)
+            for path in sampled_files
+            if (repo_path / path).exists() and (repo_path / path).is_file()
+        }
+
+        source_plan = source_router.route(SourceRoutingRequest(query=request.goal))
+        web_results: list[SearchResultItem] = []
+        web_sources: list[str] = []
+        provider_notes: list[str] = []
+        if request.enable_web_research:
+            if source_plan.fallback_reason and source_plan.general_web_allowed:
+                provider, web_results, provider_notes = await search_provider_service.search(
+                    request.goal,
+                    trusted_source_service,
+                    trusted_source_service.load_active_profile(),
+                )
+                warnings.extend(provider_notes)
+                if provider is None:
+                    warnings.append(
+                        "No trusted-source fallback provider produced usable results. "
+                        "The worker stayed conservative instead of broadening trust automatically."
+                    )
+                else:
+                    warnings.append(
+                        f"General web search fallback used provider `{provider.name}` "
+                        "because trusted sources were insufficient for the question."
+                    )
+                    web_sources = [item.url for item in web_results]
             else:
                 warnings.append(
-                    f"General web search fallback used provider `{provider.name}` "
-                    "because trusted sources were insufficient for the question."
+                    "General web fallback was not used because trusted sources already matched the question "
+                    "or the active profile blocks fallback."
                 )
-                web_sources = [item.url for item in web_results]
-        else:
-            warnings.append(
-                "General web fallback was not used because trusted sources already matched the question "
-                "or the active profile blocks fallback."
+
+        task_logger.info("Collected repo overview with %s files", overview["file_count"])
+
+        # Why this exists: research notes should be readable even without a working model backend.
+        # What happens here: try an LLM summary first, then fall back to a deterministic repo snapshot summary.
+        try:
+            guidance_block = worker_governance.guidance_prompt_block(request, "research")
+            research_notes = await _summarize_with_llm(
+                request.goal,
+                overview,
+                file_samples,
+                source_plan,
+                web_results,
+                guidance_block,
             )
+        except LLMError as exc:
+            warnings.append(f"LLM summary unavailable, using heuristic research notes instead: {exc}")
+            research_notes = _heuristic_summary(request.goal, overview, file_samples, source_plan, web_results)
 
-    task_logger.info("Collected repo overview with %s files", overview["file_count"])
-
-    # Why this exists: research notes should be readable even without a working model backend.
-    # What happens here: try an LLM summary first, then fall back to a deterministic repo snapshot summary.
-    try:
-        guidance_block = worker_governance.guidance_prompt_block(request, "research")
-        research_notes = await _summarize_with_llm(
-            request.goal,
-            overview,
-            file_samples,
-            source_plan,
-            web_results,
-            guidance_block,
+        prompt_injection_signals = detect_prompt_injection_signals(research_notes)
+        prompt_injection_signals.extend(
+            signal
+            for item in web_results
+            for signal in detect_prompt_injection_signals(f"{item.title}\n{item.snippet}")
         )
-    except LLMError as exc:
-        warnings.append(f"LLM summary unavailable, using heuristic research notes instead: {exc}")
-        research_notes = _heuristic_summary(request.goal, overview, file_samples, source_plan, web_results)
+        prompt_injection_signals = sorted(set(prompt_injection_signals))
+        source_quality = {source: assess_source_quality(source) for source in web_sources}
 
-    prompt_injection_signals = detect_prompt_injection_signals(research_notes)
-    prompt_injection_signals.extend(
-        signal
-        for item in web_results
-        for signal in detect_prompt_injection_signals(f"{item.title}\n{item.snippet}")
-    )
-    prompt_injection_signals = sorted(set(prompt_injection_signals))
-    source_quality = {source: assess_source_quality(source) for source in web_sources}
+        report_text = _build_report(
+            goal=request.goal,
+            repository=request.repository,
+            notes=research_notes,
+            overview=overview,
+            sampled_files=sampled_files,
+            source_plan=source_plan.model_dump(mode="json"),
+            web_results=web_results,
+            warnings=warnings,
+        )
+        report_path = write_report(settings.task_report_dir(request.task_id), "research-notes.md", report_text)
 
-    report_text = _build_report(
-        goal=request.goal,
-        repository=request.repository,
-        notes=research_notes,
-        overview=overview,
-        sampled_files=sampled_files,
-        source_plan=source_plan.model_dump(mode="json"),
-        web_results=web_results,
-        warnings=warnings,
-    )
-    report_path = write_report(settings.task_report_dir(request.task_id), "research-notes.md", report_text)
-
-    return WorkerResponse(
-        worker="research",
-        summary="Repository research completed.",
-        outputs={
-            "research_notes": research_notes,
-            "repo_overview": overview,
-            "candidate_files": sampled_files,
-            "sources": {
-                "repository_files": sampled_files,
-                "trusted_source_plan": source_plan.model_dump(mode="json"),
-                "trusted_sources": [source.model_dump(mode="json") for source in source_plan.trusted_matches],
-                "general_web_results": [item.model_dump(mode="json") for item in web_results],
-                "web_sources": web_sources,
-                "source_quality": source_quality,
+        return WorkerResponse(
+            worker="research",
+            summary="Repository research completed.",
+            outputs={
+                "research_notes": research_notes,
+                "repo_overview": overview,
+                "candidate_files": sampled_files,
+                "sources": {
+                    "repository_files": sampled_files,
+                    "trusted_source_plan": source_plan.model_dump(mode="json"),
+                    "trusted_sources": [source.model_dump(mode="json") for source in source_plan.trusted_matches],
+                    "general_web_results": [item.model_dump(mode="json") for item in web_results],
+                    "web_sources": web_sources,
+                    "source_quality": source_quality,
+                },
+                "uncertainties": warnings,
+                "prompt_injection_signals": prompt_injection_signals,
+                "local_repo_path": str(repo_path),
             },
-            "uncertainties": warnings,
-            "prompt_injection_signals": prompt_injection_signals,
-            "local_repo_path": str(repo_path),
-        },
-        warnings=warnings,
-        risk_flags=(["external_prompt_injection_signal"] if prompt_injection_signals else []),
-        artifacts=[
-            Artifact(
-                name="research-notes",
-                path=str(report_path),
-                description="Structured repository and architecture research notes.",
-            )
-        ],
-    )
+            warnings=warnings,
+            risk_flags=(["external_prompt_injection_signal"] if prompt_injection_signals else []),
+            artifacts=[
+                Artifact(
+                    name="research-notes",
+                    path=str(report_path),
+                    description="Structured repository and architecture research notes.",
+                )
+            ],
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime guard for operator-visible failures.
+        task_logger.exception("Research worker failed unexpectedly: %s", exc)
+        return WorkerResponse(
+            worker="research",
+            success=False,
+            summary="Repository research failed before the report could be completed.",
+            warnings=warnings,
+            errors=[f"{exc.__class__.__name__}: {exc}"],
+            outputs={"local_repo_path": str(repo_path)},
+        )
 
 
 async def _summarize_with_llm(
