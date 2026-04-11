@@ -113,20 +113,48 @@ def _register_safe_directory(repo_path: Path, env: dict[str, str]) -> None:
         )
 
 
+def _git_related_safe_paths(repo_path: Path) -> list[Path]:
+    """Return the repository paths Git may complain about for mounted local clones."""
+
+    candidates = [repo_path]
+    git_dir = repo_path / ".git"
+    if git_dir.exists():
+        candidates.append(git_dir)
+    return candidates
+
+
 def prepare_git_environment(repo_path: Path | None = None, env: dict[str, str] | None = None) -> dict[str, str]:
     """Return a Git-ready environment with writable HOME and safe.directory for mounted workspaces."""
 
     prepared = _ensure_git_runtime_files(env)
     if repo_path is not None:
-        _register_safe_directory(repo_path, prepared)
+        for safe_path in _git_related_safe_paths(repo_path):
+            _register_safe_directory(safe_path, prepared)
     return prepared
+
+
+def _git_clone_source_path(args: list[str]) -> Path | None:
+    """Best-effort detection of a local source repo path for `git clone` commands."""
+
+    if len(args) < 4 or args[:2] != ["git", "clone"]:
+        return None
+
+    positional_args = [arg for arg in args[2:] if not arg.startswith("-")]
+    if len(positional_args) < 2:
+        return None
+
+    source_candidate = Path(positional_args[-2])
+    if source_candidate.exists():
+        return source_candidate
+    return None
 
 
 def _format_git_hint(args: list[str], stderr: str, repo_path: Path | None, env: dict[str, str] | None) -> str | None:
     """Translate common Git runtime failures into operator-friendly hints for the UI and logs."""
 
     lowered = stderr.lower()
-    repo_display = str(repo_path) if repo_path else "unbekanntes Repository"
+    source_repo_path = _git_clone_source_path(args)
+    repo_display = str(repo_path or source_repo_path) if (repo_path or source_repo_path) else "unbekanntes Repository"
     home_display = str(_git_runtime_home(env))
 
     if "dubious ownership" in lowered or "safe.directory" in lowered:
@@ -236,9 +264,13 @@ def _clone_target_from_best_source(
     if source_repo_path and (source_repo_path / ".git").exists():
         clone_source = str(source_repo_path)
         canonical_origin_url = _discover_origin_url(source_repo_path, fallback_url)
+        clone_env = prepare_git_environment(source_repo_path)
+    else:
+        clone_env = None
 
     run_command(
         ["git", "clone", "--branch", base_branch, "--single-branch", clone_source, str(repo_path)],
+        env=clone_env,
         timeout=900,
     )
     if canonical_origin_url and canonical_origin_url != clone_source:

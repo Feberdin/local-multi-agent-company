@@ -64,6 +64,7 @@ def test_prepare_git_environment_registers_safe_directory(monkeypatch, tmp_path:
     ).stdout.splitlines()
 
     assert str(repo_path.resolve()) in safe_directories
+    assert str((repo_path / ".git").resolve()) in safe_directories
 
 
 def test_ensure_repository_checkout_uses_clean_task_workspace_for_dirty_source_repo(
