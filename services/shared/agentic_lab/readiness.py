@@ -21,7 +21,6 @@ from pydantic import BaseModel, Field
 
 from services.shared.agentic_lab.config import Settings
 
-
 # ---------------------------------------------------------------------------
 # Result models
 # ---------------------------------------------------------------------------

@@ -108,7 +108,8 @@ async def _run_local_patch_backend(
             system_prompt=(
                 "You are a careful coding agent implementing file changes for a software repository.\n"
                 "Return a JSON object with EXACTLY this structure — no other keys, no prose:\n"
-                '{"summary": "one-line description", "operations": [{"action": "create_or_update", "path": "relative/path/to/file.py", "reason": "why", "content": "full file content"}]}\n'
+                '{"summary": "...", "operations": ['
+                '{"action": "create_or_update", "path": "rel/path.py", "reason": "why", "content": "..."}]}\n'
                 "Each operation MUST have action, path, reason, and content. "
                 "Paths are relative to the repo root. Only touch files that directly address the goal.\n"
                 "If the goal requires NO file changes (e.g. analysis, brainstorming, explanation), "

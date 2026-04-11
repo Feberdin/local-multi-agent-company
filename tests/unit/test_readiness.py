@@ -6,14 +6,12 @@ Tests cover status aggregation, secret file checks, env var checks, and duration
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from services.shared.agentic_lab.readiness import (
     CheckStatus,
     ReadinessCheckItem,
     ReadinessSection,
+    ReadinessSummary,
     _check_env_var,
     _check_git_available,
     _check_path_readable,
@@ -22,9 +20,7 @@ from services.shared.agentic_lab.readiness import (
     _section_status,
     _summarize,
     _workflow_message,
-    ReadinessSummary,
 )
-
 
 # ---------------------------------------------------------------------------
 # Status aggregation
