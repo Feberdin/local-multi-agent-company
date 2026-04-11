@@ -163,3 +163,27 @@ def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, 
     assert "Worker-Theater" in response.text
     assert "Requirements laeuft noch." in response.text
     assert "Repo-Walkthrough zuerst sichern" in response.text
+
+
+def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if path == "/api/tasks/task-1":
+            raise TypeError("simulated detail payload bug")
+        if path == "/api/tasks":
+            return httpx.Response(200, json=[])
+        if path == "/api/settings/repository-access":
+            return httpx.Response(200, json={"allowed_repositories": []})
+        if path == "/api/suggestions":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/tasks/task-1")
+
+    assert response.status_code == 200
+    assert "TypeError: simulated detail payload bug" in response.text
+    assert "docker logs --tail=200 fmac-web" in response.text

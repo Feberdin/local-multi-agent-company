@@ -901,11 +901,13 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
     except Exception as exc:  # pragma: no cover - defensive fallback for unexpected runtime payloads.
         logger.exception("Task detail page for %s could not be rendered cleanly: %s", task_id, exc)
+        detail = f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__
         context = await _load_dashboard_context(
             error_message=(
                 f"Die Detailansicht fuer Aufgabe `{task_id}` konnte nicht vollstaendig aufgebaut werden. "
                 "Das Dashboard bleibt verfuegbar. "
-                "Pruefe `docker compose logs -f fmac-web` fuer die genaue Ursache."
+                f"Ursache: {detail}. "
+                "Pruefe `docker logs --tail=200 fmac-web` oder `docker compose logs --tail=200 web-ui` fuer die genaue Ursache."
             ),
         )
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
