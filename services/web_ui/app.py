@@ -428,11 +428,16 @@ def _parse_timestamp(value: Any) -> datetime | None:
     """Parse ISO timestamps from API responses without crashing the UI on malformed values."""
 
     if isinstance(value, datetime):
-        return value
+        # Why this exists:
+        # Older persisted rows may contain naive UTC timestamps from SQLite or earlier service versions.
+        # The dashboard always renders and compares timestamps in UTC, so we normalize naive values instead
+        # of crashing when they meet aware datetimes from `datetime.now(UTC)`.
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
     if value in {None, ""}:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
     except ValueError:
         return None
 

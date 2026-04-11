@@ -165,6 +165,54 @@ def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, 
     assert "Repo-Walkthrough zuerst sichern" in response.text
 
 
+def test_decorate_task_normalizes_naive_timestamps_from_older_rows(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+    naive_now = now.replace(tzinfo=None)
+
+    task = {
+        "id": "task-naive",
+        "goal": "Handle older persisted timestamps without crashing the detail page.",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "branch_name": "feature/task-naive",
+        "status": "REQUIREMENTS",
+        "resume_target": None,
+        "current_approval_gate_name": None,
+        "approval_required": False,
+        "approval_reason": None,
+        "allow_repository_modifications": False,
+        "pull_request_url": None,
+        "latest_error": None,
+        "metadata": {},
+        "created_at": naive_now.isoformat(),
+        "updated_at": naive_now.isoformat(),
+        "worker_results": {},
+        "risk_flags": [],
+        "events": [
+            {
+                "id": 1,
+                "task_id": "task-naive",
+                "level": "INFO",
+                "stage": "REQUIREMENTS",
+                "message": "Requirements started from an older row.",
+                "details": {"worker_name": "requirements"},
+                "created_at": naive_now.isoformat(),
+            }
+        ],
+        "approvals": [],
+        "smoke_checks": [],
+        "deployment": None,
+    }
+
+    decorated = app_module._decorate_task(task)
+
+    assert decorated["is_active"] is True
+    assert decorated["running_for_display"] != "unbekannt"
+    assert decorated["running_since_display"].endswith("UTC")
+
+
 def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
 
