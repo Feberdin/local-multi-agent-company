@@ -207,6 +207,36 @@ class Settings(BaseSettings):
         alias="SELF_HOSTED_RUNNER_LABELS",
     )
 
+    # ── Self-Improvement ──────────────────────────────────────────────────────
+    self_improvement_enabled: bool = Field(default=False, alias="SELF_IMPROVEMENT_ENABLED")
+    self_improvement_mode: str = Field(default="manual", alias="SELF_IMPROVEMENT_MODE")
+    self_improvement_max_auto_fix_attempts: int = Field(
+        default=3, alias="SELF_IMPROVEMENT_MAX_AUTO_FIX_ATTEMPTS"
+    )
+    self_improvement_max_cycles_per_day: int = Field(
+        default=5, alias="SELF_IMPROVEMENT_MAX_CYCLES_PER_DAY"
+    )
+    self_improvement_deploy_after_success: bool = Field(
+        default=False, alias="SELF_IMPROVEMENT_DEPLOY_AFTER_SUCCESS"
+    )
+    self_improvement_require_approval_for_risky: bool = Field(
+        default=True, alias="SELF_IMPROVEMENT_REQUIRE_APPROVAL_FOR_RISKY"
+    )
+    self_improvement_preflight_required: bool = Field(
+        default=True, alias="SELF_IMPROVEMENT_PREFLIGHT_REQUIRED"
+    )
+    self_improvement_auto_rollback: bool = Field(
+        default=False, alias="SELF_IMPROVEMENT_AUTO_ROLLBACK"
+    )
+    self_improvement_target_repo: str = Field(
+        default="Feberdin/local-multi-agent-company",
+        alias="SELF_IMPROVEMENT_TARGET_REPO",
+    )
+    self_improvement_local_repo_path: str = Field(
+        default="/workspace/local-multi-agent-company",
+        alias="SELF_IMPROVEMENT_LOCAL_REPO_PATH",
+    )
+
     def ensure_runtime_directories(self) -> None:
         """Create runtime directories early so services fail less often at first write."""
 

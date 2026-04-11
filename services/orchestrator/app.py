@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from services.orchestrator.workflow import WorkflowOrchestrator
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import init_db
+from services.shared.agentic_lab.llm import LLMClient
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.readiness import ReadinessReport, run_system_readiness_check
@@ -47,6 +48,15 @@ from services.shared.agentic_lab.schemas import (
     WorkerGuidanceRegistry,
 )
 from services.shared.agentic_lab.search_providers import SearchProviderError, SearchProviderService
+from services.shared.agentic_lab.self_improvement import (
+    ApproveCycleRequest,
+    SelfImprovementConfigResponse,
+    SelfImprovementCycleResponse,
+    SelfImprovementError,
+    SelfImprovementService,
+    SelfImprovementStatusResponse,
+    StartCycleRequest,
+)
 from services.shared.agentic_lab.source_router import SourceRouter
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.trusted_sources import TrustedSourceError, TrustedSourceService
@@ -66,12 +76,15 @@ workflow = WorkflowOrchestrator(
     policy_service=policy_service,
     worker_governance_service=worker_governance_service,
 )
+llm_client = LLMClient(settings)
+self_improvement_service = SelfImprovementService(task_service, llm_client, settings=settings)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
+    self_improvement_service.resume_orphaned_cycles()
     logger.info("Orchestrator startup completed.")
     yield
 
@@ -370,3 +383,96 @@ async def _run_in_background(task_id: str) -> None:
         await workflow.run_task(task_id)
     finally:
         app.state.running_tasks.discard(task_id)
+
+
+async def _run_workflow_task(task_id: str) -> None:
+    """Schedule a workflow task for self-improvement execution (idempotent guard included)."""
+
+    if task_id not in app.state.running_tasks:
+        app.state.running_tasks.add(task_id)
+        asyncio.create_task(_run_in_background(task_id))
+
+
+# ---------------------------------------------------------------------------
+# Self-improvement endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/self-improvement/start", response_model=SelfImprovementCycleResponse, status_code=201)
+async def start_self_improvement_cycle(request: StartCycleRequest) -> SelfImprovementCycleResponse:
+    try:
+        return await self_improvement_service.start_cycle(
+            trigger=request.trigger,
+            problem_hint=request.problem_hint,
+            force=request.force,
+            run_task_fn=_run_workflow_task,
+            running_tasks_set=app.state.running_tasks,
+        )
+    except SelfImprovementError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/self-improvement/stop", response_model=dict)
+async def stop_self_improvement_cycle(actor: str = "human-operator") -> dict:
+    active = self_improvement_service.get_active_cycle()
+    if active is None:
+        raise HTTPException(status_code=404, detail="Kein aktiver Self-Improvement-Zyklus gefunden.")
+    result = self_improvement_service.stop_cycle(active.id, actor=actor)
+    return {"status": "stopped", "cycle_id": result.id}
+
+
+@app.get("/api/self-improvement/status", response_model=SelfImprovementStatusResponse)
+async def get_self_improvement_status() -> SelfImprovementStatusResponse:
+    return self_improvement_service.get_status()
+
+
+@app.get("/api/self-improvement/cycles", response_model=list[SelfImprovementCycleResponse])
+async def list_self_improvement_cycles(limit: int = 20) -> list[SelfImprovementCycleResponse]:
+    records = self_improvement_service.list_cycles(limit=limit)
+    return [SelfImprovementCycleResponse.from_record(r) for r in records]
+
+
+@app.get("/api/self-improvement/cycles/{cycle_id}", response_model=SelfImprovementCycleResponse)
+async def get_self_improvement_cycle(cycle_id: str) -> SelfImprovementCycleResponse:
+    record = self_improvement_service.get_cycle(cycle_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Zyklus `{cycle_id}` nicht gefunden.")
+    return SelfImprovementCycleResponse.from_record(record)
+
+
+@app.post(
+    "/api/self-improvement/cycles/{cycle_id}/approve",
+    response_model=SelfImprovementCycleResponse,
+)
+async def approve_self_improvement_cycle(
+    cycle_id: str,
+    request: ApproveCycleRequest,
+) -> SelfImprovementCycleResponse:
+    try:
+        return await self_improvement_service.approve_risky_cycle(
+            cycle_id,
+            actor=request.actor,
+            reason=request.reason,
+            run_task_fn=_run_workflow_task,
+            running_tasks_set=app.state.running_tasks,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SelfImprovementError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/settings/self-improvement", response_model=SelfImprovementConfigResponse)
+async def get_self_improvement_config() -> SelfImprovementConfigResponse:
+    return SelfImprovementConfigResponse(
+        enabled=settings.self_improvement_enabled,
+        mode=settings.self_improvement_mode,
+        max_auto_fix_attempts=settings.self_improvement_max_auto_fix_attempts,
+        max_cycles_per_day=settings.self_improvement_max_cycles_per_day,
+        deploy_after_success=settings.self_improvement_deploy_after_success,
+        require_approval_for_risky=settings.self_improvement_require_approval_for_risky,
+        preflight_required=settings.self_improvement_preflight_required,
+        auto_rollback=settings.self_improvement_auto_rollback,
+        target_repo=settings.self_improvement_target_repo,
+        local_repo_path=settings.self_improvement_local_repo_path,
+    )

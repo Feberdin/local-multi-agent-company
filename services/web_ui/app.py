@@ -2852,6 +2852,142 @@ async def approve_suggestion(
     return RedirectResponse(url=target, status_code=303)
 
 
+async def _load_self_improvement_context(
+    *,
+    error_message: str | None = None,
+    success_message: str | None = None,
+) -> dict[str, Any]:
+    """Load self-improvement status, cycles history, and config from the orchestrator."""
+
+    status_response, cycles_response, config_response = await asyncio.gather(
+        _api_request("GET", "/api/self-improvement/status"),
+        _api_request("GET", "/api/self-improvement/cycles"),
+        _api_request("GET", "/api/settings/self-improvement"),
+        return_exceptions=False,
+    )
+    messages = [error_message] if error_message else []
+
+    status = _as_mapping(_response_json(status_response, {}))
+    if status_response.status_code >= 400:
+        messages.append(
+            _response_detail(status_response, "Self-Improvement-Status konnte nicht geladen werden.")
+        )
+
+    cycles = [item for item in _as_list(_response_json(cycles_response, [])) if isinstance(item, dict)]
+    if cycles_response.status_code >= 400:
+        messages.append(
+            _response_detail(cycles_response, "Zyklus-Historie konnte nicht geladen werden.")
+        )
+
+    config = _as_mapping(_response_json(config_response, {}))
+    if config_response.status_code >= 400:
+        messages.append(
+            _response_detail(config_response, "Self-Improvement-Konfiguration konnte nicht geladen werden.")
+        )
+
+    active_cycle = _as_mapping(status.get("active_cycle")) if status.get("active_cycle") else None
+    last_cycle = _as_mapping(status.get("last_cycle")) if status.get("last_cycle") else None
+
+    for cycle in cycles:
+        cycle["started_at_display"] = _format_timestamp(cycle.get("started_at"))
+        cycle["completed_at_display"] = _format_timestamp(cycle.get("completed_at")) if cycle.get("completed_at") else "—"
+
+    if active_cycle:
+        active_cycle["started_at_display"] = _format_timestamp(active_cycle.get("started_at"))
+    if last_cycle and not active_cycle:
+        last_cycle["started_at_display"] = _format_timestamp(last_cycle.get("started_at"))
+        last_cycle["completed_at_display"] = (
+            _format_timestamp(last_cycle.get("completed_at")) if last_cycle.get("completed_at") else "—"
+        )
+
+    return {
+        "si_status": status,
+        "si_cycles": cycles,
+        "si_config": config,
+        "si_active_cycle": active_cycle,
+        "si_last_cycle": last_cycle,
+        "si_enabled": bool(status.get("enabled")),
+        "si_can_start": bool(status.get("can_start")),
+        "si_daily_count": int(status.get("daily_cycle_count") or 0),
+        "si_max_per_day": int(status.get("max_cycles_per_day") or 0),
+        "si_mode": str(status.get("mode") or config.get("mode") or "manual"),
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message,
+    }
+
+
+@app.get("/self-improvement", response_class=HTMLResponse)
+async def self_improvement_page(request: Request) -> HTMLResponse:
+    context = await _load_self_improvement_context()
+    return templates.TemplateResponse(
+        request=request,
+        name="self_improvement.html",
+        context={"request": request, **context},
+    )
+
+
+@app.post("/self-improvement/start", response_class=HTMLResponse, response_model=None)
+async def start_self_improvement(
+    request: Request,
+    problem_hint: str = Form(""),
+    force: bool = Form(False),
+) -> Response:
+    payload: dict[str, Any] = {"trigger": "manual", "force": force}
+    if problem_hint.strip():
+        payload["problem_hint"] = problem_hint.strip()
+    response = await _api_request("POST", "/api/self-improvement/start", json_payload=payload)
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Der Zyklus konnte nicht gestartet werden.")
+        context = await _load_self_improvement_context(error_message=detail)
+        return templates.TemplateResponse(
+            request=request,
+            name="self_improvement.html",
+            context={"request": request, **context},
+        )
+    return RedirectResponse(url="/self-improvement", status_code=303)
+
+
+@app.post("/self-improvement/stop", response_class=HTMLResponse, response_model=None)
+async def stop_self_improvement(request: Request) -> Response:
+    response = await _api_request("POST", "/api/self-improvement/stop")
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Der Zyklus konnte nicht gestoppt werden.")
+        context = await _load_self_improvement_context(error_message=detail)
+        return templates.TemplateResponse(
+            request=request,
+            name="self_improvement.html",
+            context={"request": request, **context},
+        )
+    return RedirectResponse(url="/self-improvement", status_code=303)
+
+
+@app.post(
+    "/self-improvement/cycles/{cycle_id}/approve",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def approve_self_improvement_cycle(
+    request: Request,
+    cycle_id: str,
+    reason: str = Form(""),
+) -> Response:
+    payload = {"actor": "dashboard-operator", "reason": reason.strip() or None}
+    response = await _api_request(
+        "POST",
+        f"/api/self-improvement/cycles/{cycle_id}/approve",
+        json_payload=payload,
+    )
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Freigabe konnte nicht gespeichert werden.")
+        context = await _load_self_improvement_context(error_message=detail)
+        return templates.TemplateResponse(
+            request=request,
+            name="self_improvement.html",
+            context={"request": request, **context},
+        )
+    return RedirectResponse(url="/self-improvement", status_code=303)
+
+
 @app.post("/suggestions/{suggestion_id}/reject", response_class=HTMLResponse, response_model=None)
 async def reject_suggestion(
     request: Request,

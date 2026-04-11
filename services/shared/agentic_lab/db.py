@@ -110,6 +110,39 @@ class TaskSnapshotRecord(Base):
     task: Mapped[TaskRecord] = relationship(back_populates="snapshots")
 
 
+class SelfImprovementCycleRecord(Base):
+    """Tracks each controlled self-improvement cycle from analysis through deployment."""
+
+    __tablename__ = "self_improvement_cycles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="idle")
+    trigger: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    problem_hypothesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    problem_class: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="low")
+    is_risky: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    risk_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    branch_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    changed_files_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    test_results_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    deploy_result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    healthcheck_result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    latest_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 _engine = None
 _session_factory = None
 

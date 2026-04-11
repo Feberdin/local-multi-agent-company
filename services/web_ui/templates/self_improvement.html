@@ -1,0 +1,424 @@
+<!--
+Purpose: Operator dashboard for the controlled self-improvement mode.
+Input/Output: Shows current cycle status, history, and controls to start/stop/approve cycles.
+Important invariants: All mutations go through POST forms → orchestrator API. No client-side state mutations.
+How to debug: If the page shows no status, check /api/self-improvement/status on the orchestrator.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Self-Improvement</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+      .cycle-status-badge {
+        display: inline-block;
+        padding: 0.2rem 0.65rem;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .badge-completed   { background: #d4edda; color: #155724; }
+      .badge-failed      { background: #f8d7da; color: #721c24; }
+      .badge-paused      { background: #e2e3e5; color: #383d41; }
+      .badge-analyzing   { background: #cce5ff; color: #004085; }
+      .badge-planning    { background: #cce5ff; color: #004085; }
+      .badge-implementing { background: #d1ecf1; color: #0c5460; }
+      .badge-validating  { background: #d1ecf1; color: #0c5460; }
+      .badge-deploying   { background: #fff3cd; color: #856404; }
+      .badge-post_deploy_testing { background: #fff3cd; color: #856404; }
+      .badge-awaiting_manual_review { background: #f8d7da; color: #721c24; }
+      .badge-idle        { background: #f3f4f6; color: #6b7280; }
+
+      .state-machine {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 1rem 0;
+      }
+      .state-node {
+        padding: 0.35rem 0.85rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        border: 2px solid transparent;
+        background: #f3f4f6;
+        color: #6b7280;
+        white-space: nowrap;
+      }
+      .state-node.active {
+        background: #dbeafe;
+        color: #1d4ed8;
+        border-color: #93c5fd;
+      }
+      .state-node.terminal-ok { background: #d4edda; color: #155724; border-color: #a3cfbb; }
+      .state-node.terminal-fail { background: #f8d7da; color: #721c24; border-color: #f1b0b7; }
+      .state-arrow { color: #9ca3af; font-size: 0.9rem; }
+
+      .cycle-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+      .cycle-table th {
+        text-align: left;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 2px solid var(--border, #e5e7eb);
+        font-weight: 600;
+        color: #374151;
+      }
+      .cycle-table td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--border, #e5e7eb);
+        vertical-align: top;
+      }
+      .cycle-table tr:last-child td { border-bottom: none; }
+      .cycle-table tr:hover td { background: #f9fafb; }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 0.75rem;
+      }
+      .config-item {
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 0.6rem 0.9rem;
+      }
+      .config-item .label { font-size: 0.75rem; color: #6b7280; margin-bottom: 0.15rem; }
+      .config-item .value { font-weight: 600; font-size: 0.9rem; }
+      .value-on  { color: #15803d; }
+      .value-off { color: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug">Debug-Center</a>
+        <a href="/system-check">System-Check</a>
+        <a href="/self-improvement" class="active">Self-Improvement</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Autonome Qualitaetssicherung</p>
+        <h1>Self-Improvement</h1>
+        <p class="lead">
+          Das System analysiert eigene Fehler, leitet eine Coding-Aufgabe ab, und verbessert sich kontrolliert selbst.
+          Alle Aenderungen landen auf einem Branch und durchlaufen den normalen Workflow.
+        </p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <!-- State-Machine Visualization -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Zyklus-Zustandsmaschine</h2>
+          <span class="muted">
+            {% if si_active_cycle %}
+            Aktiver Status: <strong>{{ si_active_cycle.status }}</strong>
+            {% else %}
+            Kein aktiver Zyklus
+            {% endif %}
+          </span>
+        </div>
+        <div class="state-machine">
+          {% set current = si_active_cycle.status if si_active_cycle else "" %}
+          <span class="state-node {% if current == 'analyzing' %}active{% endif %}">Analysieren</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'planning' %}active{% endif %}">Planen</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'awaiting_manual_review' %}active{% endif %}">
+            Manuelle Pruefung
+          </span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'implementing' %}active{% endif %}">Umsetzen</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'validating' %}active{% endif %}">Validieren</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'deploying' %}active{% endif %}">Deployen</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node {% if current == 'post_deploy_testing' %}active{% endif %}">QA</span>
+          <span class="state-arrow">→</span>
+          <span class="state-node terminal-ok {% if current == 'completed' %}active{% endif %}">Abgeschlossen</span>
+        </div>
+        <div class="state-machine">
+          <span class="state-node terminal-fail {% if current == 'failed' %}active{% endif %}">Fehlgeschlagen</span>
+          <span class="state-arrow">·</span>
+          <span class="state-node {% if current == 'paused' %}active{% endif %}">Pausiert</span>
+        </div>
+      </section>
+
+      <!-- Active Cycle Panel -->
+      {% if si_active_cycle %}
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Aktiver Zyklus #{{ si_active_cycle.cycle_number }}</h2>
+          <span class="cycle-status-badge badge-{{ si_active_cycle.status }}">{{ si_active_cycle.status }}</span>
+        </div>
+
+        {% if si_active_cycle.goal %}
+        <p><strong>Ziel:</strong> {{ si_active_cycle.goal }}</p>
+        {% endif %}
+
+        {% if si_active_cycle.problem_hypothesis %}
+        <p><strong>Analyse:</strong> {{ si_active_cycle.problem_hypothesis }}</p>
+        {% endif %}
+
+        <div class="muted" style="font-size:0.85rem; margin-top:0.5rem;">
+          Gestartet: {{ si_active_cycle.started_at_display }}
+          {% if si_active_cycle.task_id %} · Task: <a href="/tasks/{{ si_active_cycle.task_id }}">{{ si_active_cycle.task_id[:8] }}…</a>{% endif %}
+          {% if si_active_cycle.risk_level != "low" %}
+          · Risiko: <strong>{{ si_active_cycle.risk_level }}</strong>
+          {% if si_active_cycle.risk_reason %} ({{ si_active_cycle.risk_reason }}){% endif %}
+          {% endif %}
+        </div>
+
+        {% if si_active_cycle.latest_error %}
+        <div class="panel-alert" style="margin-top:0.75rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
+          <strong>Letzter Fehler:</strong> {{ si_active_cycle.latest_error }}
+        </div>
+        {% endif %}
+
+        {% if si_active_cycle.retry_count > 0 %}
+        <p class="muted" style="font-size:0.85rem;">
+          Wiederholungsversuch {{ si_active_cycle.retry_count }} / {{ si_active_cycle.max_retries }}
+        </p>
+        {% endif %}
+
+        <!-- Approval gate -->
+        {% if si_active_cycle.status == "awaiting_manual_review" %}
+        <div class="panel panel-alert" style="margin-top:1rem;">
+          <h3>Manuelle Freigabe erforderlich</h3>
+          <p>
+            Dieser Zyklus hat ein als riskant eingestuftes Ziel generiert und wartet auf deine Entscheidung.
+          </p>
+          {% if si_active_cycle.risk_reason %}
+          <p><strong>Risiko-Grund:</strong> {{ si_active_cycle.risk_reason }}</p>
+          {% endif %}
+          <form method="post" action="/self-improvement/cycles/{{ si_active_cycle.id }}/approve" class="stack">
+            <label>
+              Begruendung (optional)
+              <input type="text" name="reason" placeholder="Freigabe-Begruendung …" style="width:100%;">
+            </label>
+            <button type="submit" class="btn btn-primary">Zyklus freigeben und fortsetzen</button>
+          </form>
+        </div>
+        {% endif %}
+
+        <form method="post" action="/self-improvement/stop" style="margin-top:1rem;">
+          <button type="submit" class="btn btn-secondary">Zyklus stoppen</button>
+        </form>
+      </section>
+
+      {% else %}
+
+      <!-- Start Cycle Panel -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Neuen Zyklus starten</h2>
+          {% if not si_enabled %}
+          <span class="cycle-status-badge badge-idle">Deaktiviert</span>
+          {% elif not si_can_start %}
+          <span class="cycle-status-badge badge-idle">Tageslimit erreicht</span>
+          {% else %}
+          <span class="cycle-status-badge badge-analyzing">Bereit</span>
+          {% endif %}
+        </div>
+
+        {% if not si_enabled %}
+        <p class="muted">
+          Self-Improvement ist deaktiviert. Setze <code>SELF_IMPROVEMENT_ENABLED=true</code> in deiner
+          <code>.env</code>-Datei und starte den Orchestrator neu.
+        </p>
+        {% endif %}
+
+        <form method="post" action="/self-improvement/start" class="stack">
+          <label>
+            Problem-Hinweis (optional)
+            <input
+              type="text"
+              name="problem_hint"
+              placeholder="Konkreter Hinweis auf das Problem – leer lassen fuer automatische Analyse …"
+              style="width:100%;"
+            >
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="force" value="true">
+            Force (ignoriert Tageslimit und Deaktivierungs-Flag)
+          </label>
+          <button
+            type="submit"
+            class="btn btn-primary"
+            {% if not si_can_start and not si_enabled %}disabled{% endif %}
+          >Analyse starten</button>
+        </form>
+
+        <p class="muted" style="margin-top:0.75rem; font-size:0.85rem;">
+          Heute gestartet: {{ si_daily_count }}
+          {% if si_max_per_day > 0 %} / {{ si_max_per_day }}{% endif %}
+          · Modus: {{ si_mode }}
+        </p>
+      </section>
+      {% endif %}
+
+      <!-- Cycle History -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Zyklus-Historie</h2>
+          <span class="muted">Letzte {{ si_cycles | length }} Zyklen</span>
+        </div>
+
+        {% if si_cycles %}
+        <div class="table-wrapper" style="overflow-x:auto;">
+          <table class="cycle-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Status</th>
+                <th>Trigger</th>
+                <th>Problemklasse</th>
+                <th>Risiko</th>
+                <th>Task</th>
+                <th>Versuche</th>
+                <th>Gestartet</th>
+                <th>Abgeschlossen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for cycle in si_cycles %}
+              <tr>
+                <td><strong>{{ cycle.cycle_number }}</strong></td>
+                <td>
+                  <span class="cycle-status-badge badge-{{ cycle.status }}">{{ cycle.status }}</span>
+                </td>
+                <td>{{ cycle.trigger }}</td>
+                <td>{{ cycle.problem_class or "—" }}</td>
+                <td>
+                  {% if cycle.is_risky %}
+                  <span style="color:#b91c1c; font-weight:600;">{{ cycle.risk_level }}</span>
+                  {% else %}
+                  {{ cycle.risk_level }}
+                  {% endif %}
+                </td>
+                <td>
+                  {% if cycle.task_id %}
+                  <a href="/tasks/{{ cycle.task_id }}">{{ cycle.task_id[:8] }}…</a>
+                  {% else %}—{% endif %}
+                </td>
+                <td>{{ cycle.retry_count }} / {{ cycle.max_retries }}</td>
+                <td>{{ cycle.started_at_display }}</td>
+                <td>{{ cycle.completed_at_display }}</td>
+              </tr>
+              {% if cycle.goal %}
+              <tr>
+                <td></td>
+                <td colspan="8" style="font-size:0.82rem; color:#374151; padding-top:0; padding-bottom:0.6rem;">
+                  <em>Ziel:</em> {{ cycle.goal[:200] }}{% if cycle.goal | length > 200 %}…{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% if cycle.latest_error %}
+              <tr>
+                <td></td>
+                <td colspan="8" style="font-size:0.82rem; color:#b91c1c; padding-top:0; padding-bottom:0.6rem;">
+                  <em>Fehler:</em> {{ cycle.latest_error[:200] }}{% if cycle.latest_error | length > 200 %}…{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">Noch keine Zyklen vorhanden. Starte den ersten Self-Improvement-Zyklus oben.</p>
+        {% endif %}
+      </section>
+
+      <!-- Configuration -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Konfiguration</h2>
+          <span class="muted">Nur lesbar — via Umgebungsvariablen steuerbar</span>
+        </div>
+
+        {% if si_config %}
+        <div class="config-grid">
+          <div class="config-item">
+            <div class="label">Aktiviert</div>
+            <div class="value {% if si_config.enabled %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.enabled else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="label">Modus</div>
+            <div class="value">{{ si_config.mode }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Max. Zyklen / Tag</div>
+            <div class="value">{{ si_config.max_cycles_per_day }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Max. Wiederholungen</div>
+            <div class="value">{{ si_config.max_auto_fix_attempts }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Risky-Freigabe erforderlich</div>
+            <div class="value {% if si_config.require_approval_for_risky %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.require_approval_for_risky else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="label">Deploy nach Erfolg</div>
+            <div class="value {% if si_config.deploy_after_success %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.deploy_after_success else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="label">Auto-Rollback</div>
+            <div class="value {% if si_config.auto_rollback %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.auto_rollback else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="label">Preflight erforderlich</div>
+            <div class="value {% if si_config.preflight_required %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.preflight_required else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item" style="grid-column: 1 / -1;">
+            <div class="label">Ziel-Repository</div>
+            <div class="value" style="font-family: monospace;">{{ si_config.target_repo }}</div>
+          </div>
+          <div class="config-item" style="grid-column: 1 / -1;">
+            <div class="label">Lokaler Repo-Pfad</div>
+            <div class="value" style="font-family: monospace;">{{ si_config.local_repo_path }}</div>
+          </div>
+        </div>
+        {% else %}
+        <p class="muted">Konfiguration konnte nicht geladen werden.</p>
+        {% endif %}
+      </section>
+
+    </main>
+  </body>
+</html>
