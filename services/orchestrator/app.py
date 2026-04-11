@@ -85,8 +85,22 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
     self_improvement_service.resume_orphaned_cycles()
+    if settings.self_improvement_enabled and settings.self_improvement_mode == "auto":
+        asyncio.create_task(_auto_start_self_improvement())
     logger.info("Orchestrator startup completed.")
     yield
+
+
+async def _auto_start_self_improvement() -> None:
+    """Start a self-improvement cycle automatically on boot when mode=auto."""
+    try:
+        await self_improvement_service.start_cycle(
+            trigger="auto_restart",
+            run_task_fn=_run_workflow_task,
+        )
+        logger.info("Auto-start: self-improvement cycle scheduled.")
+    except SelfImprovementError as exc:
+        logger.info("Auto-start: self-improvement skipped — %s", exc)
 
 
 app = FastAPI(title="Feberdin Agent Team Orchestrator", version="0.1.0", lifespan=lifespan)
