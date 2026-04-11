@@ -201,6 +201,51 @@ button.danger {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.benchmark-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.benchmark-card {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: white;
+}
+
+.benchmark-card h3 {
+  margin: 0;
+}
+
+.benchmark-card-ok {
+  border-color: #b7d7bf;
+  background: #f5fbf6;
+}
+
+.benchmark-card-warning {
+  border-color: #dec7a0;
+  background: #fff9ee;
+}
+
+.benchmark-card-error {
+  border-color: #e7a79d;
+  background: #fff4f1;
+}
+
+.benchmark-card-idle {
+  background: #faf8f4;
+}
+
+.benchmark-recommendations {
+  display: grid;
+  gap: 0.35rem;
+  padding-top: 0.25rem;
+  border-top: 1px dashed var(--line);
+}
+
 .download-card,
 .download-row {
   display: grid;

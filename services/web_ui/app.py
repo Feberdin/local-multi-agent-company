@@ -7,12 +7,15 @@ How to debug: If a form stops working, inspect the orchestrator base URL, the ca
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
 import zipfile
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import mean, median
 from typing import Any
 
 import httpx
@@ -1147,6 +1150,253 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     return decorated
 
 
+def _clip_text(value: str, max_length: int = 140) -> str:
+    """Keep long benchmark snippets readable in compact cards and tables."""
+
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= max_length:
+        return compact or "—"
+    return compact[: max_length - 1].rstrip() + "…"
+
+
+def _text_metrics(text: str) -> dict[str, int]:
+    """Measure visible text size honestly without pretending to know real token usage."""
+
+    normalized = " ".join(str(text or "").split())
+    return {
+        "chars": len(normalized),
+        "words": len(normalized.split()) if normalized else 0,
+    }
+
+
+def _format_ratio(numerator: float | None, denominator: float | None) -> str:
+    """Render a compact ratio while avoiding division-by-zero and misleading noise."""
+
+    if numerator is None or denominator is None or denominator <= 0:
+        return "n/a"
+    return f"{numerator / denominator:.2f}x"
+
+
+def _benchmark_recommendations(summary: dict[str, Any]) -> list[str]:
+    """Translate raw worker metrics into clear follow-up ideas for HR, QA, or prompt tuning."""
+
+    recommendations: list[str] = []
+    run_count = int(summary.get("run_count") or 0)
+    failed_count = int(summary.get("failed_count") or 0)
+    active_count = int(summary.get("active_count") or 0)
+    avg_duration = summary.get("average_duration_seconds")
+    warning_total = int(summary.get("warning_total") or 0)
+
+    if run_count == 0:
+        return ["Noch keine belastbaren Laufdaten vorhanden."]
+    if failed_count >= 2 and (summary.get("failure_rate") or 0.0) >= 0.34:
+        recommendations.append("QA sollte die haeufigsten Fehlerbilder und deren Reproduzierbarkeit priorisieren.")
+    if isinstance(avg_duration, (int, float)) and avg_duration >= 300:
+        recommendations.append("HR oder QA sollte diesen Langlaeufer in kleinere, besser sichtbare Zwischenschritte zerlegen.")
+    if warning_total >= max(2, run_count):
+        recommendations.append("Die Worker-Guidance sollte geschaerft werden, weil fast jeder Lauf Warnungen produziert.")
+    if active_count > 0:
+        recommendations.append("Es gibt noch laufende oder wartende Durchgaenge. Die Sichtbarkeit im Worker-Theater weiter beobachten.")
+    if not recommendations:
+        recommendations.append("Der Worker wirkt in den sichtbaren Laufdaten derzeit stabil und nachvollziehbar.")
+    return recommendations
+
+
+def _worker_run_records(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten one decorated task into benchmarkable worker runs with readable input, outcome, and runtime data."""
+
+    worker_results = _normalize_worker_results(task.get("worker_results"))
+    worker_progress = _normalize_worker_progress(_as_mapping(_as_mapping(task.get("metadata")).get("worker_progress")))
+    runs: list[dict[str, Any]] = []
+
+    for step in _build_worker_timeline(task):
+        worker_name = str(step.get("worker_name") or "")
+        progress = worker_progress.get(worker_name, {})
+        result = worker_results.get(worker_name, {})
+        last_event = _find_last_worker_event(task, worker_name)
+        if not progress and not result and last_event is None:
+            continue
+
+        visible_input = str(progress.get("current_prompt_summary") or progress.get("current_instruction") or "")
+        visible_output = str(progress.get("last_result_summary") or result.get("summary") or "")
+        input_metrics = _text_metrics(visible_input)
+        output_metrics = _text_metrics(visible_output)
+        elapsed_seconds = progress.get("elapsed_seconds") if isinstance(progress.get("elapsed_seconds"), (int, float)) else None
+        model_route = _as_mapping(progress.get("model_route"))
+        errors = [str(item) for item in _as_list(result.get("errors")) if str(item).strip()]
+        warnings = [str(item) for item in _as_list(result.get("warnings")) if str(item).strip()]
+        risk_flags = [str(item) for item in _as_list(result.get("risk_flags")) if str(item).strip()]
+        artifacts = _as_list(result.get("artifacts"))
+        last_error = str(progress.get("last_error") or ("; ".join(errors) if errors else ""))
+        finished_at = _parse_timestamp(progress.get("updated_at")) or (
+            _parse_timestamp(last_event.get("created_at")) if last_event else None
+        ) or _parse_timestamp(task.get("updated_at"))
+        started_at = _parse_timestamp(progress.get("started_at")) or _running_since(task, worker_name)
+
+        runs.append(
+            {
+                "task_id": task.get("id"),
+                "task_goal": str(task.get("goal") or ""),
+                "task_goal_preview": _clip_text(str(task.get("goal") or ""), max_length=96),
+                "repository": str(task.get("repository") or ""),
+                "task_href": f"/tasks/{task.get('id')}",
+                "worker_name": worker_name,
+                "worker_label": WORKER_LABELS.get(worker_name, worker_name),
+                "worker_description": WORKER_DESCRIPTIONS.get(worker_name, ""),
+                "state": str(step.get("state") or "idle"),
+                "state_label": str(step.get("state_label") or "unbekannt"),
+                "state_icon": str(step.get("state_icon") or ""),
+                "started_at": started_at.isoformat() if started_at else None,
+                "started_at_display": _format_timestamp(started_at) if started_at else "nicht sichtbar",
+                "finished_at": finished_at.isoformat() if finished_at else None,
+                "finished_at_display": _format_timestamp(finished_at) if finished_at else "nicht sichtbar",
+                "elapsed_seconds": float(elapsed_seconds) if elapsed_seconds is not None else None,
+                "elapsed_display": _format_duration(float(elapsed_seconds)) if elapsed_seconds is not None else "nicht sichtbar",
+                "visible_input": visible_input or "—",
+                "visible_input_preview": _clip_text(visible_input),
+                "visible_input_chars": input_metrics["chars"],
+                "visible_input_words": input_metrics["words"],
+                "visible_output": visible_output or "—",
+                "visible_output_preview": _clip_text(visible_output),
+                "visible_output_chars": output_metrics["chars"],
+                "visible_output_words": output_metrics["words"],
+                "output_input_ratio_display": _format_ratio(
+                    float(output_metrics["chars"]) if output_metrics["chars"] else None,
+                    float(input_metrics["chars"]) if input_metrics["chars"] else None,
+                ),
+                "provider": str(model_route.get("provider") or "unbekannt"),
+                "model_name": str(model_route.get("model_name") or "unbekannt"),
+                "base_url": str(model_route.get("base_url") or ""),
+                "model_display": (
+                    f"{model_route.get('provider')} / {model_route.get('model_name')}"
+                    if model_route.get("provider") and model_route.get("model_name")
+                    else str(model_route.get("model_name") or model_route.get("provider") or "unbekannt")
+                ),
+                "request_timeout_seconds": model_route.get("request_timeout_seconds"),
+                "warning_count": len(warnings),
+                "error_count": len(errors),
+                "artifact_count": len(artifacts),
+                "risk_flag_count": len(risk_flags),
+                "warnings": warnings,
+                "errors": errors,
+                "risk_flags": risk_flags,
+                "current_instruction": str(progress.get("current_instruction") or ""),
+                "progress_message": str(progress.get("progress_message") or step.get("progress_message") or ""),
+                "waiting_for": str(progress.get("waiting_for") or ""),
+                "waiting_for_display": str(step.get("waiting_for_display") or "niemanden"),
+                "last_error": last_error,
+                "last_result_summary": visible_output or "—",
+                "successful": str(step.get("state") or "") == "complete" and not errors,
+            }
+        )
+
+    return runs
+
+
+def _build_worker_benchmark_report(tasks: list[dict[str, Any]], skipped_tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Aggregate readable worker benchmarks from persisted task details and progress events."""
+
+    skipped = skipped_tasks or []
+    runs = [run for task in tasks for run in _worker_run_records(task)]
+    recent_runs = sorted(
+        runs,
+        key=lambda run: _parse_timestamp(run.get("finished_at") or run.get("started_at")) or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    durations = [run["elapsed_seconds"] for run in runs if isinstance(run.get("elapsed_seconds"), float)]
+    active_runs = [run for run in runs if run["state"] in {"running", "waiting", "blocked", "queued"}]
+    failed_runs = [run for run in runs if run["state"] == "failed"]
+    completed_runs = [run for run in runs if run["state"] == "complete"]
+
+    worker_summaries: list[dict[str, Any]] = []
+    for step in WORKER_SEQUENCE:
+        worker_name = step["worker_name"]
+        worker_runs = [run for run in runs if run["worker_name"] == worker_name]
+        worker_durations = [run["elapsed_seconds"] for run in worker_runs if isinstance(run.get("elapsed_seconds"), float)]
+        input_sizes = [run["visible_input_chars"] for run in worker_runs if run["visible_input_chars"] > 0]
+        output_sizes = [run["visible_output_chars"] for run in worker_runs if run["visible_output_chars"] > 0]
+        error_counter = Counter(run["last_error"] for run in worker_runs if run["last_error"])
+        waiting_counter = Counter(run["waiting_for_display"] for run in worker_runs if run["waiting_for_display"] not in {"", "niemanden"})
+        model_counter = Counter(run["model_display"] for run in worker_runs if run["model_display"] != "unbekannt")
+        repo_counter = Counter(run["repository"] for run in worker_runs if run["repository"])
+        failed_count = sum(1 for run in worker_runs if run["state"] == "failed")
+        completed_count = sum(1 for run in worker_runs if run["state"] == "complete")
+        active_count = sum(1 for run in worker_runs if run["state"] in {"running", "waiting", "blocked", "queued"})
+        warning_total = sum(run["warning_count"] for run in worker_runs)
+        error_total = sum(run["error_count"] for run in worker_runs)
+        artifact_total = sum(run["artifact_count"] for run in worker_runs)
+        risk_flag_total = sum(run["risk_flag_count"] for run in worker_runs)
+        success_denominator = completed_count + failed_count
+        success_rate = (completed_count / success_denominator) if success_denominator else 0.0
+        failure_rate = (failed_count / success_denominator) if success_denominator else 0.0
+        worker_runs_sorted = sorted(
+            worker_runs,
+            key=lambda run: _parse_timestamp(run.get("finished_at") or run.get("started_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        summary = {
+            "worker_name": worker_name,
+            "label": step["label"],
+            "description": step["description"],
+            "run_count": len(worker_runs),
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "active_count": active_count,
+            "warning_total": warning_total,
+            "error_total": error_total,
+            "artifact_total": artifact_total,
+            "risk_flag_total": risk_flag_total,
+            "average_duration_seconds": mean(worker_durations) if worker_durations else None,
+            "median_duration_seconds": median(worker_durations) if worker_durations else None,
+            "max_duration_seconds": max(worker_durations) if worker_durations else None,
+            "average_duration_display": _format_duration(mean(worker_durations)) if worker_durations else "noch keine Dauer",
+            "median_duration_display": _format_duration(median(worker_durations)) if worker_durations else "noch keine Dauer",
+            "max_duration_display": _format_duration(max(worker_durations)) if worker_durations else "noch keine Dauer",
+            "average_input_chars": round(mean(input_sizes), 1) if input_sizes else 0.0,
+            "average_output_chars": round(mean(output_sizes), 1) if output_sizes else 0.0,
+            "average_output_input_ratio_display": _format_ratio(
+                mean(output_sizes) if output_sizes else None,
+                mean(input_sizes) if input_sizes else None,
+            ),
+            "success_rate": success_rate,
+            "success_rate_display": f"{success_rate * 100:.0f}%" if success_denominator else "n/a",
+            "failure_rate": failure_rate,
+            "failure_rate_display": f"{failure_rate * 100:.0f}%" if success_denominator else "n/a",
+            "primary_model": model_counter.most_common(1)[0][0] if model_counter else "noch keine Modelldaten",
+            "top_error": error_counter.most_common(1)[0][0] if error_counter else "kein dominanter Fehler",
+            "top_waiting_reason": waiting_counter.most_common(1)[0][0] if waiting_counter else "kein typischer Wartegrund",
+            "main_repository": repo_counter.most_common(1)[0][0] if repo_counter else "noch kein Repository",
+            "recent_runs": worker_runs_sorted[:5],
+            "health_tone": (
+                "error"
+                if failed_count >= 2 and failure_rate >= 0.34
+                else "warning"
+                if active_count > 0 or failed_count > 0 or (worker_durations and mean(worker_durations) >= 300)
+                else "ok"
+                if worker_runs
+                else "idle"
+            ),
+        }
+        summary["recommendations"] = _benchmark_recommendations(summary)
+        worker_summaries.append(summary)
+
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "total_tasks": len(tasks),
+        "skipped_task_count": len(skipped),
+        "skipped_tasks": skipped,
+        "total_runs": len(runs),
+        "active_runs": len(active_runs),
+        "failed_runs": len(failed_runs),
+        "completed_runs": len(completed_runs),
+        "average_duration_display": _format_duration(mean(durations)) if durations else "noch keine Dauer",
+        "median_duration_display": _format_duration(median(durations)) if durations else "noch keine Dauer",
+        "worker_summaries": worker_summaries,
+        "recent_runs": recent_runs[:40],
+    }
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(service="web-ui")
@@ -1628,6 +1878,64 @@ async def _load_dashboard_context(error_message: str | None = None, success_mess
     }
 
 
+async def _load_benchmarks_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
+    """Collect a readable worker benchmark view from persisted task details without crashing on partial backend issues."""
+
+    messages = [error_message] if error_message else []
+    tasks_response = await _api_request("GET", "/api/tasks")
+    raw_tasks = [task for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
+    if tasks_response.status_code >= 400:
+        messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht für Benchmarks geladen werden."))
+
+    detailed_tasks: list[dict[str, Any]] = []
+    skipped_tasks: list[dict[str, Any]] = []
+    if raw_tasks:
+        detail_responses = await asyncio.gather(
+            *[_api_request("GET", f"/api/tasks/{task['id']}") for task in raw_tasks if task.get("id")],
+            return_exceptions=True,
+        )
+        for task, response in zip((task for task in raw_tasks if task.get("id")), detail_responses, strict=False):
+            task_id = str(task.get("id") or "unbekannt")
+            if not isinstance(response, httpx.Response):
+                skipped_tasks.append({"task_id": task_id, "detail": f"{response.__class__.__name__}: {response}"})
+                continue
+            if response.status_code >= 400:
+                skipped_tasks.append(
+                    {
+                        "task_id": task_id,
+                        "detail": _response_detail(response, f"Task `{task_id}` konnte nicht für Benchmarks geladen werden."),
+                    }
+                )
+                continue
+            detailed_tasks.append(_decorate_task(_as_mapping(_response_json(response, {}))))
+
+    benchmark_report = _build_worker_benchmark_report(detailed_tasks, skipped_tasks)
+    if skipped_tasks:
+        messages.append(
+            f"{len(skipped_tasks)} Aufgaben konnten nicht vollständig in die Benchmark-Auswertung aufgenommen werden."
+        )
+
+    return {
+        "benchmark_report": benchmark_report,
+        "worker_summaries": benchmark_report["worker_summaries"],
+        "recent_runs": benchmark_report["recent_runs"],
+        "overview": {
+            "generated_at_display": _format_timestamp(benchmark_report["generated_at"]),
+            "total_tasks": benchmark_report["total_tasks"],
+            "skipped_task_count": benchmark_report["skipped_task_count"],
+            "total_runs": benchmark_report["total_runs"],
+            "active_runs": benchmark_report["active_runs"],
+            "failed_runs": benchmark_report["failed_runs"],
+            "completed_runs": benchmark_report["completed_runs"],
+            "average_duration_display": benchmark_report["average_duration_display"],
+            "median_duration_display": benchmark_report["median_duration_display"],
+        },
+        "auto_refresh_seconds": 30 if benchmark_report["active_runs"] else 0,
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message,
+    }
+
+
 async def _load_task_detail_context(
     task_id: str,
     *,
@@ -1806,6 +2114,22 @@ async def _load_suggestions_context(
 async def index(request: Request) -> HTMLResponse:
     context = await _load_dashboard_context()
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
+
+
+@app.get("/benchmarks", response_class=HTMLResponse)
+async def benchmarks_page(request: Request) -> HTMLResponse:
+    context = await _load_benchmarks_context()
+    return templates.TemplateResponse(
+        request=request,
+        name="benchmarks.html",
+        context={"request": request, **context},
+    )
+
+
+@app.get("/benchmarks/export.json")
+async def download_benchmarks_export() -> Response:
+    context = await _load_benchmarks_context()
+    return _download_json_response("worker-benchmarks.json", context["benchmark_report"])
 
 
 @app.get("/trusted-sources", response_class=HTMLResponse)

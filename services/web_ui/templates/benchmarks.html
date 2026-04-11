@@ -1,0 +1,217 @@
+<!--
+Purpose: Human-readable worker benchmark dashboard for runtime, visible input/output, stability, and follow-up decisions.
+Input/Output: Receives aggregated benchmark data from the web UI service and renders summary cards plus recent worker runs.
+Important invariants: Metrics must stay understandable for operators, and visible input/output must never pretend to be exact token accounting.
+How to debug: If numbers look odd, export the JSON and compare one worker run with the task detail page and stored events.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if auto_refresh_seconds %}
+    <meta http-equiv="refresh" content="{{ auto_refresh_seconds }}">
+    {% endif %}
+    <title>Worker-Benchmarks</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/benchmarks" class="active">Benchmarks</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug">Debug-Center</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Feberdin Homelab</p>
+        <h1>Worker-Benchmarks</h1>
+        <p class="lead">Laufzeiten, sichtbarer Auftrag, sichtbares Ergebnis, Fehlerbilder und Modellnutzung pro Worker. Gut lesbar für Betrieb, HR und QA.</p>
+      </section>
+
+      <section class="panel panel-note">
+        <h2>Wichtig zur Einordnung</h2>
+        <p>Die Spalten <strong>sichtbarer Input</strong> und <strong>sichtbares Ergebnis</strong> messen bewusst nur die im System sichtbaren Kurztexte. Das ist keine exakte Token-Abrechnung, sondern eine ehrliche, betriebsnahe Vergleichsgröße.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Gesamtbild</h2>
+          <div class="stats-grid">
+            <p><strong>Generiert:</strong> {{ overview.generated_at_display }}</p>
+            <p><strong>Aufgaben in der Auswertung:</strong> {{ overview.total_tasks }}</p>
+            <p><strong>Einbezogene Worker-Laeufe:</strong> {{ overview.total_runs }}</p>
+            <p><strong>Laufend oder wartend:</strong> {{ overview.active_runs }}</p>
+            <p><strong>Fehlgeschlagen:</strong> {{ overview.failed_runs }}</p>
+            <p><strong>Erfolgreich abgeschlossen:</strong> {{ overview.completed_runs }}</p>
+            <p><strong>Mittlere Laufzeit:</strong> {{ overview.average_duration_display }}</p>
+            <p><strong>Median-Laufzeit:</strong> {{ overview.median_duration_display }}</p>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Exports</h2>
+          <div class="stack">
+            <a class="button-link" href="/benchmarks/export.json">Benchmark-JSON herunterladen</a>
+            <p class="muted">Das JSON ist die strukturierte Grundlage für Folgeaufträge an HR, QA oder Worker-Guidance.</p>
+            <p class="muted">Übersprungene Aufgaben in dieser Auswertung: {{ overview.skipped_task_count }}</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Worker-Übersicht</h2>
+          <span class="muted">Alle Worker auf einen Blick, mit Dauer, Stabilität und grober Input-/Outcome-Relation.</span>
+        </div>
+        <div class="benchmark-grid">
+          {% for worker in worker_summaries %}
+          <article class="benchmark-card benchmark-card-{{ worker.health_tone }}">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">{{ worker.worker_name }}</p>
+                <h3>{{ worker.label }}</h3>
+              </div>
+              <span class="status status-{{ 'failed' if worker.health_tone == 'error' else 'blocked' if worker.health_tone == 'warning' else 'done' if worker.health_tone == 'ok' else 'idle' }}">
+                {% if worker.health_tone == "error" %}kritisch{% elif worker.health_tone == "warning" %}auffaellig{% elif worker.health_tone == "ok" %}stabil{% else %}noch leer{% endif %}
+              </span>
+            </div>
+            <p class="muted">{{ worker.description }}</p>
+            <div class="stats-grid">
+              <p><strong>Laeufe:</strong> {{ worker.run_count }}</p>
+              <p><strong>Erfolgsquote:</strong> {{ worker.success_rate_display if worker.run_count else "n/a" }}</p>
+              <p><strong>Abgeschlossen:</strong> {{ worker.completed_count }}</p>
+              <p><strong>Fehler:</strong> {{ worker.failed_count }}</p>
+              <p><strong>Aktiv / wartend:</strong> {{ worker.active_count }}</p>
+              <p><strong>Ø Laufzeit:</strong> {{ worker.average_duration_display }}</p>
+              <p><strong>Median:</strong> {{ worker.median_duration_display }}</p>
+              <p><strong>Ø sichtbarer Input:</strong> {{ "%.1f"|format(worker.average_input_chars) }} Zeichen</p>
+              <p><strong>Ø sichtbares Ergebnis:</strong> {{ "%.1f"|format(worker.average_output_chars) }} Zeichen</p>
+              <p><strong>Outcome/Input:</strong> {{ worker.average_output_input_ratio_display }}</p>
+              <p><strong>Hauptmodell:</strong> {{ worker.primary_model }}</p>
+              <p><strong>Top-Fehler:</strong> {{ worker.top_error }}</p>
+              <p><strong>Häufigster Wartegrund:</strong> {{ worker.top_waiting_reason }}</p>
+              <p><strong>Warnungen gesamt:</strong> {{ worker.warning_total }}</p>
+              <p><strong>Errors gesamt:</strong> {{ worker.error_total }}</p>
+              <p><strong>Artifacts gesamt:</strong> {{ worker.artifact_total }}</p>
+            </div>
+            <div class="benchmark-recommendations">
+              <strong>Empfohlene Folgearbeit</strong>
+              <ul class="simple-list">
+                {% for recommendation in worker.recommendations %}
+                <li>{{ recommendation }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Letzte Worker-Laeufe</h2>
+          <span class="muted">Die letzten sichtbaren Durchgaenge ueber alle Aufgaben hinweg.</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Zustand</th>
+                <th>Aufgabe</th>
+                <th>Dauer</th>
+                <th>Input</th>
+                <th>Ergebnis</th>
+                <th>Modell</th>
+                <th>Warten / Fehler</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for run in recent_runs %}
+              <tr>
+                <td>
+                  <strong>{{ run.state_icon }} {{ run.worker_label }}</strong><br>
+                  <span class="muted">{{ run.worker_name }}</span>
+                </td>
+                <td>
+                  <span class="status status-{{ run.state }}">{{ run.state_label }}</span><br>
+                  <span class="muted">{{ run.started_at_display }}</span>
+                </td>
+                <td>
+                  <a href="{{ run.task_href }}">{{ run.task_goal_preview }}</a><br>
+                  <span class="muted">{{ run.repository }}</span>
+                </td>
+                <td>
+                  <strong>{{ run.elapsed_display }}</strong><br>
+                  <span class="muted">Input {{ run.visible_input_chars }} / Output {{ run.visible_output_chars }}</span>
+                </td>
+                <td>
+                  {{ run.visible_input_preview }}<br>
+                  <span class="muted">{{ run.visible_input_words }} Wörter</span>
+                </td>
+                <td>
+                  {{ run.visible_output_preview }}<br>
+                  <span class="muted">{{ run.output_input_ratio_display }}</span>
+                </td>
+                <td>
+                  {{ run.model_display }}<br>
+                  <span class="muted">{{ run.base_url or "keine Base-URL sichtbar" }}</span>
+                </td>
+                <td>
+                  {% if run.waiting_for and run.waiting_for_display != "niemanden" %}
+                  <strong>Wartet auf:</strong> {{ run.waiting_for_display }}<br>
+                  {% endif %}
+                  {% if run.last_error %}
+                  <strong>Fehler:</strong> {{ run.last_error }}
+                  {% else %}
+                  <span class="muted">{{ run.progress_message }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="8" class="muted">Noch keine Benchmark-Läufe sichtbar.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {% if benchmark_report.skipped_tasks %}
+      <section class="panel">
+        <h2>Nicht ausgewertete Aufgaben</h2>
+        <div class="timeline">
+          {% for item in benchmark_report.skipped_tasks %}
+          <article class="event event-warning">
+            <div class="event-header">
+              <strong>{{ item.task_id }}</strong>
+            </div>
+            <p>{{ item.detail }}</p>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

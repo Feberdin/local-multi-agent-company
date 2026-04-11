@@ -35,6 +35,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 - `memory-worker`: speichert Entscheidungen und Learnings dauerhaft
 - `web-ui`: Aufgaben, Status, Logs, Freigaben
 - Task-Detailseite mit Worker-Theater, Heartbeats und lesbarer Event-Historie fuer lange lokale LLM-Laufzeiten
+- Worker-Benchmarkseite mit Laufzeiten, sichtbarem Input/Output, Modellnutzung und Fehlerbildern pro Worker
 
 ## Annahmen
 
@@ -138,9 +139,11 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    - `http://<unraid-host>:18088/suggestions`
    - `http://<unraid-host>:18088/trusted-sources`
    - `http://<unraid-host>:18088/web-search`
+   - `http://<unraid-host>:18088/benchmarks`
    - `http://<unraid-host>:18088/debug`
 
    Auf der Task-Detailseite zeigt das `Worker-Theater`, welcher Worker gerade denkt, welcher bereits gesprochen hat und wo der Workflow aktuell haengt.
+   Unter `Benchmarks` siehst du pro Worker gut lesbar Laufzeit, sichtbaren Auftrag, sichtbares Ergebnis, Fehlerhaeufung und Modellnutzung.
    Wenn nur ein Teilbereich schiefgelaufen ist, kannst du auf derselben Task-Seite unter `Teilbereich neu starten` ab genau dem betroffenen Schritt erneut ansetzen, ohne einen komplett neuen Task anzulegen.
    Im `Debug-Center` kannst du System-Snapshots, persistierte Runtime-Dateien und Task-Reports einzeln oder als ZIP-Bundle herunterladen.
 
