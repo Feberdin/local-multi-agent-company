@@ -238,7 +238,7 @@ How to debug: If a source cannot be saved, compare the submitted domain/base URL
           {% if dry_run_result %}
           <details open>
             <summary>Dry-Run Ergebnis</summary>
-            <pre>{{ dry_run_result | tojson(indent=2) }}</pre>
+            <pre>{{ dry_run_result | safe_json }}</pre>
           </details>
           {% endif %}
         </article>
@@ -265,7 +265,7 @@ How to debug: If a source cannot be saved, compare the submitted domain/base URL
           {% if source_test_result %}
           <details open>
             <summary>Testergebnis</summary>
-            <pre>{{ source_test_result | tojson(indent=2) }}</pre>
+            <pre>{{ source_test_result | safe_json }}</pre>
           </details>
           {% endif %}
         </article>

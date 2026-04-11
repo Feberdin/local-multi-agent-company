@@ -8,6 +8,7 @@ How to debug: If provider tests fail, inspect the stored base URL, host allowlis
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ BLOCKED_GENERAL_WEB_DOMAINS = {
     "g2.com",
     "alternativeto.net",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 class SearchProviderError(ValueError):
@@ -357,9 +359,13 @@ class SearchProviderService:
                 response = await async_client.get(endpoint, params=params, headers=headers)
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
+            raise SearchProviderError(self._provider_error_message(provider, query, endpoint, exc)) from exc
+        except ValueError as exc:
             raise SearchProviderError(
-                f"SearXNG provider `{provider.name}` failed for query `{query}`: {exc}"
+                f"SearXNG provider `{provider.name}` at `{endpoint}` returned a non-JSON response for query `{query}`. "
+                "The service answered, but not with the expected SearXNG JSON payload. "
+                "Check whether `base_url` and `search_path` really point to a SearXNG search endpoint."
             ) from exc
         finally:
             if owned_client:
@@ -400,12 +406,17 @@ class SearchProviderService:
         }
         owned_client = client is None
         async_client = client or httpx.AsyncClient(timeout=provider.timeout_seconds, follow_redirects=True)
+        endpoint = self._provider_endpoint(provider)
         try:
-            response = await async_client.get(self._provider_endpoint(provider), params=params, headers=headers)
+            response = await async_client.get(endpoint, params=params, headers=headers)
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise SearchProviderError(f"Brave provider `{provider.name}` failed for query `{query}`: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise SearchProviderError(self._provider_error_message(provider, query, endpoint, exc)) from exc
+        except ValueError as exc:
+            raise SearchProviderError(
+                f"Brave provider `{provider.name}` at `{endpoint}` returned a non-JSON response for query `{query}`."
+            ) from exc
         finally:
             if owned_client:
                 await async_client.aclose()
@@ -448,9 +459,66 @@ class SearchProviderService:
         secret_file = os.getenv(f"{provider.auth_env_var}_FILE", "").strip()
         if secret_file:
             path = Path(secret_file)
-            if path.exists():
-                return path.read_text(encoding="utf-8").rstrip("\r\n")
+            try:
+                if path.exists():
+                    return path.read_text(encoding="utf-8").rstrip("\r\n")
+            except PermissionError:
+                LOGGER.warning(
+                    "Search provider secret file '%s' is not readable. "
+                    "The provider will continue without this optional secret until you fix the file permissions.",
+                    path,
+                )
+                return ""
+            except OSError as exc:
+                LOGGER.warning(
+                    "Search provider secret file '%s' could not be read (%s). Continuing without that secret.",
+                    path,
+                    exc,
+                )
+                return ""
         return ""
+
+    def _provider_error_message(
+        self,
+        provider: SearchProvider,
+        query: str,
+        endpoint: str,
+        exc: httpx.HTTPError,
+    ) -> str:
+        """Translate low-level HTTP client failures into operator-facing diagnostics."""
+
+        timeout_hint = f"timeout={provider.timeout_seconds}s"
+        if isinstance(exc, httpx.ReadTimeout):
+            return (
+                f"Provider `{provider.name}` timed out while reading results for query `{query}` at `{endpoint}` "
+                f"({timeout_hint}). The service is reachable, but it answered too slowly. "
+                "Increase the provider timeout for slow self-hosted search backends."
+            )
+        if isinstance(exc, httpx.ConnectTimeout):
+            return (
+                f"Provider `{provider.name}` could not be reached in time at `{endpoint}` ({timeout_hint}). "
+                "Check the host, port, reverse proxy, and Docker network reachability."
+            )
+        if isinstance(exc, httpx.ConnectError):
+            return (
+                f"Provider `{provider.name}` is not reachable at `{endpoint}`. "
+                "Check whether the host and port are correct and whether the remote service is running."
+            )
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            if provider.provider_type is SearchProviderType.SEARXNG and status_code == 404:
+                return (
+                    f"SearXNG provider `{provider.name}` returned HTTP 404 for `{endpoint}` while testing query `{query}`. "
+                    "The host answered, but this path is not a valid SearXNG JSON search endpoint. "
+                    "Check `base_url` and `search_path` (often `/search`). "
+                    "Important: this Feberdin stack does not start a SearXNG container by default, "
+                    "so the provider must point to an existing external SearXNG instance."
+                )
+            return (
+                f"Provider `{provider.name}` returned HTTP {status_code} for `{endpoint}` while testing query `{query}`. "
+                f"Backend said: {exc.response.text[:300]}"
+            )
+        return f"Provider `{provider.name}` failed for query `{query}` at `{endpoint}`: {exc}"
 
     def _filter_results(
         self,

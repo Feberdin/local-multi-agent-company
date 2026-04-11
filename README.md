@@ -34,6 +34,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 - `qa-worker`: Smoke-/Health-/API-Checks
 - `memory-worker`: speichert Entscheidungen und Learnings dauerhaft
 - `web-ui`: Aufgaben, Status, Logs, Freigaben
+- Task-Detailseite mit Worker-Theater, Heartbeats und lesbarer Event-Historie fuer lange lokale LLM-Laufzeiten
 
 ## Annahmen
 
@@ -137,6 +138,8 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    - `http://<unraid-host>:18088/suggestions`
    - `http://<unraid-host>:18088/trusted-sources`
    - `http://<unraid-host>:18088/web-search`
+
+   Auf der Task-Detailseite zeigt das `Worker-Theater`, welcher Worker gerade denkt, welcher bereits gesprochen hat und wo der Workflow aktuell haengt.
 
 7. Beispiel-Task anlegen:
 
@@ -338,6 +341,7 @@ Verhalten:
 - SearXNG als vorgesehener Primär-Provider
 - Brave optional als Fallback
 - Dry-Run, Connectivity-Checks und JSON Import/Export direkt im Dashboard
+- der Stack bringt standardmaessig keinen eigenen SearXNG-Container mit; die Provider-Konfiguration verweist daher auf eine externe Instanz
 
 Wichtig zu Keys:
 

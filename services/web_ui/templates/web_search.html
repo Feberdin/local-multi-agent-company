@@ -28,6 +28,12 @@ How to debug: If provider tests fail, inspect base URL, auth ENV name, and wheth
         <p class="lead">SearXNG zuerst, Brave optional als Fallback. Trusted Sources behalten immer Vorrang.</p>
       </section>
 
+      <section class="panel panel-note">
+        <h2>Wichtig fuer Unraid</h2>
+        <p>Dieser Stack startet standardmaessig keinen eigenen SearXNG-Container. Trage hier daher eine bestehende SearXNG-Instanz ein oder lasse den Provider deaktiviert.</p>
+        <p class="muted">Ein typischer JSON-Endpunkt ist <strong>/search</strong>. Wenn ein 404 erscheint, stimmen meist <strong>base_url</strong> oder <strong>search_path</strong> nicht mit der echten SearXNG-Instanz ueberein.</p>
+      </section>
+
       {% if error_message %}
       <section class="panel panel-alert">
         <h2>Hinweis</h2>
@@ -228,7 +234,7 @@ How to debug: If provider tests fail, inspect base URL, auth ENV name, and wheth
           {% if provider_test_result %}
           <details open>
             <summary>Testergebnis</summary>
-            <pre>{{ provider_test_result | tojson(indent=2) }}</pre>
+            <pre>{{ provider_test_result | safe_json }}</pre>
           </details>
           {% endif %}
         </article>

@@ -33,6 +33,15 @@ WEB_UI_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(WEB_UI_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(WEB_UI_DIR / "templates"))
 
+
+def _safe_json(value: Any) -> str:
+    """Render debug payloads without crashing templates on unexpected runtime types."""
+
+    return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
+templates.env.filters["safe_json"] = _safe_json
+
 WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     {
         "worker_name": "requirements",
@@ -158,6 +167,100 @@ ACTIVE_TASK_STATUSES = {
 AUTO_REFRESH_SECONDS = 15
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    """Normalize uncertain payload sections so older or malformed rows do not crash the dashboard."""
+
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Normalize uncertain list fields because operators should see a degraded page instead of a 500."""
+
+    return list(value) if isinstance(value, list) else []
+
+
+def _worker_initials(label: str) -> str:
+    """Create a compact avatar label for the worker theatre cards."""
+
+    parts = [part[:1].upper() for part in label.replace("-", " ").split() if part]
+    return "".join(parts[:2]) or "WK"
+
+
+def _normalize_worker_results(value: Any) -> dict[str, dict[str, Any]]:
+    """Defensively coerce stored worker results to the dict shape expected by the templates."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for worker_name, raw_result in value.items():
+        if isinstance(raw_result, dict):
+            result = dict(raw_result)
+            result["outputs"] = _as_mapping(result.get("outputs"))
+            result["warnings"] = _as_list(result.get("warnings"))
+            result["errors"] = _as_list(result.get("errors"))
+            result["risk_flags"] = _as_list(result.get("risk_flags"))
+            result["artifacts"] = _as_list(result.get("artifacts"))
+            result.setdefault("summary", "Kein Summary gespeichert.")
+            normalized[str(worker_name)] = result
+            continue
+
+        normalized[str(worker_name)] = {
+            "worker": str(worker_name),
+            "summary": str(raw_result),
+            "success": True,
+            "outputs": {},
+            "artifacts": [],
+            "warnings": [],
+            "errors": [],
+            "risk_flags": [],
+            "raw_value": raw_result,
+        }
+    return normalized
+
+
+def _normalize_events(value: Any) -> list[dict[str, Any]]:
+    """Coerce event payloads to a stable list-of-dicts shape for rendering and filtering."""
+
+    normalized: list[dict[str, Any]] = []
+    for raw_event in _as_list(value):
+        if not isinstance(raw_event, dict):
+            continue
+        event = dict(raw_event)
+        event["details"] = _as_mapping(event.get("details"))
+        normalized.append(event)
+    return normalized
+
+
+def _normalize_suggestions(value: Any) -> list[dict[str, Any]]:
+    """Prepare suggestion rows for the detail page without assuming a perfectly shaped registry payload."""
+
+    normalized: list[dict[str, Any]] = []
+    for raw_suggestion in _as_list(value):
+        if not isinstance(raw_suggestion, dict):
+            continue
+        suggestion = dict(raw_suggestion)
+        suggestion["worker_name"] = str(suggestion.get("worker_name") or "unknown")
+        suggestion["worker_label"] = WORKER_LABELS.get(suggestion["worker_name"], suggestion["worker_name"])
+        suggestion["status"] = str(suggestion.get("status") or "unknown")
+        suggestion["created_at_display"] = _format_timestamp(suggestion.get("created_at"))
+        suggestion["updated_at_display"] = _format_timestamp(suggestion.get("updated_at"))
+        normalized.append(suggestion)
+    return normalized
+
+
+def _next_worker_name(worker_name: str) -> str | None:
+    """Return the next worker in the visual sequence so completed stages can visibly hand off work."""
+
+    index = WORKER_SEQUENCE_INDEX.get(worker_name)
+    if index is None:
+        return None
+    next_index = index + 1
+    if next_index >= len(WORKER_SEQUENCE):
+        return None
+    return WORKER_SEQUENCE[next_index]["worker_name"]
+
+
 def _orchestrator_timeout() -> httpx.Timeout:
     """Keep UI requests snappy so the dashboard can degrade gracefully instead of hanging."""
 
@@ -234,8 +337,10 @@ def _format_duration(seconds: float | int | None) -> str:
 def _current_worker_name(task: dict[str, Any]) -> str | None:
     """Infer the active worker from the newest event first, then fall back to the coarse task status."""
 
-    for event in reversed(task.get("events", [])):
-        details = event.get("details") or {}
+    for event in reversed(_as_list(task.get("events"))):
+        if not isinstance(event, dict):
+            continue
+        details = _as_mapping(event.get("details"))
         worker_name = details.get("worker_name")
         if worker_name:
             return str(worker_name)
@@ -249,8 +354,10 @@ def _find_last_worker_event(task: dict[str, Any], worker_name: str | None) -> di
 
     if not worker_name:
         return None
-    for event in reversed(task.get("events", [])):
-        details = event.get("details") or {}
+    for event in reversed(_as_list(task.get("events"))):
+        if not isinstance(event, dict):
+            continue
+        details = _as_mapping(event.get("details"))
         if details.get("worker_name") == worker_name:
             return event
     return None
@@ -263,8 +370,10 @@ def _running_since(task: dict[str, Any], worker_name: str | None) -> datetime | 
         return None
     started_at: datetime | None = None
     seen_current_worker = False
-    for event in reversed(task.get("events", [])):
-        details = event.get("details") or {}
+    for event in reversed(_as_list(task.get("events"))):
+        if not isinstance(event, dict):
+            continue
+        details = _as_mapping(event.get("details"))
         event_worker = details.get("worker_name")
         if event_worker == worker_name:
             seen_current_worker = True
@@ -282,7 +391,7 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
 
     current_worker = _current_worker_name(task)
     task_status = str(task.get("status", TaskStatus.NEW.value))
-    completed_workers = set(task.get("worker_results", {}).keys())
+    completed_workers = set(_normalize_worker_results(task.get("worker_results")).keys())
     completed_indices = [WORKER_SEQUENCE_INDEX[name] for name in completed_workers if name in WORKER_SEQUENCE_INDEX]
     last_completed_index = max(completed_indices) if completed_indices else -1
     timeline: list[dict[str, Any]] = []
@@ -317,8 +426,8 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Prepare event timestamps and badges for the template without mutating the API contract."""
 
     decorated: list[dict[str, Any]] = []
-    for event in task.get("events", []):
-        details = event.get("details") or {}
+    for event in _normalize_events(task.get("events")):
+        details = _as_mapping(event.get("details"))
         decorated.append(
             {
                 **event,
@@ -326,17 +435,74 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
                 "level_lower": str(event.get("level", "info")).lower(),
                 "worker_label": WORKER_LABELS.get(str(details.get("worker_name")), str(details.get("worker_name", ""))),
                 "is_heartbeat": bool(details.get("heartbeat")),
+                "event_kind": str(details.get("event_kind") or "note"),
             }
         )
     return decorated
+
+
+def _build_worker_cast(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build a visual worker overview with avatar cards and short thought or speech bubbles."""
+
+    worker_results = _normalize_worker_results(task.get("worker_results"))
+    current_worker = _current_worker_name(task)
+    cast: list[dict[str, Any]] = []
+
+    for step in _build_worker_timeline(task):
+        worker_name = step["worker_name"]
+        latest_event = _find_last_worker_event(task, worker_name)
+        latest_details = _as_mapping(latest_event.get("details")) if latest_event else {}
+        result = worker_results.get(worker_name, {})
+        state = str(step["state"])
+        bubble_kind = "quiet"
+        bubble_text = step["description"]
+        directed_to = ""
+
+        if state == "running":
+            bubble_kind = "thought"
+            bubble_text = str(
+                latest_event.get("message")
+                if latest_event
+                else f"{step['label']} bearbeitet gerade diese Stage."
+            )
+        elif state == "complete":
+            bubble_kind = "speech"
+            bubble_text = str(result.get("summary") or step["last_event_message"])
+            next_worker = _next_worker_name(worker_name)
+            if next_worker:
+                directed_to = WORKER_LABELS.get(next_worker, next_worker)
+        elif state == "blocked":
+            bubble_kind = "speech"
+            bubble_text = str(task.get("approval_reason") or step["last_event_message"])
+        elif state == "failed":
+            bubble_kind = "speech"
+            bubble_text = str(task.get("latest_error") or step["last_event_message"])
+
+        cast.append(
+            {
+                **step,
+                "initials": _worker_initials(step["label"]),
+                "bubble_kind": bubble_kind,
+                "bubble_text": bubble_text,
+                "activity_display": step["last_event_at_display"],
+                "is_current_worker": worker_name == current_worker,
+                "directed_to": directed_to,
+                "event_kind": str(latest_details.get("event_kind") or "note"),
+            }
+        )
+    return cast
 
 
 def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     """Enrich a raw task payload with operator-focused progress details for the dashboard and detail page."""
 
     decorated = dict(task)
+    decorated["metadata"] = _as_mapping(decorated.get("metadata"))
+    decorated["worker_results"] = _normalize_worker_results(decorated.get("worker_results"))
+    decorated["events"] = _normalize_events(decorated.get("events"))
+    decorated["risk_flags"] = [str(item) for item in _as_list(decorated.get("risk_flags"))]
     current_worker = _current_worker_name(decorated)
-    last_event = decorated.get("events", [])[-1] if decorated.get("events") else None
+    last_event = decorated["events"][-1] if decorated.get("events") else None
     running_since = _running_since(decorated, current_worker)
     if running_since is not None:
         running_for_seconds = round((datetime.now(UTC) - running_since).total_seconds(), 1)
@@ -345,6 +511,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
 
     decorated["events"] = _decorate_events(decorated)
     decorated["worker_timeline"] = _build_worker_timeline(decorated)
+    decorated["worker_cast"] = _build_worker_cast(decorated)
     decorated["status_lower"] = str(decorated.get("status", "")).lower()
     decorated["created_at_display"] = _format_timestamp(decorated.get("created_at"))
     decorated["updated_at_display"] = _format_timestamp(decorated.get("updated_at"))
@@ -352,6 +519,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         _format_timestamp(last_event.get("created_at")) if last_event else decorated["updated_at_display"]
     )
     decorated["current_worker_name"] = current_worker
+    decorated["current_worker_label"] = WORKER_LABELS.get(current_worker or "", current_worker or "noch keiner sichtbar")
     decorated["current_stage_label"] = WORKER_LABELS.get(current_worker or "", "Wartet auf den naechsten Schritt")
     decorated["current_stage_description"] = WORKER_DESCRIPTIONS.get(
         current_worker or "",
@@ -476,17 +644,17 @@ async def _load_dashboard_context(error_message: str | None = None, success_mess
     repo_settings_response = await _api_request("GET", "/api/settings/repository-access")
     suggestions_response = await _api_request("GET", "/api/suggestions")
 
-    tasks = [_decorate_task(task) for task in _response_json(tasks_response, [])]
+    tasks = [_decorate_task(task) for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
     if tasks_response.status_code >= 400:
         messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht geladen werden."))
 
-    repo_settings = _response_json(repo_settings_response, {"allowed_repositories": []})
+    repo_settings = _as_mapping(_response_json(repo_settings_response, {"allowed_repositories": []}))
     if repo_settings_response.status_code >= 400:
         messages.append(
             _response_detail(repo_settings_response, "Die Repository-Allowlist konnte nicht geladen werden.")
         )
 
-    pending_suggestions = _response_json(suggestions_response, [])
+    pending_suggestions = _as_list(_response_json(suggestions_response, []))
     if suggestions_response.status_code >= 400:
         messages.append(_response_detail(suggestions_response, "Die Mitarbeiterideen konnten nicht geladen werden."))
     else:
@@ -513,7 +681,7 @@ async def _load_task_detail_context(
     response = await _api_request("GET", f"/api/tasks/{task_id}")
     if response.status_code >= 400:
         raise RuntimeError(_response_detail(response, f"Die Aufgabe `{task_id}` konnte nicht geladen werden."))
-    task = _decorate_task(_response_json(response, {}))
+    task = _decorate_task(_as_mapping(_response_json(response, {})))
     suggestion_context = await _load_suggestions_context(task_id=task_id)
     messages = [error_message, suggestion_context.get("error_message")]
     cleaned_suggestion_context = {
@@ -539,11 +707,11 @@ async def _load_trusted_sources_context(
     import_payload: str | None = None,
 ) -> dict[str, Any]:
     registry_response = await _api_request("GET", "/api/settings/trusted-sources")
-    registry = _response_json(registry_response, {"profiles": [], "active_profile_id": None})
-    profiles = registry.get("profiles", [])
+    registry = _as_mapping(_response_json(registry_response, {"profiles": [], "active_profile_id": None}))
+    profiles = [item for item in _as_list(registry.get("profiles")) if isinstance(item, dict)]
     active_profile_id = registry.get("active_profile_id")
     active_profile = next((profile for profile in profiles if profile["id"] == active_profile_id), None)
-    sources = active_profile.get("sources", []) if active_profile else []
+    sources = [item for item in _as_list(active_profile.get("sources")) if isinstance(item, dict)] if active_profile else []
     edit_source = next((source for source in sources if source["id"] == edit_source_id), None)
 
     form_values = _default_source_form_values()
@@ -579,7 +747,8 @@ async def _load_web_search_context(
     provider_test_result: dict | None = None,
 ) -> dict[str, Any]:
     settings_response = await _api_request("GET", "/api/settings/web-search")
-    provider_settings = _response_json(
+    provider_settings = _as_mapping(
+        _response_json(
         settings_response,
         {
             "providers": [],
@@ -589,8 +758,8 @@ async def _load_web_search_context(
             "allow_general_web_search_fallback": True,
             "provider_host_allowlist": [],
         },
-    )
-    providers = provider_settings.get("providers", [])
+    ))
+    providers = [item for item in _as_list(provider_settings.get("providers")) if isinstance(item, dict)]
     edit_provider = next((provider for provider in providers if provider["id"] == edit_provider_id), None)
 
     form_values = _default_provider_form_values()
@@ -619,8 +788,8 @@ async def _load_worker_guidance_context(
     success_message: str | None = None,
 ) -> dict[str, Any]:
     registry_response = await _api_request("GET", "/api/settings/worker-guidance")
-    registry = _response_json(registry_response, {"workers": []})
-    workers = registry.get("workers", [])
+    registry = _as_mapping(_response_json(registry_response, {"workers": []}))
+    workers = [item for item in _as_list(registry.get("workers")) if isinstance(item, dict)]
     if edit_worker_name is None and workers:
         edit_worker_name = workers[0]["worker_name"]
     edit_worker = next((worker for worker in workers if worker["worker_name"] == edit_worker_name), None)
@@ -651,8 +820,8 @@ async def _load_suggestions_context(
     success_message: str | None = None,
 ) -> dict[str, Any]:
     suggestions_response = await _api_request("GET", "/api/suggestions/registry")
-    registry = _response_json(suggestions_response, {"suggestions": []})
-    suggestions = registry.get("suggestions", [])
+    registry = _as_mapping(_response_json(suggestions_response, {"suggestions": []}))
+    suggestions = _normalize_suggestions(registry.get("suggestions", []))
     if task_id is not None:
         suggestions = [item for item in suggestions if item.get("task_id") == task_id]
 
@@ -728,6 +897,16 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
     except RuntimeError as exc:
         context = await _load_dashboard_context(
             error_message=str(exc),
+        )
+        return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
+    except Exception as exc:  # pragma: no cover - defensive fallback for unexpected runtime payloads.
+        logger.exception("Task detail page for %s could not be rendered cleanly: %s", task_id, exc)
+        context = await _load_dashboard_context(
+            error_message=(
+                f"Die Detailansicht fuer Aufgabe `{task_id}` konnte nicht vollstaendig aufgebaut werden. "
+                "Das Dashboard bleibt verfuegbar. "
+                "Pruefe `docker compose logs -f fmac-web` fuer die genaue Ursache."
+            ),
         )
         return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
     return templates.TemplateResponse(

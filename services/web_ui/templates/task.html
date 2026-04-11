@@ -78,7 +78,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           <h2>Aktuelle Stage</h2>
           <div class="stats-grid">
             <p><strong>Schritt:</strong> {{ task.current_stage_label }}</p>
-            <p><strong>Worker:</strong> {{ task.current_worker_name or "noch keiner sichtbar" }}</p>
+            <p><strong>Worker:</strong> {{ task.current_worker_label }}{% if task.current_worker_name %} <span class="muted">({{ task.current_worker_name }})</span>{% endif %}</p>
             <p><strong>Zustand:</strong> <span class="status status-{{ task.current_stage_state }}">{{ task.current_stage_state }}</span></p>
             <p><strong>Beschreibung:</strong> {{ task.current_stage_description }}</p>
             <p><strong>Laeuft seit:</strong> {{ task.running_since_display }}</p>
@@ -106,6 +106,38 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         </article>
       </section>
 
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Worker-Theater</h2>
+          <span class="muted">Denkblase = arbeitet gerade, Sprechblase = meldet Ergebnis oder wartet auf Rueckmeldung.</span>
+        </div>
+        <div class="worker-theater">
+          {% for worker in task.worker_cast %}
+          <article class="worker-card worker-card-{{ worker.state }}">
+            <div class="worker-figure">
+              <div class="worker-avatar">
+                <span class="worker-avatar-badge">{{ worker.initials }}</span>
+                <span class="worker-head"></span>
+                <span class="worker-body"></span>
+              </div>
+              <div class="worker-identity">
+                <strong>{{ worker.label }}</strong>
+                <span class="muted">{{ worker.description }}</span>
+                <span class="status status-{{ worker.state }}">{{ worker.state }}</span>
+              </div>
+            </div>
+            <div class="bubble bubble-{{ worker.bubble_kind }}">
+              <p>{{ worker.bubble_text }}</p>
+              <p class="muted">Letzte Aktivitaet: {{ worker.activity_display }}</p>
+              {% if worker.directed_to %}
+              <p class="muted">Naechste Uebergabe: {{ worker.directed_to }}</p>
+              {% endif %}
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
       <section class="grid">
         <article class="panel">
           <h2>Status</h2>
@@ -124,7 +156,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           {% for name, result in task.worker_results.items() %}
           <details>
             <summary>{{ name }}</summary>
-            <pre>{{ result | tojson(indent=2) }}</pre>
+            <pre>{{ result | safe_json }}</pre>
           </details>
           {% else %}
           <p class="muted">Noch keine Worker-Ergebnisse vorhanden.</p>
@@ -152,7 +184,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
             </div>
             <p>{{ event.message }}</p>
             {% if event.details %}
-            <pre>{{ event.details | tojson(indent=2) }}</pre>
+            <pre>{{ event.details | safe_json }}</pre>
             {% endif %}
           </article>
           {% else %}
@@ -216,7 +248,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           <article class="event">
             <div class="event-header">
               <strong>{{ suggestion.title }}</strong>
-              <span class="muted">{{ suggestion.worker_name }} · {{ suggestion.status }}</span>
+              <span class="muted">{{ suggestion.worker_label }} · {{ suggestion.status }} · {{ suggestion.updated_at_display }}</span>
             </div>
             <p>{{ suggestion.summary }}</p>
             <p class="muted"><strong>Begründung:</strong> {{ suggestion.rationale }}</p>

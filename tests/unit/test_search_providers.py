@@ -118,7 +118,7 @@ async def test_brave_fallback_is_used_when_searxng_fails(monkeypatch: pytest.Mon
     assert provider is not None
     assert provider.provider_type is SearchProviderType.BRAVE
     assert results[0].url == "https://docs.github.com/en/rest"
-    assert any("failed" in note.lower() for note in notes)
+    assert any("http 503" in note.lower() or "provider `searxng`" in note.lower() for note in notes)
 
 
 @pytest.mark.asyncio
@@ -138,3 +138,30 @@ async def test_brave_requires_server_side_api_key(monkeypatch: pytest.MonkeyPatc
                 trusted_profile,
                 client=client,
             )
+
+
+@pytest.mark.asyncio
+async def test_searxng_404_error_explains_external_instance_expectation() -> None:
+    provider_service, trusted_source_service = _configure_enabled_providers()
+    trusted_profile = trusted_source_service.load_active_profile()
+    provider_settings = provider_service.load_settings()
+    searxng_provider = next(
+        provider for provider in provider_settings.providers if provider.provider_type is SearchProviderType.SEARXNG
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "not found"}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(SearchProviderError) as exc_info:
+            await provider_service.test_provider(
+                SearchProviderTestRequest(provider_id=searxng_provider.id, query="python packaging official docs"),
+                trusted_source_service,
+                trusted_profile,
+                client=client,
+            )
+
+    message = str(exc_info.value)
+    assert "HTTP 404" in message
+    assert "/search" in message
+    assert "does not start a SearXNG container by default" in message

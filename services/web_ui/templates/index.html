@@ -103,6 +103,7 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
             <strong>{{ task.goal }}</strong>
             <span class="muted">{{ task.repository }}</span>
             <span class="muted">Aktueller Schritt: {{ task.current_stage_label }}</span>
+            <span class="muted">Aktiver Worker: {{ task.current_worker_label or "noch keiner sichtbar" }}</span>
             <span class="muted">Letzte Aktivitaet: {{ task.last_activity_at_display }}</span>
           </a>
           {% else %}

@@ -141,6 +141,32 @@ Fix:
 - das Logging ergänzt diese Felder jetzt zentral für alle `LogRecord`s
 - dadurch bleiben strukturierte Logs erhalten, ohne dass Fremdlogger den Stack destabilisieren
 
+## SearXNG-Provider liefert `404 Not Found`
+
+Typisches Symptom:
+
+- Providertest im Dashboard meldet `404 Not Found`
+- in der Fehlermeldung taucht ein Endpoint wie `http://<host>:8081/search?...` auf
+
+Ursache:
+
+- `base_url` oder `search_path` zeigen nicht auf einen echten SearXNG-JSON-Endpunkt
+- der Stack startet standardmaessig keinen eigenen SearXNG-Container
+- haeufig antwortet ein Reverse Proxy, ein Platzhalter-Webserver oder eine andere App auf diesem Port
+
+Pruefen:
+
+- im Dashboard unter `Web Search Providers` den kompletten Endpoint kontrollieren
+- typische Ziel-URL: `http://<searxng-host>:8080/search`
+- direkt testen:
+  - `curl -I http://<searxng-host>:8080/search`
+  - `curl "http://<searxng-host>:8080/search?q=python&format=json"`
+
+Empfehlung:
+
+- wenn du noch keine eigene SearXNG-Instanz betreibst, lass den Provider deaktiviert
+- oder trage bewusst eine bestehende externe Instanz ein
+
 ## Web-UI zeigt lange Stage nicht mehr als Freeze
 
 Aktuelles Verhalten:
@@ -148,6 +174,7 @@ Aktuelles Verhalten:
 - die Task-Ansicht aktualisiert sich waehrend aktiver Stages automatisch
 - die aktuelle Stage zeigt Worker, Startzeit, Laufzeit und letzte Aktivitaet
 - Heartbeat-Ereignisse machen sichtbar, dass ein langsamer lokaler Modellaufruf noch lebt
+- das `Worker-Theater` zeigt den aktiven Worker mit Denkblase und abgeschlossene oder blockierte Worker mit Sprechblasen
 
 Pruefen:
 

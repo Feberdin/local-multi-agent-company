@@ -121,6 +121,8 @@ Sichere Defaults:
 
 Hinweis:
 
+- Der Compose-Stack startet aktuell keinen eigenen SearXNG-Container. Trage deshalb eine bestehende SearXNG-Instanz in `base_url` und `search_path` ein oder lasse den Provider deaktiviert.
+- Ein typischer JSON-Endpunkt ist `http://<host>:8080/search` oder `https://<host>/search`.
 - Wenn deine lokalen Modelle ohne Auth laufen, bleiben `MODEL_API_KEY`, `MISTRAL_API_KEY` und `QWEN_API_KEY` leer.
 - `BRAVE_SEARCH_API_KEY` wird nur benötigt, wenn Brave wirklich aktiviert wird.
 

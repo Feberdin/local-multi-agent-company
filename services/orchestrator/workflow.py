@@ -420,6 +420,7 @@ class WorkflowOrchestrator:
                     "Der Worker wartet moeglicherweise noch auf lokale Modellinferenz oder einen laengeren Verarbeitungsschritt."
                 ),
                 details={
+                    "event_kind": "stage_heartbeat",
                     "worker_name": worker_name,
                     "service_url": service_url,
                     "stage_label": stage_meta["label"],
@@ -668,6 +669,7 @@ class WorkflowOrchestrator:
             stage_status,
             message=f"{stage_meta['label']} gestartet.",
             details={
+                "event_kind": "stage_started",
                 "worker_name": worker_name,
                 "service_url": service_url,
                 "stage_label": stage_meta["label"],
@@ -683,6 +685,7 @@ class WorkflowOrchestrator:
                 "Auf langsamer lokaler Hardware kann die naechste Antwort mehrere Minuten brauchen."
             ),
             details={
+                "event_kind": "worker_dispatch",
                 "worker_name": worker_name,
                 "service_url": service_url,
                 "stage_label": stage_meta["label"],
@@ -715,6 +718,7 @@ class WorkflowOrchestrator:
                 TaskStatus.FAILED,
                 message=f"{stage_meta['label']} hat das konfigurierte Stage-Zeitbudget ueberschritten.",
                 details={
+                    "event_kind": "stage_timeout",
                     "worker_name": worker_name,
                     "service_url": service_url,
                     "stage_label": stage_meta["label"],
@@ -735,6 +739,7 @@ class WorkflowOrchestrator:
                 TaskStatus.FAILED,
                 message=f"{stage_meta['label']} ist fehlgeschlagen.",
                 details={
+                    "event_kind": "stage_failed",
                     "worker_name": worker_name,
                     "stage_label": stage_meta["label"],
                     "stage_description": stage_meta["description"],
@@ -767,6 +772,7 @@ class WorkflowOrchestrator:
                 stage=stage_status.value,
                 message=f"{stage_meta['label']} meldete einen Fehlerzustand.",
                 details={
+                    "event_kind": "stage_failed",
                     "worker_name": worker_name,
                     "stage_label": stage_meta["label"],
                     "stage_description": stage_meta["description"],
@@ -792,6 +798,7 @@ class WorkflowOrchestrator:
             stage=stage_status.value,
             message=f"{stage_meta['label']} abgeschlossen.",
             details={
+                "event_kind": "stage_completed",
                 "worker_name": worker_name,
                 "stage_label": stage_meta["label"],
                 "stage_description": stage_meta["description"],
