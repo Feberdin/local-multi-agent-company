@@ -12,10 +12,13 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 
+from services.shared.agentic_lab.code_index import build_index
 from services.shared.agentic_lab.config import get_settings
+from services.shared.agentic_lab.edit_ops import EditOperation, normalize_raw_operation
 from services.shared.agentic_lab.guardrails import detect_risk_flags
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
+from services.shared.agentic_lab.patch_engine import PatchResult, apply_edit_plan
 from services.shared.agentic_lab.repo_tools import (
     collect_repo_overview,
     create_branch_name,
@@ -103,27 +106,22 @@ async def _run_local_patch_backend(
     ][:6]
     file_context = {path: read_text_file(repo_path, path) for path in candidate_files}
 
+    # Build a lightweight symbol index for Python candidate files so the LLM can
+    # use targeted replace_symbol_body operations instead of full file rewrites.
+    code_index = build_index(repo_path, candidate_files)
+    symbol_index_block = code_index.format_for_prompt()
+
     try:
         patch_plan = await llm.complete_json(
-            system_prompt=(
-                "You are a careful coding agent implementing file changes for a software repository.\n"
-                "Return a JSON object with EXACTLY this structure — no other keys, no prose:\n"
-                '{"summary": "...", "operations": ['
-                '{"action": "create_or_update", "path": "rel/path.py", "reason": "why", "content": "..."}]}\n'
-                "Each operation MUST have action, path, reason, and content. "
-                "Paths are relative to the repo root. Only touch files that directly address the goal.\n"
-                "If the goal requires NO file changes (e.g. analysis, brainstorming, explanation), "
-                'return {"summary": "No code changes needed: <reason>", "operations": []} — never prose.'
-                f"{guidance_block}"
-            ),
-            user_prompt=(
-                f"Goal:\n{request.goal}\n\n"
-                f"Requirements:\n{requirements}\n\n"
-                f"Architecture and implementation plan:\n{architecture}\n\n"
-                f"Research:\n{research}\n\n"
-                f"Repo overview:\n{overview}\n\n"
-                f"Candidate file contents:\n{file_context}\n\n"
-                "Generate only the necessary file contents for the requested change."
+            system_prompt=_coding_system_prompt(guidance_block),
+            user_prompt=_coding_user_prompt(
+                request.goal,
+                requirements,
+                architecture,
+                research,
+                overview,
+                file_context,
+                symbol_index_block,
             ),
             worker_name="coding",
         )
@@ -135,8 +133,8 @@ async def _run_local_patch_backend(
             errors=[str(exc)],
         )
 
-    operations = patch_plan.get("operations", [])
-    if not operations:
+    raw_operations = patch_plan.get("operations", [])
+    if not raw_operations:
         return WorkerResponse(
             worker="coding",
             success=False,
@@ -144,38 +142,46 @@ async def _run_local_patch_backend(
             errors=["The local patch backend did not generate any file operations."],
         )
 
-    changed_paths: list[str] = []
-    for operation in operations:
-        target = Path(operation["path"])
-        if target.is_absolute() or ".." in target.parts:
-            return WorkerResponse(
-                worker="coding",
-                success=False,
-                summary="Unsafe file path detected in coding output.",
-                errors=[f"Unsafe path requested by model: {target}"],
-            )
+    # Parse and normalize operations (supports both new structured edits and legacy create_or_update)
+    edit_ops, parse_errors = _parse_operations(raw_operations)
+    if not edit_ops:
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Could not parse any valid edit operations from the model response.",
+            errors=parse_errors or ["All operations failed to parse."],
+        )
 
-        resolved_target = (repo_path / target).resolve()
-        if repo_path.resolve() not in resolved_target.parents and resolved_target != repo_path.resolve():
-            return WorkerResponse(
-                worker="coding",
-                success=False,
-                summary="Coding backend attempted to write outside the repo.",
-                errors=[f"Rejected out-of-repo write: {resolved_target}"],
-            )
-
-        resolved_target.parent.mkdir(parents=True, exist_ok=True)
-        resolved_target.write_text(operation["content"], encoding="utf-8")
-        changed_paths.append(str(target))
+    # Apply via patch engine (symbol → anchor → line → full-file, with rollback on failure)
+    patch_result: PatchResult = apply_edit_plan(repo_path, edit_ops)
+    if not patch_result.success:
+        op_errors = [
+            f"Operation {r.operation_index} ({r.action} on {r.file_path}): {r.error}"
+            for r in patch_result.failed_operations
+        ]
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Patch engine could not apply the generated edit operations.",
+            errors=op_errors or patch_result.errors,
+        )
 
     diff = current_diff(repo_path, request.base_branch)
     risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
+
+    op_summaries = [
+        {"action": r.action, "file": r.file_path, "strategy": r.strategy_used, "lines": r.lines_changed}
+        for r in patch_result.operation_results
+    ]
+    warnings = [r.syntax_warning for r in patch_result.operation_results if r.syntax_warning]
+
     report = {
-        "summary": patch_plan.get("summary", "Applied local patch operations."),
+        "summary": patch_plan.get("summary", "Applied structured edit operations."),
         "branch_name": branch_name,
         "changed_files": diff["changed_files"],
         "diff_stat": diff["diff_stat"],
-        "operations": operations,
+        "operation_results": op_summaries,
+        "patch_summary": patch_result.summary_text(),
     }
     report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
 
@@ -189,23 +195,100 @@ async def _run_local_patch_backend(
 
     return WorkerResponse(
         worker="coding",
-        summary=patch_plan.get("summary", "Applied local patch operations."),
+        summary=patch_plan.get("summary", "Applied structured edit operations."),
         outputs={
             "branch_name": branch_name,
             "local_repo_path": str(repo_path),
             "changed_files": diff["changed_files"],
             "diff_stat": diff["diff_stat"],
-            "model_operations": operations,
+            "operation_results": op_summaries,
+            "patch_summary": patch_result.summary_text(),
         },
         risk_flags=risk_flags,
+        warnings=warnings,
         artifacts=[
             Artifact(
                 name="coding-report",
                 path=str(report_path),
-                description="Applied operations and resulting diff summary.",
+                description="Applied edit operations and resulting diff summary.",
             )
         ],
     )
+
+
+def _coding_system_prompt(guidance_block: str) -> str:
+    return (
+        "You are a careful coding agent implementing file changes for a software repository.\n"
+        "Return a JSON object with EXACTLY this structure — no prose, no markdown:\n"
+        '{"summary": "...", "operations": [<list of operations>]}\n'
+        "\n"
+        "AVAILABLE OPERATIONS — use the most targeted one that applies:\n"
+        "1. replace_symbol_body (preferred for Python — avoids full file rewrite):\n"
+        '   {"action":"replace_symbol_body","file_path":"p.py","symbol_name":"fn",'
+        '"new_content":"def fn(...):\\n    ...","reason":"..."}\n'
+        "2. replace_block (replace a code block by anchor text, fuzzy match):\n"
+        '   {"action":"replace_block","file_path":"p.py","anchor_text":"first line",'
+        '"new_content":"replacement","reason":"..."}\n'
+        "3. insert_after_anchor / insert_before_anchor:\n"
+        '   {"action":"insert_after_anchor","file_path":"p.py","anchor_text":"line",'
+        '"new_content":"new code","reason":"..."}\n'
+        "4. replace_lines (use symbol index line numbers):\n"
+        '   {"action":"replace_lines","file_path":"p.py","start_line":42,"end_line":67,'
+        '"new_content":"replacement","reason":"..."}\n'
+        "5. create_file — create a new file (new_content = full content):\n"
+        '   {"action":"create_file","file_path":"new.py","new_content":"...","reason":"..."}\n'
+        "6. create_or_update — full file rewrite (only when >50% of file changes):\n"
+        '   {"action":"create_or_update","file_path":"p.py","new_content":"full file","reason":"..."}\n'
+        "RULE: prefer replace_symbol_body for Python changes. "
+        "Use create_or_update only as last resort.\n"
+        "If the goal requires NO file changes (e.g. analysis, explanation), return:\n"
+        '{"summary": "No code changes needed: <reason>", "operations": []}'
+        f"{guidance_block}"
+    )
+
+
+def _coding_user_prompt(
+    goal: str,
+    requirements: object,
+    architecture: object,
+    research: object,
+    overview: dict,
+    file_context: dict,
+    symbol_index_block: str,
+) -> str:
+    parts = [
+        f"Goal:\n{goal}",
+        f"Requirements:\n{requirements}",
+        f"Architecture and implementation plan:\n{architecture}",
+        f"Research:\n{research}",
+        f"Repo overview:\n{overview}",
+    ]
+    if symbol_index_block:
+        parts.append(symbol_index_block)
+    if file_context:
+        parts.append(f"Candidate file contents:\n{file_context}")
+    parts.append(
+        "Generate only the minimum changes needed. "
+        "Prefer replace_symbol_body for Python functions. "
+        "Use create_or_update only if a new file is needed or >50% of the file changes."
+    )
+    return "\n\n".join(parts)
+
+
+def _parse_operations(raw_ops: list) -> tuple[list[EditOperation], list[str]]:
+    """Parse raw LLM operation dicts into EditOperation models. Returns (ops, parse_errors)."""
+    ops: list[EditOperation] = []
+    errors: list[str] = []
+    for i, raw in enumerate(raw_ops):
+        if not isinstance(raw, dict):
+            errors.append(f"Operation {i} is not a dict: {type(raw).__name__}")
+            continue
+        try:
+            normalized = normalize_raw_operation(raw)
+            ops.append(EditOperation(**normalized))
+        except Exception as exc:
+            errors.append(f"Operation {i} parse error: {exc}")
+    return ops, errors
 
 
 async def _run_openhands_adapter(
