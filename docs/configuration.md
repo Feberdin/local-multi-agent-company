@@ -7,6 +7,8 @@
 - `HOST_WORKSPACE_ROOT`
 - `HOST_STAGING_STACK_ROOT`
 - `HOST_SECRETS_DIR`
+- `RUNTIME_HOME_DIR`
+- `TASK_WORKSPACE_ROOT`
 - `GITHUB_TOKEN`
 - `GITHUB_TOKEN_FILE`
 - `MISTRAL_BASE_URL`
@@ -44,6 +46,8 @@ Wichtige Defaults:
 - `LLM_REQUEST_DEADLINE_SECONDS=1500`
 - `WORKER_STAGE_TIMEOUT_SECONDS=1800`
 - `STAGE_HEARTBEAT_INTERVAL_SECONDS=30`
+- `RUNTIME_HOME_DIR=/tmp/agent-home`
+- `TASK_WORKSPACE_ROOT=/workspace/.task-workspaces`
 
 Regel:
 
@@ -91,6 +95,31 @@ QWEN_API_KEY_FILE=/run/project-secrets/qwen_api_key
 WEB_SEARCH_API_KEY_FILE=/run/project-secrets/web_search_api_key
 BRAVE_SEARCH_API_KEY_FILE=/run/project-secrets/brave_search_api_key
 ```
+
+## Git und Task-Workspaces
+
+Fuer gemountete Repositories auf Unraid oder anderen Self-Hosted Hosts gelten zwei wichtige Regeln:
+
+- Git braucht immer ein beschreibbares `HOME`, damit `safe.directory` und andere globale Einstellungen sauber gesetzt werden koennen.
+- Worker sollten niemals direkt auf dem geteilten Basis-Checkout unter `/workspace/<repo>` arbeiten, wenn mehrere Tasks oder bereits lokale Aenderungen im Spiel sind.
+
+Der Stack nutzt dafuer jetzt diese Defaults:
+
+- `RUNTIME_HOME_DIR=/tmp/agent-home`
+- `TASK_WORKSPACE_ROOT=/workspace/.task-workspaces`
+
+Verhalten:
+
+- der gemeinsame Checkout unter `DEFAULT_LOCAL_REPO_PATH` bleibt die Quelle
+- jeder Task bekommt darunter eine eigene isolierte Arbeitskopie
+- Git-Operationen setzen `safe.directory` pro konkret genutztem Repo-Pfad automatisch
+- spaetere Stages wie `coding`, `reviewer`, `tester` und `github` arbeiten danach auf demselben task-isolierten Checkout weiter
+
+Warum das wichtig ist:
+
+- `fatal: detected dubious ownership` verschwindet nicht durch Glueck, sondern durch ein gueltiges HOME plus `safe.directory`
+- ein bereits dirty geteilter Checkout kann sonst neue Tasks verunreinigen
+- isolierte Task-Workspaces machen Fehler reproduzierbarer und sicherer
 
 ## Trusted Sources
 

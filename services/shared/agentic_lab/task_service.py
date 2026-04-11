@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from services.shared.agentic_lab.config import Settings, get_settings
 from services.shared.agentic_lab.db import (
     ApprovalRecord,
     TaskEventRecord,
@@ -20,7 +21,7 @@ from services.shared.agentic_lab.db import (
     TaskSnapshotRecord,
     get_session_factory,
 )
-from services.shared.agentic_lab.repo_tools import create_branch_name
+from services.shared.agentic_lab.repo_tools import build_task_workspace_path, create_branch_name
 from services.shared.agentic_lab.schemas import (
     ApprovalDecision,
     ApprovalRequest,
@@ -40,8 +41,9 @@ WORKER_PROJECT_LABEL = "Feberdin local-multi-agent-company worker project"
 class TaskService:
     """Encapsulate all database writes so workflow code stays readable and consistent."""
 
-    def __init__(self, session_factory=None) -> None:
+    def __init__(self, session_factory=None, settings: Settings | None = None) -> None:
         self.session_factory = session_factory or get_session_factory()
+        self.settings = settings or get_settings()
 
     def session(self) -> Session:
         return self.session_factory()
@@ -51,14 +53,20 @@ class TaskService:
 
         with self.session() as session:
             task_id = str(uuid4())
-            local_repo_path = request.local_repo_path or f"/workspace/{request.repository.split('/')[-1]}"
+            source_local_repo_path = request.local_repo_path or f"/workspace/{request.repository.split('/')[-1]}"
+            task_workspace_path = build_task_workspace_path(
+                task_id,
+                request.repository,
+                self.settings.workspace_root,
+                self.settings.effective_task_workspace_root,
+            )
             branch_name = create_branch_name(request.goal, task_id)
             record = TaskRecord(
                 id=task_id,
                 goal=request.goal,
                 repository=request.repository,
                 repo_url=request.repo_url,
-                local_repo_path=local_repo_path,
+                local_repo_path=str(task_workspace_path),
                 base_branch=request.base_branch,
                 branch_name=branch_name,
                 status=TaskStatus.NEW.value,
@@ -74,6 +82,10 @@ class TaskService:
                     "enable_web_research": request.enable_web_research,
                     "allow_repository_modifications": request.allow_repository_modifications,
                     "current_approval_gate_name": None,
+                    "source_local_repo_path": source_local_repo_path,
+                    "task_workspace_path": str(task_workspace_path),
+                    "workspace_strategy": "task_isolated_checkout",
+                    "worker_progress": {},
                     "worker_project_label": WORKER_PROJECT_LABEL,
                     "auto_deploy_staging": (
                         request.auto_deploy_staging if request.auto_deploy_staging is not None else True
@@ -93,8 +105,14 @@ class TaskService:
                 session,
                 task_id=record.id,
                 stage=TaskStatus.NEW.value,
-                message="Task created and waiting to run.",
-                details={"repository": record.repository, "branch_name": record.branch_name},
+                message="Aufgabe wurde angelegt und wartet auf den Start des Workflows.",
+                details={
+                    "repository": record.repository,
+                    "branch_name": record.branch_name,
+                    "source_local_repo_path": source_local_repo_path,
+                    "task_workspace_path": str(task_workspace_path),
+                    "workspace_strategy": "task_isolated_checkout",
+                },
             )
             self._add_snapshot(session, record.id, TaskStatus.NEW.value, {"created": True})
             session.commit()
@@ -336,6 +354,28 @@ class TaskService:
             session.commit()
         return self.get_task(task_id)
 
+    def update_runtime_context(
+        self,
+        task_id: str,
+        *,
+        local_repo_path: str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> TaskDetail:
+        """Persist runtime-only context such as the isolated workspace path without changing the visible task status."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            if local_repo_path:
+                record.local_repo_path = local_repo_path
+            if metadata_updates:
+                metadata = dict(record.metadata_json or {})
+                metadata.update(metadata_updates)
+                record.metadata_json = metadata
+                record.updated_at = datetime.now(UTC)
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
     def _require_task(self, session: Session, task_id: str) -> TaskRecord:
         record = session.get(TaskRecord, task_id)
         if record is None:
@@ -353,6 +393,7 @@ class TaskService:
     ) -> None:
         record = self._require_task(session, task_id)
         record.updated_at = datetime.now(UTC)
+        self._merge_worker_progress(record, details)
         session.add(
             TaskEventRecord(
                 task_id=task_id,
@@ -365,6 +406,47 @@ class TaskService:
 
     def _add_snapshot(self, session: Session, task_id: str, status: str, state: dict) -> None:
         session.add(TaskSnapshotRecord(task_id=task_id, status=status, state_json=state))
+
+    def _merge_worker_progress(self, record: TaskRecord, details: dict[str, Any]) -> None:
+        """Keep the latest structured per-worker progress in task metadata for compact UI rendering."""
+
+        worker_name = str(details.get("worker_name") or "").strip()
+        if not worker_name:
+            return
+
+        progress_keys = {
+            "state",
+            "current_action",
+            "current_step",
+            "current_prompt_summary",
+            "current_instruction",
+            "waiting_for",
+            "blocked_by",
+            "next_worker",
+            "last_result_summary",
+            "progress_message",
+            "started_at",
+            "updated_at",
+            "elapsed_seconds",
+            "event_kind",
+            "stage_label",
+            "stage_description",
+            "service_url",
+            "model_route",
+            "last_error",
+            "last_event_message",
+        }
+        progress_update = {key: details[key] for key in progress_keys if key in details and details[key] is not None}
+        if not progress_update:
+            return
+
+        metadata = dict(record.metadata_json or {})
+        worker_progress = dict(metadata.get("worker_progress") or {})
+        existing = dict(worker_progress.get(worker_name) or {})
+        existing.update(progress_update)
+        worker_progress[worker_name] = existing
+        metadata["worker_progress"] = worker_progress
+        record.metadata_json = metadata
 
     def _to_summary(self, record: TaskRecord) -> TaskSummary:
         return TaskSummary(

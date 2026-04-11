@@ -79,6 +79,14 @@ def test_runtime_services_have_all_required_mount_targets() -> None:
         assert REQUIRED_TARGETS.issubset(targets), f"{service_name} is missing one of {sorted(REQUIRED_TARGETS - targets)}"
 
 
+def test_agent_dockerfile_sets_writable_home_for_arbitrary_runtime_users() -> None:
+    dockerfile_text = (ROOT_DIR / "docker/Dockerfile.agent-service").read_text(encoding="utf-8")
+
+    assert "HOME=/tmp/agent-home" in dockerfile_text
+    assert "RUNTIME_HOME_DIR=/tmp/agent-home" in dockerfile_text
+    assert "mkdir -p /tmp/agent-home" in dockerfile_text
+
+
 def test_runtime_services_use_short_container_names_and_icon_manifest() -> None:
     compose_data = _load_yaml(ROOT_DIR / "docker-compose.yml")
     services = compose_data["services"]
@@ -109,6 +117,8 @@ def test_env_example_uses_conflict_aware_ports_and_unique_keys() -> None:
     env_values = _parse_env_example(ROOT_DIR / ".env.example")
     assert env_values["ORCHESTRATOR_PORT"] == "18080"
     assert env_values["WEB_UI_PORT"] == "18088"
+    assert env_values["RUNTIME_HOME_DIR"] == "/tmp/agent-home"
+    assert env_values["TASK_WORKSPACE_ROOT"] == "/workspace/.task-workspaces"
 
 
 def test_runtime_env_validation_rejects_duplicate_keys(tmp_path: Path) -> None:

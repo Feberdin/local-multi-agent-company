@@ -60,6 +60,7 @@ async def health() -> HealthResponse:
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "research-worker", "task_id": request.task_id})
     repo_path = Path(request.local_repo_path)
+    source_repo_path = Path(str(request.metadata.get("source_local_repo_path") or request.local_repo_path))
     warnings: list[str] = []
     try:
         try:
@@ -69,6 +70,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 workspace_root=settings.workspace_root,
                 base_branch=request.base_branch,
                 repo_url=request.repo_url,
+                task_id=request.task_id,
+                source_repo_path=source_repo_path,
             )
         except CommandError as exc:
             if (repo_path / ".git").exists():

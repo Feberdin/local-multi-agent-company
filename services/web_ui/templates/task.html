@@ -77,32 +77,45 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
 
       <section class="grid">
         <article class="panel">
-          <h2>Aktuelle Stage</h2>
+          <h2>Aktueller Lauf</h2>
           <div class="stats-grid">
             <p><strong>Schritt:</strong> {{ task.current_stage_label }}</p>
             <p><strong>Worker:</strong> {{ task.current_worker_label }}{% if task.current_worker_name %} <span class="muted">({{ task.current_worker_name }})</span>{% endif %}</p>
-            <p><strong>Zustand:</strong> <span class="status status-{{ task.current_stage_state }}">{{ task.current_stage_state }}</span></p>
+            <p><strong>Zustand:</strong> <span class="status status-{{ task.current_stage_state }}">{{ task.current_stage_state_label }}</span></p>
             <p><strong>Beschreibung:</strong> {{ task.current_stage_description }}</p>
             <p><strong>Laeuft seit:</strong> {{ task.running_since_display }}</p>
             <p><strong>Aktive Laufzeit:</strong> {{ task.running_for_display }}</p>
             <p><strong>Letzte Aktivitaet:</strong> {{ task.last_activity_at_display }}</p>
             <p><strong>Auto-Refresh:</strong> {{ task.auto_refresh_seconds ~ " Sekunden" if task.auto_refresh_seconds else "aus" }}</p>
+            <p><strong>Aktueller Auftrag:</strong> {{ task.current_instruction }}</p>
+            <p><strong>Fortschritt:</strong> {{ task.current_progress_message }}</p>
+            <p><strong>Wartet auf:</strong> {{ task.current_waiting_for_display }}</p>
+            <p><strong>Letztes Zwischenergebnis:</strong> {{ task.current_last_result_summary }}</p>
+            <p><strong>Letzter Fehler:</strong> {{ task.current_last_error or "kein aktueller Fehler" }}</p>
           </div>
         </article>
 
         <article class="panel">
-          <h2>Workflow-Fortschritt</h2>
+          <h2>Ablauf</h2>
           <div class="stage-list">
             {% for step in task.worker_timeline %}
-            <article class="stage-card stage-card-{{ step.state }}">
-              <div class="event-header">
-                <strong>{{ step.label }}</strong>
-                <span class="status status-{{ step.state }}">{{ step.state }}</span>
-              </div>
+            <details class="stage-card stage-card-{{ step.state }}" {% if step.state in ["running", "waiting", "failed", "blocked"] %}open{% endif %}>
+              <summary class="event-header">
+                <strong>{{ step.state_icon }} {{ step.label }}</strong>
+                <span class="status status-{{ step.state }}">{{ step.state_label }}</span>
+              </summary>
               <p class="muted">{{ step.description }}</p>
+              <p><strong>Schrittstart:</strong> {{ step.started_at_display }}</p>
+              <p><strong>Dauer:</strong> {{ step.elapsed_display }}</p>
               <p><strong>Letzte Aktivitaet:</strong> {{ step.last_event_at_display }}</p>
-              <p class="muted">{{ step.last_event_message }}</p>
-            </article>
+              <p><strong>Aktueller Auftrag:</strong> {{ step.current_instruction }}</p>
+              <p><strong>Statusmeldung:</strong> {{ step.progress_message }}</p>
+              <p><strong>Wartet auf:</strong> {{ step.waiting_for_display }}</p>
+              <p><strong>Letztes Ergebnis:</strong> {{ step.last_result_summary }}</p>
+              {% if step.last_error %}
+              <p><strong>Letzter Fehler:</strong> {{ step.last_error }}</p>
+              {% endif %}
+            </details>
             {% endfor %}
           </div>
         </article>
@@ -111,38 +124,58 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
       <section class="panel">
         <div class="panel-header">
           <h2>Worker-Theater</h2>
-          <span class="muted">Denkblase = arbeitet gerade, Sprechblase = meldet Ergebnis oder wartet auf Rueckmeldung.</span>
+          <span class="muted">💭 arbeitet · ☕ wartet · 💬 meldet Ergebnis · zzz derzeit ungenutzt</span>
         </div>
-        <div class="worker-theater">
-          {% for worker in task.worker_cast %}
-          <article class="worker-card worker-card-{{ worker.state }}">
-            <div class="worker-figure">
-              <div class="worker-avatar">
-                <span class="worker-avatar-badge">{{ worker.initials }}</span>
-                <span class="worker-head"></span>
-                <span class="worker-body"></span>
-              </div>
-              <div class="worker-identity">
-                <strong>{{ worker.label }}</strong>
-                <span class="muted">{{ worker.description }}</span>
-                <span class="status status-{{ worker.state }}">{{ worker.state }}</span>
-              </div>
+        {% for group in task.worker_cast_groups %}
+          {% if group.workers %}
+          <section class="worker-group">
+            <div class="worker-group-header">
+              <h3>{{ group.label }}</h3>
+              <span class="muted">{{ group.description }}</span>
             </div>
-            <div class="bubble bubble-{{ worker.bubble_kind }}">
-              <p>{{ worker.bubble_text }}</p>
-              <p class="muted">Letzte Aktivitaet: {{ worker.activity_display }}</p>
-              {% if worker.directed_to %}
-              <p class="muted">Naechste Uebergabe: {{ worker.directed_to }}</p>
-              {% endif %}
+            <div class="worker-theater worker-theater-{{ group.key }}">
+              {% for worker in group.workers %}
+              <article class="worker-card worker-card-{{ worker.state }}">
+                <div class="worker-figure">
+                  <div class="worker-avatar">
+                    <span class="worker-avatar-badge">{{ worker.initials }}</span>
+                    <span class="worker-head"></span>
+                    <span class="worker-body"></span>
+                  </div>
+                  <div class="worker-identity">
+                    <strong>{{ worker.state_icon }} {{ worker.label }}</strong>
+                    <span class="muted">{{ worker.description }}</span>
+                    <span class="status status-{{ worker.state }}">{{ worker.state_label }}</span>
+                  </div>
+                </div>
+                <div class="bubble bubble-{{ worker.bubble_kind }}">
+                  <p><strong>Status:</strong> {{ worker.bubble_text }}</p>
+                  <p><strong>Auftrag:</strong> {{ worker.current_instruction }}</p>
+                  <p><strong>Schrittstart:</strong> {{ worker.started_at_display }}</p>
+                  <p><strong>Laufzeit:</strong> {{ worker.elapsed_display }}</p>
+                  <p><strong>Letzte Aktivitaet:</strong> {{ worker.activity_display }}</p>
+                  <p><strong>Wartet auf:</strong> {{ worker.waiting_for_display }}</p>
+                  <p><strong>Letztes Ergebnis:</strong> {{ worker.last_result_summary }}</p>
+                  {% if worker.directed_to %}
+                  <p class="muted">Naechste Uebergabe: {{ worker.directed_to }}</p>
+                  {% endif %}
+                  {% if worker.last_error %}
+                  <p class="muted"><strong>Fehler:</strong> {{ worker.last_error }}</p>
+                  {% endif %}
+                </div>
+              </article>
+              {% endfor %}
             </div>
-          </article>
-          {% endfor %}
-        </div>
+          </section>
+          {% endif %}
+        {% endfor %}
       </section>
 
       <section class="grid">
         <article class="panel">
           <h2>Status</h2>
+          <p><strong>Arbeitskopie:</strong> {{ task.local_repo_path }}</p>
+          <p><strong>Quell-Checkout:</strong> {{ task.metadata.get("source_local_repo_path", "nicht gespeichert") }}</p>
           <p><strong>Resume-Ziel:</strong> {{ task.resume_target or "keins" }}</p>
           <p><strong>Approval-Gate:</strong> {{ task.current_approval_gate_name or "keins" }}</p>
           <p><strong>Freigabe nötig:</strong> {{ "Ja" if task.approval_required else "Nein" }}</p>
@@ -169,7 +202,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
       <section class="panel">
         <h2>Ereignisse</h2>
         <div class="timeline">
-          {% for event in task.events %}
+          {% for event in task.events_latest_first %}
           <article class="event event-{{ event.level_lower }}">
             <div class="event-header">
               <strong>{{ event.stage }}</strong>
@@ -181,12 +214,21 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
                 {% if event.is_heartbeat %}
                 <span class="status status-running">heartbeat</span>
                 {% endif %}
+                {% if event.state_label and event.state_label != "note" %}
+                <span class="status status-{{ event.level_lower }}">{{ event.state_label }}</span>
+                {% endif %}
                 <span class="muted">{{ event.created_at_display }}</span>
               </div>
             </div>
-            <p>{{ event.message }}</p>
+            <p>{{ event.progress_message or event.message }}</p>
+            {% if event.waiting_for_display %}
+            <p class="muted"><strong>Wartet auf:</strong> {{ event.waiting_for_display }}</p>
+            {% endif %}
             {% if event.details %}
-            <pre>{{ event.details | safe_json }}</pre>
+            <details>
+              <summary>Technische Details</summary>
+              <pre>{{ event.details | safe_json }}</pre>
+            </details>
             {% endif %}
           </article>
           {% else %}

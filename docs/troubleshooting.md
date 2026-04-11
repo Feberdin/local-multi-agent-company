@@ -125,6 +125,59 @@ Hinweis für schwächere Hardware:
   - `LLM_REQUEST_DEADLINE_SECONDS=1500`
   - `WORKER_STAGE_TIMEOUT_SECONDS=1800`
 
+## Git meldet `detected dubious ownership`
+
+Typisches Symptom:
+
+- `fatal: detected dubious ownership in repository at '/workspace/<repo>'`
+- haeufig in `coding-worker`, `research-worker` oder spaeter im `github-worker`
+
+Ursache:
+
+- das Repository ist als Host-Mount im Container sichtbar
+- Git vertraut diesem Pfad ohne `safe.directory` nicht automatisch
+- zusaetzlich fehlt in manchen Self-Hosted Setups ein gueltiges, beschreibbares `HOME`
+
+Fix im Stack:
+
+- Worker setzen jetzt ein eigenes beschreibbares Laufzeit-`HOME`
+- `safe.directory` wird fuer den konkret genutzten Repo-Pfad automatisch und idempotent gesetzt
+- neue Tasks arbeiten nicht mehr direkt auf dem gemeinsamen Basis-Checkout
+
+Pruefen:
+
+- `docker compose logs --tail=200 coding-worker`
+- `docker compose logs --tail=200 research-worker`
+- im Debug-Center die Runtime-Pfade `runtime_home_dir` und `task_workspace_root` ansehen
+
+Wichtige `.env`-Werte:
+
+- `RUNTIME_HOME_DIR=/tmp/agent-home`
+- `TASK_WORKSPACE_ROOT=/workspace/.task-workspaces`
+
+## Ein gemeinsames dirty Repo fuehrt zu unerwarteten Worker-Fehlern
+
+Typisches Symptom:
+
+- `git status` zeigt bereits vor der eigentlichen Coding-Stage viele lokale Aenderungen
+- neue Tasks verhalten sich inkonsistent oder diffen gegen alte Task-Reste
+
+Ursache:
+
+- mehrere Tasks oder manuelle Arbeiten teilen sich denselben Checkout unter `/workspace/<repo>`
+- lokale Aenderungen aus einem frueheren Task landen dadurch im naechsten
+
+Fix im Stack:
+
+- jeder Task bekommt jetzt eine isolierte Arbeitskopie unter `TASK_WORKSPACE_ROOT`
+- der gemeinsame Checkout bleibt nur noch Quelle fuer saubere Task-Kopien
+- spaetere Worker-Stages arbeiten innerhalb derselben Task-Kopie weiter
+
+Konkreter Hinweis:
+
+- wenn ein alter Task noch mit einem historischen gemeinsamen Checkout angelegt wurde, starte am besten eine neue Aufgabe nach dem Update
+- neue Aufgaben sollten im Detail-View einen `local_repo_path` unter `.task-workspaces/<task-id>/...` verwenden
+
 ## Logging-Fehler mit `service`
 
 Typisches Symptom:

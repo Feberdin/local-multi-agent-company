@@ -43,22 +43,36 @@ async def health() -> HealthResponse:
 @app.post("/run", response_model=WorkerResponse)
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "coding-worker", "task_id": request.task_id})
-    repo_path = ensure_repository_checkout(
-        repository=request.repository,
-        repo_path=Path(request.local_repo_path),
-        workspace_root=settings.workspace_root,
-        base_branch=request.base_branch,
-        repo_url=request.repo_url,
-    )
-    branch_name = request.branch_name or create_branch_name(request.goal, request.task_id)
-    ensure_branch(repo_path, branch_name, request.base_branch)
+    repo_path = Path(request.local_repo_path)
+    source_repo_path = Path(str(request.metadata.get("source_local_repo_path") or request.local_repo_path))
+    try:
+        repo_path = ensure_repository_checkout(
+            repository=request.repository,
+            repo_path=repo_path,
+            workspace_root=settings.workspace_root,
+            base_branch=request.base_branch,
+            repo_url=request.repo_url,
+            task_id=request.task_id,
+            source_repo_path=source_repo_path,
+        )
+        branch_name = request.branch_name or create_branch_name(request.goal, request.task_id)
+        ensure_branch(repo_path, branch_name, request.base_branch)
 
-    if settings.coding_provider == "openhands":
-        task_logger.info("Using OpenHands adapter backend for coding.")
-        return await _run_openhands_adapter(request, repo_path, branch_name)
+        if settings.coding_provider == "openhands":
+            task_logger.info("Using OpenHands adapter backend for coding.")
+            return await _run_openhands_adapter(request, repo_path, branch_name)
 
-    task_logger.info("Using local patch backend for coding.")
-    return await _run_local_patch_backend(request, repo_path, branch_name)
+        task_logger.info("Using local patch backend for coding.")
+        return await _run_local_patch_backend(request, repo_path, branch_name)
+    except Exception as exc:  # pragma: no cover - defensive runtime guard for operator-visible failures.
+        task_logger.exception("Coding worker failed unexpectedly: %s", exc)
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Coding-Stage konnte nicht sauber vorbereitet oder ausgefuehrt werden.",
+            errors=[f"{exc.__class__.__name__}: {exc}"],
+            outputs={"local_repo_path": str(repo_path)},
+        )
 
 
 async def _run_local_patch_backend(
@@ -173,6 +187,7 @@ async def _run_local_patch_backend(
         summary=patch_plan.get("summary", "Applied local patch operations."),
         outputs={
             "branch_name": branch_name,
+            "local_repo_path": str(repo_path),
             "changed_files": diff["changed_files"],
             "diff_stat": diff["diff_stat"],
             "model_operations": operations,
@@ -242,6 +257,7 @@ async def _run_openhands_adapter(
         summary=adapter_result.get("summary", "OpenHands adapter completed."),
         outputs={
             "branch_name": branch_name,
+            "local_repo_path": str(repo_path),
             "changed_files": diff["changed_files"],
             "diff_stat": diff["diff_stat"],
             "adapter_result": adapter_result,

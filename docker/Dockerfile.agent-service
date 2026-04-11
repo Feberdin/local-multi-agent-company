@@ -8,7 +8,9 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    HOME=/tmp/agent-home \
+    RUNTIME_HOME_DIR=/tmp/agent-home
 
 WORKDIR /app
 
@@ -17,6 +19,9 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git openssh-client \
     && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /tmp/agent-home \
+    && chmod 777 /tmp/agent-home
 
 COPY pyproject.toml README.md /app/
 COPY config /app/config

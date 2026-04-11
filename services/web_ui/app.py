@@ -48,17 +48,17 @@ templates.env.filters["safe_json"] = _safe_json
 WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     {
         "worker_name": "requirements",
-        "label": "Requirements",
+        "label": "Anforderungen",
         "description": "Auftrag, Annahmen und Akzeptanzkriterien werden strukturiert.",
     },
     {
         "worker_name": "cost",
-        "label": "Ressourcenplanung",
+        "label": "Ressourcen",
         "description": "Modell- und Ressourcenbedarf werden eingeschätzt.",
     },
     {
         "worker_name": "human_resources",
-        "label": "Worker-Auswahl",
+        "label": "Team",
         "description": "Empfohlene Spezialisten und ihr Einsatz werden festgelegt.",
     },
     {
@@ -83,7 +83,7 @@ WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "worker_name": "coding",
-        "label": "Coding",
+        "label": "Code",
         "description": "Codeaenderungen werden vorbereitet oder umgesetzt.",
     },
     {
@@ -98,7 +98,7 @@ WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "worker_name": "security",
-        "label": "Security",
+        "label": "Sicherheit",
         "description": "Sicherheits- und Secret-Risiken werden ueberprueft.",
     },
     {
@@ -108,7 +108,7 @@ WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "worker_name": "documentation",
-        "label": "Dokumentation",
+        "label": "Doku",
         "description": "Betriebs- und Handover-Hinweise werden verdichtet.",
     },
     {
@@ -118,7 +118,7 @@ WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "worker_name": "deploy",
-        "label": "Staging Deploy",
+        "label": "Staging",
         "description": "Der Staging-Rollout wird ausgefuehrt, falls aktiviert.",
     },
     {
@@ -128,7 +128,7 @@ WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     },
     {
         "worker_name": "memory",
-        "label": "Memory",
+        "label": "Wissen",
         "description": "Entscheidungen und Learnings werden dauerhaft gespeichert.",
     },
 )
@@ -168,6 +168,26 @@ ACTIVE_TASK_STATUSES = {
     TaskStatus.MEMORY_UPDATING.value,
 }
 AUTO_REFRESH_SECONDS = 15
+WORKER_STATE_LABELS = {
+    "running": "arbeitet",
+    "waiting": "wartet",
+    "blocked": "pausiert",
+    "complete": "fertig",
+    "failed": "Fehler",
+    "queued": "wartet danach",
+    "idle": "ungenutzt",
+    "skipped": "uebersprungen",
+}
+WORKER_STATE_ICONS = {
+    "running": "💭",
+    "waiting": "☕",
+    "blocked": "⏸",
+    "complete": "💬",
+    "failed": "⚠",
+    "queued": "⌛",
+    "idle": "zzz",
+    "skipped": "↷",
+}
 SYSTEM_SNAPSHOT_ARTIFACTS: tuple[dict[str, str], ...] = (
     {
         "key": "orchestrator-health",
@@ -288,9 +308,13 @@ docker compose ps
 docker compose logs --tail=200 web-ui
 docker compose logs --tail=200 orchestrator
 docker compose logs --tail=200 requirements-worker
+docker compose logs --tail=200 coding-worker
+docker compose logs --tail=200 research-worker
 docker logs --tail=200 fmac-web
 docker logs --tail=200 fmac-orch
 docker logs --tail=200 fmac-req
+docker logs --tail=200 fmac-code
+docker logs --tail=200 fmac-rsch
 """
 
 
@@ -342,6 +366,43 @@ def _normalize_worker_results(value: Any) -> dict[str, dict[str, Any]]:
             "errors": [],
             "risk_flags": [],
             "raw_value": raw_result,
+        }
+    return normalized
+
+
+def _normalize_worker_progress(value: Any) -> dict[str, dict[str, Any]]:
+    """Normalize persisted worker progress so compact theatre cards can rely on stable keys."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for worker_name, raw_progress in value.items():
+        if not isinstance(raw_progress, dict):
+            continue
+        progress = dict(raw_progress)
+        elapsed_seconds = progress.get("elapsed_seconds")
+        normalized[str(worker_name)] = {
+            **progress,
+            "state": str(progress.get("state") or "idle"),
+            "current_action": str(progress.get("current_action") or ""),
+            "current_step": str(progress.get("current_step") or ""),
+            "current_prompt_summary": str(progress.get("current_prompt_summary") or ""),
+            "current_instruction": str(progress.get("current_instruction") or ""),
+            "waiting_for": str(progress.get("waiting_for") or ""),
+            "blocked_by": str(progress.get("blocked_by") or ""),
+            "next_worker": str(progress.get("next_worker") or ""),
+            "last_result_summary": str(progress.get("last_result_summary") or ""),
+            "progress_message": str(progress.get("progress_message") or ""),
+            "last_error": str(progress.get("last_error") or ""),
+            "event_kind": str(progress.get("event_kind") or "note"),
+            "started_at_display": _format_timestamp(progress.get("started_at")),
+            "updated_at_display": _format_timestamp(progress.get("updated_at")),
+            "elapsed_display": (
+                _format_duration(float(elapsed_seconds))
+                if isinstance(elapsed_seconds, (int, float))
+                else "noch nicht sichtbar"
+            ),
         }
     return normalized
 
@@ -626,6 +687,8 @@ def _runtime_summary_snapshot() -> dict[str, Any]:
             "data_dir": _path_diagnostics(settings.data_dir),
             "reports_dir": _path_diagnostics(settings.reports_dir),
             "workspace_root": _path_diagnostics(settings.workspace_root),
+            "task_workspace_root": _path_diagnostics(settings.effective_task_workspace_root),
+            "runtime_home_dir": _path_diagnostics(settings.runtime_home_dir),
             "staging_stack_root": _path_diagnostics(settings.staging_stack_root),
             "orchestrator_db_path": _path_diagnostics(settings.orchestrator_db_path),
             "model_api_key_file": _path_diagnostics(settings.default_model_api_key_file),
@@ -708,13 +771,27 @@ def _reports_root_manifest() -> dict[str, Any]:
 def _current_worker_name(task: dict[str, Any]) -> str | None:
     """Infer the active worker from the newest event first, then fall back to the coarse task status."""
 
+    metadata = _as_mapping(task.get("metadata"))
+    worker_progress = _normalize_worker_progress(metadata.get("worker_progress"))
+    active_progress_rows: list[tuple[datetime, str]] = []
+    for worker_name, progress in worker_progress.items():
+        if progress.get("state") not in {"running", "waiting", "blocked", "failed"}:
+            continue
+        parsed_updated = _parse_timestamp(progress.get("updated_at"))
+        if parsed_updated is None:
+            continue
+        active_progress_rows.append((parsed_updated, worker_name))
+    if active_progress_rows:
+        active_progress_rows.sort(key=lambda item: item[0])
+        return active_progress_rows[-1][1]
+
     for event in reversed(_as_list(task.get("events"))):
         if not isinstance(event, dict):
             continue
         details = _as_mapping(event.get("details"))
-        worker_name = details.get("worker_name")
-        if worker_name:
-            return str(worker_name)
+        event_worker_name = details.get("worker_name")
+        if event_worker_name:
+            return str(event_worker_name)
     if task.get("status") == TaskStatus.APPROVAL_REQUIRED.value and task.get("resume_target"):
         return str(task["resume_target"])
     return STATUS_TO_WORKER_HINT.get(str(task.get("status")))
@@ -763,31 +840,77 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
     current_worker = _current_worker_name(task)
     task_status = str(task.get("status", TaskStatus.NEW.value))
     completed_workers = set(_normalize_worker_results(task.get("worker_results")).keys())
+    worker_results = _normalize_worker_results(task.get("worker_results"))
+    worker_progress = _normalize_worker_progress(_as_mapping(_as_mapping(task.get("metadata")).get("worker_progress")))
     completed_indices = [WORKER_SEQUENCE_INDEX[name] for name in completed_workers if name in WORKER_SEQUENCE_INDEX]
     last_completed_index = max(completed_indices) if completed_indices else -1
+    current_index = WORKER_SEQUENCE_INDEX.get(current_worker or "", -1)
     timeline: list[dict[str, Any]] = []
 
     for step in WORKER_SEQUENCE:
         worker_name = step["worker_name"]
         latest_event = _find_last_worker_event(task, worker_name)
+        latest_details = _as_mapping(latest_event.get("details")) if latest_event else {}
+        progress = worker_progress.get(worker_name, {})
+        result = worker_results.get(worker_name, {})
         state = "waiting"
-        if worker_name in completed_workers:
+        if progress.get("state") in WORKER_STATE_LABELS:
+            state = str(progress["state"])
+        elif worker_name in completed_workers:
             state = "complete"
         elif task_status == TaskStatus.FAILED.value and worker_name == current_worker:
             state = "failed"
         elif task_status == TaskStatus.APPROVAL_REQUIRED.value and worker_name == current_worker:
             state = "blocked"
+        elif task_status in ACTIVE_TASK_STATUSES and worker_name == current_worker and bool(latest_details.get("heartbeat")):
+            state = "waiting"
         elif task_status in ACTIVE_TASK_STATUSES and worker_name == current_worker:
             state = "running"
+        elif current_index >= 0 and WORKER_SEQUENCE_INDEX[worker_name] > current_index:
+            state = "queued"
         elif last_completed_index > WORKER_SEQUENCE_INDEX[worker_name]:
             state = "skipped"
+        else:
+            state = "idle"
+
+        running_since = _running_since(task, worker_name)
+        waiting_for = str(progress.get("waiting_for") or "")
+        if not waiting_for and state == "queued" and current_worker:
+            waiting_for = WORKER_LABELS.get(current_worker, current_worker)
+        if not waiting_for and state == "blocked":
+            waiting_for = "menschliche Freigabe"
+        next_worker = str(progress.get("next_worker") or "")
+        next_worker_label = WORKER_LABELS.get(next_worker, next_worker) if next_worker else ""
+        waiting_for_label = WORKER_LABELS.get(waiting_for, waiting_for) if waiting_for else ""
+        last_result_summary = str(progress.get("last_result_summary") or result.get("summary") or "")
+        last_error = str(progress.get("last_error") or ("; ".join(result.get("errors", [])) if result.get("errors") else ""))
+        progress_message = str(progress.get("progress_message") or (latest_event.get("message") if latest_event else step["description"]))
+        current_instruction = str(
+            progress.get("current_instruction")
+            or progress.get("current_prompt_summary")
+            or step["description"]
+        )
 
         timeline.append(
             {
                 **step,
                 "state": state,
+                "state_label": WORKER_STATE_LABELS.get(state, state),
+                "state_icon": WORKER_STATE_ICONS.get(state, ""),
                 "last_event_at_display": _format_timestamp(latest_event.get("created_at")) if latest_event else "noch keine Aktivitaet",
                 "last_event_message": latest_event.get("message") if latest_event else "Noch kein Ereignis fuer diesen Schritt vorhanden.",
+                "started_at_display": (
+                    progress.get("started_at_display")
+                    or (_format_timestamp(running_since) if running_since else "noch nicht gestartet")
+                ),
+                "elapsed_display": progress.get("elapsed_display") or "noch nicht sichtbar",
+                "waiting_for_display": waiting_for_label or "niemanden",
+                "next_worker_label": next_worker_label,
+                "current_instruction": current_instruction,
+                "progress_message": progress_message,
+                "last_result_summary": last_result_summary or "noch kein Ergebnis",
+                "last_error": last_error,
+                "event_kind": str(progress.get("event_kind") or latest_details.get("event_kind") or "note"),
             }
         )
     return timeline
@@ -799,6 +922,8 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
     decorated: list[dict[str, Any]] = []
     for event in _normalize_events(task.get("events")):
         details = _as_mapping(event.get("details"))
+        state = str(details.get("state") or "note")
+        waiting_for = str(details.get("waiting_for") or "")
         decorated.append(
             {
                 **event,
@@ -807,6 +932,9 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
                 "worker_label": WORKER_LABELS.get(str(details.get("worker_name")), str(details.get("worker_name", ""))),
                 "is_heartbeat": bool(details.get("heartbeat")),
                 "event_kind": str(details.get("event_kind") or "note"),
+                "state_label": WORKER_STATE_LABELS.get(state, ""),
+                "progress_message": str(details.get("progress_message") or event.get("message") or ""),
+                "waiting_for_display": WORKER_LABELS.get(waiting_for, waiting_for) if waiting_for else "",
             }
         )
     return decorated
@@ -815,53 +943,80 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
 def _build_worker_cast(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a visual worker overview with avatar cards and short thought or speech bubbles."""
 
-    worker_results = _normalize_worker_results(task.get("worker_results"))
     current_worker = _current_worker_name(task)
+    worker_results = _normalize_worker_results(task.get("worker_results"))
     cast: list[dict[str, Any]] = []
 
     for step in _build_worker_timeline(task):
         worker_name = step["worker_name"]
-        latest_event = _find_last_worker_event(task, worker_name)
-        latest_details = _as_mapping(latest_event.get("details")) if latest_event else {}
         result = worker_results.get(worker_name, {})
         state = str(step["state"])
         bubble_kind = "quiet"
-        bubble_text = step["description"]
-        directed_to = ""
+        bubble_text = step["progress_message"]
 
         if state == "running":
             bubble_kind = "thought"
-            bubble_text = str(
-                latest_event.get("message")
-                if latest_event
-                else f"{step['label']} bearbeitet gerade diese Stage."
+        elif state == "waiting":
+            bubble_kind = "coffee"
+            bubble_text = (
+                f"Wartet auf {step['waiting_for_display']}."
+                if step["waiting_for_display"] != "niemanden"
+                else step["progress_message"]
             )
         elif state == "complete":
             bubble_kind = "speech"
-            bubble_text = str(result.get("summary") or step["last_event_message"])
-            next_worker = _next_worker_name(worker_name)
-            if next_worker:
-                directed_to = WORKER_LABELS.get(next_worker, next_worker)
+            bubble_text = str(result.get("summary") or step["last_result_summary"])
         elif state == "blocked":
             bubble_kind = "speech"
-            bubble_text = str(task.get("approval_reason") or step["last_event_message"])
+            bubble_text = str(task.get("approval_reason") or step["progress_message"])
         elif state == "failed":
             bubble_kind = "speech"
-            bubble_text = str(task.get("latest_error") or step["last_event_message"])
+            bubble_text = str(task.get("latest_error") or step["last_error"] or step["progress_message"])
+        elif state == "queued":
+            bubble_kind = "quiet"
+            bubble_text = f"Wartet auf {step['waiting_for_display']}."
+        elif state in {"idle", "skipped"}:
+            bubble_kind = "sleep"
+            bubble_text = "Dieser Worker wird fuer die aktuelle Aufgabe derzeit nicht aktiv genutzt."
 
         cast.append(
             {
                 **step,
                 "initials": _worker_initials(step["label"]),
+                "state_icon": WORKER_STATE_ICONS.get(state, ""),
                 "bubble_kind": bubble_kind,
                 "bubble_text": bubble_text,
                 "activity_display": step["last_event_at_display"],
                 "is_current_worker": worker_name == current_worker,
-                "directed_to": directed_to,
-                "event_kind": str(latest_details.get("event_kind") or "note"),
+                "directed_to": step.get("next_worker_label", ""),
+                "current_instruction": step["current_instruction"],
+                "last_result_summary": step["last_result_summary"],
+                "last_error": step["last_error"],
+                "waiting_for_display": step["waiting_for_display"],
+                "started_at_display": step["started_at_display"],
+                "elapsed_display": step["elapsed_display"],
+                "state_label": step["state_label"],
+                "event_kind": step["event_kind"],
             }
         )
     return cast
+
+
+def _group_worker_cast(cast: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split workers into compact theatre sections so active, waiting, paused, and unused workers are easier to scan."""
+
+    groups = (
+        ("active", "Aktiv", "Worker, die gerade rechnen oder sichtbar arbeiten.", {"running"}),
+        ("waiting", "Wartet", "Worker, die aktuell auf Modell-, Service- oder Stage-Antworten warten.", {"waiting", "queued"}),
+        ("paused", "Pausiert / Fehler", "Worker, die geblockt wurden oder Hilfe brauchen.", {"blocked", "failed"}),
+        ("done", "Bereits fertig", "Worker, die ihren Teil dieser Aufgabe schon geliefert haben.", {"complete"}),
+        ("unused", "Derzeit ungenutzt", "Worker, die fuer diese Aufgabe gerade nicht aktiv eingeplant sind.", {"idle", "skipped"}),
+    )
+    sections: list[dict[str, Any]] = []
+    for key, label, description, states in groups:
+        members = [worker for worker in cast if worker.get("state") in states]
+        sections.append({"key": key, "label": label, "description": description, "workers": members})
+    return sections
 
 
 def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -870,9 +1025,11 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     decorated = dict(task)
     decorated["metadata"] = _as_mapping(decorated.get("metadata"))
     decorated["worker_results"] = _normalize_worker_results(decorated.get("worker_results"))
+    decorated["worker_progress"] = _normalize_worker_progress(decorated["metadata"].get("worker_progress"))
     decorated["events"] = _normalize_events(decorated.get("events"))
     decorated["risk_flags"] = [str(item) for item in _as_list(decorated.get("risk_flags"))]
     current_worker = _current_worker_name(decorated)
+    current_progress = decorated["worker_progress"].get(current_worker or "", {})
     last_event = decorated["events"][-1] if decorated.get("events") else None
     running_since = _running_since(decorated, current_worker)
     if running_since is not None:
@@ -883,6 +1040,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     decorated["events"] = _decorate_events(decorated)
     decorated["worker_timeline"] = _build_worker_timeline(decorated)
     decorated["worker_cast"] = _build_worker_cast(decorated)
+    decorated["worker_cast_groups"] = _group_worker_cast(decorated["worker_cast"])
     decorated["status_lower"] = str(decorated.get("status", "")).lower()
     decorated["created_at_display"] = _format_timestamp(decorated.get("created_at"))
     decorated["updated_at_display"] = _format_timestamp(decorated.get("updated_at"))
@@ -896,19 +1054,41 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         current_worker or "",
         "Der Workflow wartet auf den naechsten sinnvollen Arbeitsschritt.",
     )
-    decorated["current_stage_state"] = (
-        "blocked"
-        if decorated.get("status") == TaskStatus.APPROVAL_REQUIRED.value
-        else "failed"
-        if decorated.get("status") == TaskStatus.FAILED.value
-        else "running"
-        if decorated.get("status") in ACTIVE_TASK_STATUSES
-        else "complete"
-        if decorated.get("status") == TaskStatus.DONE.value
-        else "waiting"
+    decorated["current_stage_state"] = str(
+        current_progress.get("state")
+        or (
+            "blocked"
+            if decorated.get("status") == TaskStatus.APPROVAL_REQUIRED.value
+            else "failed"
+            if decorated.get("status") == TaskStatus.FAILED.value
+            else "running"
+            if decorated.get("status") in ACTIVE_TASK_STATUSES
+            else "complete"
+            if decorated.get("status") == TaskStatus.DONE.value
+            else "waiting"
+        )
+    )
+    decorated["current_stage_state_label"] = WORKER_STATE_LABELS.get(
+        decorated["current_stage_state"],
+        decorated["current_stage_state"],
     )
     decorated["running_since_display"] = _format_timestamp(running_since) if running_since else "noch nicht sichtbar"
-    decorated["running_for_display"] = _format_duration(running_for_seconds)
+    decorated["running_for_display"] = current_progress.get("elapsed_display") or _format_duration(running_for_seconds)
+    decorated["current_instruction"] = str(
+        current_progress.get("current_instruction")
+        or current_progress.get("current_prompt_summary")
+        or decorated["current_stage_description"]
+    )
+    decorated["current_progress_message"] = str(
+        current_progress.get("progress_message") or (last_event.get("message") if last_event else "Noch keine Detailmeldung sichtbar.")
+    )
+    decorated["current_waiting_for_display"] = WORKER_LABELS.get(
+        str(current_progress.get("waiting_for") or ""),
+        str(current_progress.get("waiting_for") or ""),
+    ) or "niemanden"
+    decorated["current_last_result_summary"] = str(current_progress.get("last_result_summary") or "noch kein Ergebnis")
+    decorated["current_last_error"] = str(current_progress.get("last_error") or decorated.get("latest_error") or "")
+    decorated["events_latest_first"] = list(reversed(decorated["events"]))
     decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES
     decorated["auto_refresh_seconds"] = AUTO_REFRESH_SECONDS if decorated["is_active"] else 0
     return decorated

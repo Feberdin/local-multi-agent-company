@@ -26,6 +26,9 @@ def test_task_service_creates_tasks_and_stores_worker_results(isolated_session_f
     assert detail.status.value == "NEW"
     assert detail.branch_name is not None and detail.branch_name.startswith("feature/")
     assert detail.metadata["test_commands"] == ["pytest -q"]
+    assert ".task-workspaces" in detail.local_repo_path
+    assert detail.metadata["source_local_repo_path"] == "/workspace/example-repo"
+    assert detail.metadata["workspace_strategy"] == "task_isolated_checkout"
 
     updated = service.store_worker_result(
         summary.id,
@@ -106,3 +109,33 @@ def test_task_service_append_event_keeps_long_running_stage_visible(isolated_ses
     assert updated.events[-1].message == "Requirements stage still running."
     assert updated.events[-1].details["heartbeat"] is True
     assert updated.updated_at >= before.updated_at
+
+
+def test_task_service_persists_structured_worker_progress_in_metadata(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Keep the UI informed while a slow coding stage waits on a local model.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+
+    updated = service.append_event(
+        summary.id,
+        stage="CODING",
+        message="Coding wartet auf das lokale Modell.",
+        details={
+            "worker_name": "coding",
+            "state": "waiting",
+            "current_instruction": "Bereite eine kleine, sichere Codeaenderung vor.",
+            "waiting_for": "Lokales Modell",
+            "progress_message": "Coding wartet auf Modellantwort.",
+            "elapsed_seconds": 33.5,
+        },
+    )
+
+    coding_progress = updated.metadata["worker_progress"]["coding"]
+    assert coding_progress["state"] == "waiting"
+    assert coding_progress["waiting_for"] == "Lokales Modell"
+    assert coding_progress["progress_message"] == "Coding wartet auf Modellantwort."

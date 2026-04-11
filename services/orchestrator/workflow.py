@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -396,14 +397,124 @@ class WorkflowOrchestrator:
             "reasoning": route.reasoning,
         }
 
+    def _truncate_text(self, value: str, max_length: int = 220) -> str:
+        """Keep UI-facing progress summaries short enough for dashboards and event cards."""
+
+        compact = " ".join(value.split())
+        if len(compact) <= max_length:
+            return compact
+        return compact[: max_length - 1].rstrip() + "…"
+
+    def _previous_worker_name(self, worker_name: str) -> str | None:
+        """Return the worker that usually completes immediately before the current stage."""
+
+        stage_order = list(WORKER_STAGE_DESCRIPTIONS)
+        try:
+            index = stage_order.index(worker_name)
+        except ValueError:
+            return None
+        if index == 0:
+            return None
+        return stage_order[index - 1]
+
+    def _next_worker_name(self, worker_name: str) -> str | None:
+        """Return the next worker in the default stage order for handoff hints."""
+
+        stage_order = list(WORKER_STAGE_DESCRIPTIONS)
+        try:
+            index = stage_order.index(worker_name)
+        except ValueError:
+            return None
+        if index + 1 >= len(stage_order):
+            return None
+        return stage_order[index + 1]
+
+    def _current_instruction(self, state: WorkflowState, worker_name: str, stage_meta: dict[str, str]) -> str:
+        """Summarize the concrete assignment for one worker in operator-friendly German."""
+
+        worker_specific_focus = {
+            "requirements": "Leite Anforderungen, Annahmen, Risiken und Akzeptanzkriterien aus dem Ziel ab.",
+            "cost": "Schaetze Modell- und Ressourcenbedarf fuer langsame Homelab-Hardware realistisch ein.",
+            "human_resources": "Waehle passende Worker und begruende ihre Reihenfolge.",
+            "research": "Analysiere Repository, vorhandene Dateien und zulaessige Quellen, ohne zu raten.",
+            "architecture": "Lege Struktur, Schnittstellen und einen kleinen, sicheren Umsetzungsplan fest.",
+            "data": "Untersuche Datenfluss, Parsing oder Klassifikation nur fuer die wirklich noetigen Teile.",
+            "ux": "Pruefe Nutzerfuehrung, Bedienfluss und klare Rueckmeldungen fuer die Oberflaeche.",
+            "coding": "Bereite minimale, nachvollziehbare Codeaenderungen im isolierten Task-Workspace vor.",
+            "reviewer": "Suche gezielt nach Bugs, Risiken, Regressionen und fehlenden Tests.",
+            "tester": "Fuehre sichere Test-, Lint- und Typpruefungen aus und fasse Abweichungen knapp zusammen.",
+            "security": "Pruefe Secrets, riskante Shell-Kommandos und Supply-Chain-Risiken.",
+            "validation": "Spiegele Ergebnis gegen Ziel und Akzeptanzkriterien und benenne Rest-Risiken.",
+            "documentation": "Erstelle verstaendliche Betriebs- und Uebergabehinweise fuer Nicht-Programmierer.",
+            "github": "Bereite Commit, Push und Pull Request transparent und nachvollziehbar vor.",
+            "deploy": "Fuehre nur die freigegebenen Staging-Schritte aus und melde Healthchecks klar zurueck.",
+            "qa": "Fasse Smoke-Checks und Freigabestatus fuer den Operator zusammen.",
+            "memory": "Halte Learnings, Entscheidungen und Folgepunkte dauerhaft fest.",
+        }
+        return self._truncate_text(
+            f"{worker_specific_focus.get(worker_name, stage_meta['description'])} Ziel: {state['goal']}",
+            max_length=260,
+        )
+
+    def _progress_details(
+        self,
+        *,
+        state: WorkflowState,
+        worker_name: str,
+        stage_meta: dict[str, str],
+        event_kind: str,
+        worker_state: str,
+        service_url: str,
+        route_summary: dict[str, Any],
+        started_at_iso: str,
+        elapsed_seconds: float,
+        waiting_for: str | None = None,
+        blocked_by: str | None = None,
+        last_result_summary: str | None = None,
+        last_error: str | None = None,
+        progress_message: str | None = None,
+    ) -> dict[str, Any]:
+        """Build one normalized progress payload that both the UI and debug bundles can consume."""
+
+        previous_worker = self._previous_worker_name(worker_name)
+        next_worker = self._next_worker_name(worker_name)
+        current_instruction = self._current_instruction(state, worker_name, stage_meta)
+        return {
+            "event_kind": event_kind,
+            "worker_name": worker_name,
+            "stage_label": stage_meta["label"],
+            "stage_description": stage_meta["description"],
+            "service_url": service_url,
+            "model_route": route_summary,
+            "state": worker_state,
+            "current_step": stage_meta["label"],
+            "current_action": stage_meta["description"],
+            "current_instruction": current_instruction,
+            "current_prompt_summary": current_instruction,
+            "waiting_for": waiting_for,
+            "blocked_by": blocked_by,
+            "previous_worker": previous_worker,
+            "next_worker": next_worker,
+            "started_at": started_at_iso,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "elapsed_seconds": elapsed_seconds,
+            "last_result_summary": last_result_summary,
+            "last_error": last_error,
+            "last_event_message": progress_message,
+            "progress_message": progress_message,
+        }
+
     async def _stage_heartbeat(
         self,
         *,
+        state: WorkflowState,
         task_id: str,
         worker_name: str,
         stage_status: TaskStatus,
         service_url: str,
         started_at: float,
+        started_at_iso: str,
+        route_summary: dict[str, Any],
     ) -> None:
         """Persist periodic progress events so the UI shows that a slow stage is still alive."""
 
@@ -417,15 +528,28 @@ class WorkflowOrchestrator:
                 stage=stage_status.value,
                 message=(
                     f"{stage_meta['label']} laeuft weiter. "
-                    "Der Worker wartet moeglicherweise noch auf lokale Modellinferenz oder einen laengeren Verarbeitungsschritt."
+                    "Der Worker wartet noch auf eine Antwort aus dem Worker-Service oder vom lokalen Modell."
                 ),
                 details={
-                    "event_kind": "stage_heartbeat",
-                    "worker_name": worker_name,
-                    "service_url": service_url,
-                    "stage_label": stage_meta["label"],
-                    "stage_description": stage_meta["description"],
-                    "elapsed_seconds": elapsed_seconds,
+                    **self._progress_details(
+                        state=state,
+                        worker_name=worker_name,
+                        stage_meta=stage_meta,
+                        event_kind="stage_heartbeat",
+                        worker_state="waiting",
+                        service_url=service_url,
+                        route_summary=route_summary,
+                        started_at_iso=started_at_iso,
+                        elapsed_seconds=elapsed_seconds,
+                        waiting_for=(
+                            f"Antwort des Worker-Services unter {service_url}"
+                            if service_url
+                            else "Antwort des Worker-Services"
+                        ),
+                        progress_message=(
+                            f"{stage_meta['label']} wartet seit {elapsed_seconds:.1f}s auf Modell- oder Worker-Antwort."
+                        ),
+                    ),
                     "heartbeat": True,
                 },
             )
@@ -664,18 +788,23 @@ class WorkflowOrchestrator:
         logger = TaskLoggerAdapter(self.logger.logger, {"service": self.settings.service_name, "task_id": task_id})
         stage_meta = self._stage_metadata(worker_name)
         route_summary = self._model_route_summary(worker_name)
+        started_at_iso = datetime.now(UTC).isoformat()
         self.task_service.update_status(
             task_id,
             stage_status,
             message=f"{stage_meta['label']} gestartet.",
-            details={
-                "event_kind": "stage_started",
-                "worker_name": worker_name,
-                "service_url": service_url,
-                "stage_label": stage_meta["label"],
-                "stage_description": stage_meta["description"],
-                "model_route": route_summary,
-            },
+            details=self._progress_details(
+                state=state,
+                worker_name=worker_name,
+                stage_meta=stage_meta,
+                event_kind="stage_started",
+                worker_state="running",
+                service_url=service_url,
+                route_summary=route_summary,
+                started_at_iso=started_at_iso,
+                elapsed_seconds=0.0,
+                progress_message=f"{stage_meta['label']} wurde gestartet.",
+            ),
         )
         self.task_service.append_event(
             task_id,
@@ -685,12 +814,25 @@ class WorkflowOrchestrator:
                 "Auf langsamer lokaler Hardware kann die naechste Antwort mehrere Minuten brauchen."
             ),
             details={
-                "event_kind": "worker_dispatch",
-                "worker_name": worker_name,
-                "service_url": service_url,
-                "stage_label": stage_meta["label"],
-                "stage_description": stage_meta["description"],
-                "model_route": route_summary,
+                **self._progress_details(
+                    state=state,
+                    worker_name=worker_name,
+                    stage_meta=stage_meta,
+                    event_kind="worker_dispatch",
+                    worker_state="running",
+                    service_url=service_url,
+                    route_summary=route_summary,
+                    started_at_iso=started_at_iso,
+                    elapsed_seconds=0.0,
+                    waiting_for=(
+                        f"Antwort des Worker-Services unter {service_url} "
+                        f"mit Modell {route_summary.get('model_name', 'unbekannt')}"
+                    ),
+                    progress_message=(
+                        f"Arbeitsauftrag an {stage_meta['label']} gesendet. "
+                        "Bei lokalen Modellen kann die Antwort mehrere Minuten dauern."
+                    ),
+                ),
                 "worker_timeout_summary": self.settings.worker_timeout_summary(),
             },
         )
@@ -700,11 +842,14 @@ class WorkflowOrchestrator:
         stage_started_at = asyncio.get_running_loop().time()
         heartbeat_task = asyncio.create_task(
             self._stage_heartbeat(
+                state=state,
                 task_id=task_id,
                 worker_name=worker_name,
                 stage_status=stage_status,
                 service_url=service_url,
                 started_at=stage_started_at,
+                started_at_iso=started_at_iso,
+                route_summary=route_summary,
             )
         )
 
@@ -718,11 +863,25 @@ class WorkflowOrchestrator:
                 TaskStatus.FAILED,
                 message=f"{stage_meta['label']} hat das konfigurierte Stage-Zeitbudget ueberschritten.",
                 details={
-                    "event_kind": "stage_timeout",
-                    "worker_name": worker_name,
-                    "service_url": service_url,
-                    "stage_label": stage_meta["label"],
-                    "stage_description": stage_meta["description"],
+                    **self._progress_details(
+                        state=state,
+                        worker_name=worker_name,
+                        stage_meta=stage_meta,
+                        event_kind="stage_timeout",
+                        worker_state="failed",
+                        service_url=service_url,
+                        route_summary=route_summary,
+                        started_at_iso=started_at_iso,
+                        elapsed_seconds=self.settings.worker_stage_timeout_seconds,
+                        waiting_for=(
+                            f"Antwort von {service_url} innerhalb des Stage-Limits "
+                            f"von {self.settings.worker_stage_timeout_seconds}s"
+                        ),
+                        last_error=(
+                            f"Stage-Zeitlimit von {self.settings.worker_stage_timeout_seconds}s ueberschritten."
+                        ),
+                        progress_message=f"{stage_meta['label']} hat das Stage-Zeitlimit erreicht.",
+                    ),
                     "worker_stage_timeout_seconds": self.settings.worker_stage_timeout_seconds,
                     "worker_timeout_summary": self.settings.worker_timeout_summary(),
                 },
@@ -738,13 +897,19 @@ class WorkflowOrchestrator:
                 task_id,
                 TaskStatus.FAILED,
                 message=f"{stage_meta['label']} ist fehlgeschlagen.",
-                details={
-                    "event_kind": "stage_failed",
-                    "worker_name": worker_name,
-                    "stage_label": stage_meta["label"],
-                    "stage_description": stage_meta["description"],
-                    "error": str(exc),
-                },
+                details=self._progress_details(
+                    state=state,
+                    worker_name=worker_name,
+                    stage_meta=stage_meta,
+                    event_kind="stage_failed",
+                    worker_state="failed",
+                    service_url=service_url,
+                    route_summary=route_summary,
+                    started_at_iso=started_at_iso,
+                    elapsed_seconds=round(asyncio.get_running_loop().time() - stage_started_at, 1),
+                    last_error=str(exc),
+                    progress_message=f"{stage_meta['label']} ist mit einem Worker-Fehler abgebrochen.",
+                ),
                 latest_error=str(exc),
             )
             return self._task_to_state(failed_task)
@@ -764,6 +929,13 @@ class WorkflowOrchestrator:
             response=annotated_response,
         )
         self.task_service.store_worker_result(task_id, worker_name, annotated_response)
+        runtime_repo_path = str(annotated_response.outputs.get("local_repo_path") or "").strip()
+        if runtime_repo_path and runtime_repo_path != state.get("local_repo_path"):
+            self.task_service.update_runtime_context(
+                task_id,
+                local_repo_path=runtime_repo_path,
+                metadata_updates={"task_workspace_path": runtime_repo_path},
+            )
         elapsed_seconds = round(asyncio.get_running_loop().time() - stage_started_at, 1)
 
         if not annotated_response.success:
@@ -772,11 +944,20 @@ class WorkflowOrchestrator:
                 stage=stage_status.value,
                 message=f"{stage_meta['label']} meldete einen Fehlerzustand.",
                 details={
-                    "event_kind": "stage_failed",
-                    "worker_name": worker_name,
-                    "stage_label": stage_meta["label"],
-                    "stage_description": stage_meta["description"],
-                    "elapsed_seconds": elapsed_seconds,
+                    **self._progress_details(
+                        state=state,
+                        worker_name=worker_name,
+                        stage_meta=stage_meta,
+                        event_kind="stage_failed",
+                        worker_state="failed",
+                        service_url=service_url,
+                        route_summary=route_summary,
+                        started_at_iso=started_at_iso,
+                        elapsed_seconds=elapsed_seconds,
+                        last_result_summary=annotated_response.summary,
+                        last_error="; ".join(annotated_response.errors) or None,
+                        progress_message=f"{stage_meta['label']} meldete einen Fehlerzustand.",
+                    ),
                     "success": annotated_response.success,
                     "warnings": annotated_response.warnings,
                     "errors": annotated_response.errors,
@@ -787,7 +968,7 @@ class WorkflowOrchestrator:
             failed_task = self.task_service.update_status(
                 task_id,
                 TaskStatus.FAILED,
-                message=f"{worker_name} stage reported a failure.",
+                message=f"{stage_meta['label']} meldete einen Fehler.",
                 details={"errors": annotated_response.errors, "warnings": annotated_response.warnings},
                 latest_error=error_text,
             )
@@ -798,11 +979,24 @@ class WorkflowOrchestrator:
             stage=stage_status.value,
             message=f"{stage_meta['label']} abgeschlossen.",
             details={
-                "event_kind": "stage_completed",
-                "worker_name": worker_name,
-                "stage_label": stage_meta["label"],
-                "stage_description": stage_meta["description"],
-                "elapsed_seconds": elapsed_seconds,
+                **self._progress_details(
+                    state=state,
+                    worker_name=worker_name,
+                    stage_meta=stage_meta,
+                    event_kind="stage_completed",
+                    worker_state="complete",
+                    service_url=service_url,
+                    route_summary=route_summary,
+                    started_at_iso=started_at_iso,
+                    elapsed_seconds=elapsed_seconds,
+                    waiting_for=(
+                        f"Uebergabe an {self._next_worker_name(worker_name)}"
+                        if self._next_worker_name(worker_name)
+                        else None
+                    ),
+                    last_result_summary=annotated_response.summary,
+                    progress_message=f"{stage_meta['label']} wurde erfolgreich abgeschlossen.",
+                ),
                 "success": annotated_response.success,
                 "warnings": annotated_response.warnings,
                 "errors": annotated_response.errors,

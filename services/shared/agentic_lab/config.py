@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     reports_dir: Path = Field(default=Path("./reports"), alias="REPORTS_DIR")
     workspace_root: Path = Field(default=Path("./workspace"), alias="WORKSPACE_ROOT")
     staging_stack_root: Path = Field(default=Path("./staging-stacks"), alias="STAGING_STACK_ROOT")
+    runtime_home_dir: Path = Field(default=Path("/tmp/agent-home"), alias="RUNTIME_HOME_DIR")
+    task_workspace_root: Path | None = Field(default=None, alias="TASK_WORKSPACE_ROOT")
     orchestrator_db_path: Path = Field(
         default=Path("./data/orchestrator.db"),
         alias="ORCHESTRATOR_DB_PATH",
@@ -212,7 +214,9 @@ class Settings(BaseSettings):
             "DATA_DIR": self.data_dir,
             "REPORTS_DIR": self.reports_dir,
             "WORKSPACE_ROOT": self.workspace_root,
+            "TASK_WORKSPACE_ROOT": self.effective_task_workspace_root,
             "STAGING_STACK_ROOT": self.staging_stack_root,
+            "RUNTIME_HOME_DIR": self.runtime_home_dir,
         }
         for env_name, directory in directories.items():
             try:
@@ -223,6 +227,12 @@ class Settings(BaseSettings):
                     "This usually means the Docker bind mount is missing or points to a path with wrong permissions. "
                     "Check the host path, then verify the final Compose model contains the expected mount."
                 ) from exc
+
+    @property
+    def effective_task_workspace_root(self) -> Path:
+        """Return the operator-configurable task workspace root or the safe default below WORKSPACE_ROOT."""
+
+        return self.task_workspace_root or (self.workspace_root / ".task-workspaces")
 
     def apply_secret_file_overrides(self) -> None:
         """Load secret values from *_FILE paths when the plain environment variables are empty."""

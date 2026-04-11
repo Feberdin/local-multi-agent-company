@@ -45,7 +45,19 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
         "allow_repository_modifications": False,
         "pull_request_url": None,
         "latest_error": None,
-        "metadata": {},
+        "metadata": {
+            "worker_progress": {
+                "requirements": {
+                    "state": "waiting",
+                    "current_instruction": "Strukturiere Anforderungen und warte auf das lokale Modell.",
+                    "waiting_for": "Lokales Modell",
+                    "progress_message": "Anforderungen warten auf Modellantwort.",
+                    "elapsed_seconds": 30.0,
+                    "started_at": (now - timedelta(minutes=5)).isoformat(),
+                    "updated_at": (now - timedelta(seconds=20)).isoformat(),
+                }
+            }
+        },
         "created_at": (now - timedelta(minutes=6)).isoformat(),
         "updated_at": (now - timedelta(seconds=20)).isoformat(),
         "worker_results": {},
@@ -79,10 +91,13 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
 
     assert decorated["is_active"] is True
     assert decorated["current_worker_name"] == "requirements"
-    assert decorated["current_worker_label"] == "Requirements"
-    assert decorated["current_stage_label"] == "Requirements"
-    assert decorated["worker_timeline"][0]["state"] == "running"
-    assert decorated["worker_cast"][0]["bubble_kind"] == "thought"
+    assert decorated["current_worker_label"] == "Anforderungen"
+    assert decorated["current_stage_label"] == "Anforderungen"
+    assert decorated["current_stage_state"] == "waiting"
+    assert decorated["worker_timeline"][0]["state"] == "waiting"
+    assert decorated["worker_cast"][0]["bubble_kind"] == "coffee"
+    assert decorated["worker_cast_groups"][1]["workers"][0]["worker_name"] == "requirements"
+    assert decorated["current_instruction"] == "Strukturiere Anforderungen und warte auf das lokale Modell."
     assert decorated["events"][-1]["is_heartbeat"] is True
     assert decorated["auto_refresh_seconds"] > 0
 

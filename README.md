@@ -287,6 +287,27 @@ Wichtig:
 - lange lokale Modelllaeufe erscheinen im UI jetzt nicht mehr wie ein Freeze, weil Heartbeat-Ereignisse und Auto-Refresh sichtbar bleiben
 - wenn ein Task trotzdem zu lange in einer Stage bleibt, zuerst die Laufzeitgrenzen erhoehen und erst danach das Routing aendern
 
+## Git auf Unraid und isolierte Task-Workspaces
+
+Gerade auf Unraid mit gemounteten Repositories sind zwei Runtime-Pfade wichtig:
+
+```env
+RUNTIME_HOME_DIR=/tmp/agent-home
+TASK_WORKSPACE_ROOT=/workspace/.task-workspaces
+```
+
+Warum:
+
+- Git braucht ein beschreibbares `HOME`, damit `safe.directory` gesetzt werden kann
+- der gemeinsame Checkout unter `/workspace/<repo>` kann durch alte Aenderungen dirty sein
+- neue Tasks arbeiten deshalb jetzt in einer eigenen isolierten Arbeitskopie unter `.task-workspaces/<task-id>/...`
+
+Das reduziert typische Self-Hosted-Fehler wie:
+
+- `fatal: detected dubious ownership`
+- `could not lock config file //.gitconfig`
+- diffende Tasks, die unbemerkt auf alten lokalen Aenderungen aufsetzen
+
 ## Sicherheit
 
 - Externe Inhalte gelten immer als untrusted.

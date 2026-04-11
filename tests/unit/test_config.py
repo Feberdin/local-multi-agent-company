@@ -98,6 +98,8 @@ def test_settings_load_slow_runtime_timeout_aliases(monkeypatch) -> None:
     monkeypatch.setenv("LLM_POOL_TIMEOUT_SECONDS", "60")
     monkeypatch.setenv("WORKER_STAGE_TIMEOUT_SECONDS", "1800")
     monkeypatch.setenv("STAGE_HEARTBEAT_INTERVAL_SECONDS", "25")
+    monkeypatch.setenv("RUNTIME_HOME_DIR", "/tmp/agent-home")
+    monkeypatch.setenv("TASK_WORKSPACE_ROOT", "/workspace/.task-workspaces")
 
     settings = Settings()
 
@@ -107,3 +109,5 @@ def test_settings_load_slow_runtime_timeout_aliases(monkeypatch) -> None:
     assert settings.llm_pool_timeout_seconds == 60
     assert settings.worker_stage_timeout_seconds == 1800
     assert settings.stage_heartbeat_interval_seconds == 25
+    assert settings.runtime_home_dir == Path("/tmp/agent-home")
+    assert settings.effective_task_workspace_root == Path("/workspace/.task-workspaces")
