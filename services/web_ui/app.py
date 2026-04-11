@@ -7,14 +7,17 @@ How to debug: If a form stops working, inspect the orchestrator base URL, the ca
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -165,6 +168,130 @@ ACTIVE_TASK_STATUSES = {
     TaskStatus.MEMORY_UPDATING.value,
 }
 AUTO_REFRESH_SECONDS = 15
+SYSTEM_SNAPSHOT_ARTIFACTS: tuple[dict[str, str], ...] = (
+    {
+        "key": "orchestrator-health",
+        "filename": "orchestrator-health.json",
+        "label": "Orchestrator Health",
+        "description": "Health-Snapshot des Orchestrators fuer Verfuegbarkeit und degradierte Antworten.",
+    },
+    {
+        "key": "web-ui-health",
+        "filename": "web-ui-health.json",
+        "label": "Web-UI Health",
+        "description": "Lokaler Health-Snapshot des Dashboards.",
+    },
+    {
+        "key": "tasks",
+        "filename": "tasks.json",
+        "label": "Aufgabenliste",
+        "description": "Aktuelle Aufgaben mit Status, Stage und letzten Aktivitaeten.",
+    },
+    {
+        "key": "repository-access",
+        "filename": "repository-access.json",
+        "label": "Repository-Allowlist",
+        "description": "Aktive Freigaben fuer analysierbare Repositories.",
+    },
+    {
+        "key": "trusted-sources",
+        "filename": "trusted-sources.json",
+        "label": "Trusted Sources",
+        "description": "Aktive Source-Routing-Konfiguration fuer Coding-Recherche.",
+    },
+    {
+        "key": "web-search",
+        "filename": "web-search.json",
+        "label": "Web Search Settings",
+        "description": "Fallback-Provider, Prioritaeten und Search-Health.",
+    },
+    {
+        "key": "worker-guidance",
+        "filename": "worker-guidance.json",
+        "label": "Worker Guidance",
+        "description": "Operator-Vorgaben und Kompetenzgrenzen pro Worker.",
+    },
+    {
+        "key": "suggestions-registry",
+        "filename": "suggestions-registry.json",
+        "label": "Suggestion Registry",
+        "description": "Alle persistierten Mitarbeiterideen inklusive Entscheidungen.",
+    },
+    {
+        "key": "runtime-summary",
+        "filename": "runtime-summary.json",
+        "label": "Runtime Summary",
+        "description": "Sanitierter Laufzeit-Snapshot mit Pfaden, Timeouts und aktivierten Flags.",
+    },
+    {
+        "key": "reports-manifest",
+        "filename": "reports-manifest.json",
+        "label": "Reports Manifest",
+        "description": "Uebersicht aller bekannten Task-Report-Verzeichnisse unter /reports.",
+    },
+    {
+        "key": "host-log-commands",
+        "filename": "host-log-commands.txt",
+        "label": "Host-Log-Befehle",
+        "description": "Shell-Befehle fuer Docker-Logs, die aus der Web-UI nicht direkt lesbar sind.",
+    },
+)
+TASK_SNAPSHOT_ARTIFACTS: tuple[dict[str, str], ...] = (
+    {
+        "key": "detail",
+        "filename": "task-detail.json",
+        "label": "Task-Detail",
+        "description": "Rohdaten der Aufgabe direkt aus dem Orchestrator.",
+    },
+    {
+        "key": "ui-state",
+        "filename": "task-ui-state.json",
+        "label": "UI-State",
+        "description": "Vom Dashboard abgeleiteter Stage-, Worker- und Fortschrittszustand.",
+    },
+    {
+        "key": "events",
+        "filename": "task-events.json",
+        "label": "Event-Historie",
+        "description": "Persistierte Events inklusive Heartbeats und Fehlern.",
+    },
+    {
+        "key": "worker-results",
+        "filename": "task-worker-results.json",
+        "label": "Worker-Ergebnisse",
+        "description": "Bisher gespeicherte Worker-Outputs fuer diese Aufgabe.",
+    },
+    {
+        "key": "suggestions",
+        "filename": "task-suggestions.json",
+        "label": "Mitarbeiterideen",
+        "description": "Alle Suggestions, die zu dieser Aufgabe gehoeren.",
+    },
+    {
+        "key": "reports-manifest",
+        "filename": "task-reports-manifest.json",
+        "label": "Task-Report-Manifest",
+        "description": "Liste aller Report-Dateien, die unter /reports fuer diese Aufgabe liegen.",
+    },
+)
+DATA_STORE_FILE_DESCRIPTIONS: dict[str, str] = {
+    "repository-access-policy.json": "Persistierte Repository-Allowlist aus DATA_DIR.",
+    "trusted_sources.json": "Persistierte Trusted-Source-Konfiguration aus DATA_DIR.",
+    "web_search_providers.json": "Persistierte Web-Search-Provider aus DATA_DIR.",
+    "worker_guidance.json": "Persistierte Worker-Guidance aus DATA_DIR.",
+    "improvement_suggestions.json": "Persistierte Suggestions-Registry aus DATA_DIR.",
+}
+HOST_LOG_COMMANDS = """\
+Diese Befehle laufen auf dem Unraid-Host und koennen nicht direkt aus der Web-UI geladen werden.
+
+docker compose ps
+docker compose logs --tail=200 web-ui
+docker compose logs --tail=200 orchestrator
+docker compose logs --tail=200 requirements-worker
+docker logs --tail=200 fmac-web
+docker logs --tail=200 fmac-orch
+docker logs --tail=200 fmac-req
+"""
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -332,6 +459,245 @@ def _format_duration(seconds: float | int | None) -> str:
     if minutes:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _format_bytes(size: int | None) -> str:
+    """Render file sizes in a compact way so debug downloads stay scannable."""
+
+    if size is None:
+        return "unbekannt"
+    value = float(max(size, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{int(size)} B"
+
+
+def _attachment_headers(filename: str) -> dict[str, str]:
+    """Return safe attachment headers for downloadable debug artifacts."""
+
+    safe_filename = filename.replace('"', "'")
+    return {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
+
+
+def _json_bytes(payload: Any) -> bytes:
+    """Serialize debug payloads to UTF-8 JSON without crashing on datetime objects."""
+
+    return (json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+
+
+def _text_bytes(text: str) -> bytes:
+    """Encode plain-text debug guidance consistently."""
+
+    return text.rstrip().encode("utf-8") + b"\n"
+
+
+def _download_json_response(filename: str, payload: Any) -> Response:
+    """Return a JSON attachment response for one generated debug snapshot."""
+
+    return Response(
+        content=_json_bytes(payload),
+        media_type="application/json",
+        headers=_attachment_headers(filename),
+    )
+
+
+def _download_text_response(filename: str, text: str) -> Response:
+    """Return a text attachment response for shell commands or bundle notes."""
+
+    return Response(
+        content=_text_bytes(text),
+        media_type="text/plain; charset=utf-8",
+        headers=_attachment_headers(filename),
+    )
+
+
+def _zip_response(filename: str, files: dict[str, bytes]) -> Response:
+    """Build a ZIP archive in memory so operators can download one reproducible debug bundle."""
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for archive_name, content in sorted(files.items()):
+            archive.writestr(archive_name, content)
+
+    return Response(
+        content=archive_buffer.getvalue(),
+        media_type="application/zip",
+        headers=_attachment_headers(filename),
+    )
+
+
+def _path_diagnostics(path: Path | None) -> dict[str, Any]:
+    """Inspect path accessibility without turning permission issues into new UI crashes."""
+
+    if path is None:
+        return {"configured": False, "path": None}
+
+    resolved = str(path)
+    exists = False
+    is_dir = False
+    is_file = False
+    readable = False
+    writable = False
+    size: int | None = None
+    error: str | None = None
+
+    try:
+        exists = path.exists()
+        is_dir = path.is_dir()
+        is_file = path.is_file()
+        readable = os.access(path, os.R_OK)
+        writable = os.access(path, os.W_OK)
+        if exists and is_file:
+            size = path.stat().st_size
+    except OSError as exc:
+        error = f"{exc.__class__.__name__}: {exc}"
+
+    return {
+        "configured": True,
+        "path": resolved,
+        "exists": exists,
+        "is_dir": is_dir,
+        "is_file": is_file,
+        "readable": readable,
+        "writable": writable,
+        "size_bytes": size,
+        "size_display": _format_bytes(size),
+        "error": error,
+    }
+
+
+def _known_data_store_paths() -> dict[str, Path]:
+    """Return the persisted runtime files that are most useful for operator debugging."""
+
+    return {
+        "repository-access-policy.json": settings.data_dir / "repository-access-policy.json",
+        "trusted_sources.json": settings.data_dir / "trusted_sources.json",
+        "web_search_providers.json": settings.data_dir / "web_search_providers.json",
+        "worker_guidance.json": settings.data_dir / "worker_guidance.json",
+        "improvement_suggestions.json": settings.data_dir / "improvement_suggestions.json",
+    }
+
+
+def _runtime_summary_snapshot() -> dict[str, Any]:
+    """Expose a sanitized runtime summary so operators can compare live config with expectations."""
+
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "service": "web-ui",
+        "app_env": settings.app_env,
+        "log_level": settings.log_level,
+        "orchestrator_internal_url": settings.orchestrator_internal_url,
+        "default_target_repo": settings.default_target_repo,
+        "default_local_repo_path": settings.default_local_repo_path,
+        "default_base_branch": settings.default_base_branch,
+        "coding_provider": settings.coding_provider,
+        "default_model_provider": settings.default_model_provider,
+        "llm": {
+            "mistral_base_url": settings.mistral_base_url,
+            "mistral_model_name": settings.mistral_model_name,
+            "qwen_base_url": settings.qwen_base_url,
+            "qwen_model_name": settings.qwen_model_name,
+            "timeouts": {
+                "connect_seconds": settings.llm_connect_timeout_seconds,
+                "read_seconds": settings.llm_read_timeout_seconds,
+                "write_seconds": settings.llm_write_timeout_seconds,
+                "pool_seconds": settings.llm_pool_timeout_seconds,
+                "deadline_seconds": settings.llm_request_deadline_seconds,
+            },
+        },
+        "worker_transport": {
+            "connect_seconds": settings.worker_connect_timeout_seconds,
+            "stage_timeout_seconds": settings.worker_stage_timeout_seconds,
+            "write_seconds": settings.worker_write_timeout_seconds,
+            "pool_seconds": settings.worker_pool_timeout_seconds,
+            "retry_attempts": settings.worker_retry_attempts,
+            "heartbeat_interval_seconds": settings.stage_heartbeat_interval_seconds,
+        },
+        "paths": {
+            "data_dir": _path_diagnostics(settings.data_dir),
+            "reports_dir": _path_diagnostics(settings.reports_dir),
+            "workspace_root": _path_diagnostics(settings.workspace_root),
+            "staging_stack_root": _path_diagnostics(settings.staging_stack_root),
+            "orchestrator_db_path": _path_diagnostics(settings.orchestrator_db_path),
+            "model_api_key_file": _path_diagnostics(settings.default_model_api_key_file),
+            "mistral_api_key_file": _path_diagnostics(settings.mistral_api_key_file),
+            "qwen_api_key_file": _path_diagnostics(settings.qwen_api_key_file),
+            "web_search_api_key_file": _path_diagnostics(settings.web_search_api_key_file),
+            "github_token_file": _path_diagnostics(settings.github_token_file),
+        },
+        "flags": {
+            "web_research_enabled": settings.web_research_enabled,
+            "openhands_enabled": settings.openhands_enabled,
+            "github_mcp_enabled": settings.github_mcp_enabled,
+            "auto_deploy_staging": settings.auto_deploy_staging,
+        },
+        "worker_urls": {
+            "requirements": settings.requirements_worker_url,
+            "research": settings.research_worker_url,
+            "architecture": settings.architecture_worker_url,
+            "coding": settings.coding_worker_url,
+            "reviewer": settings.reviewer_worker_url,
+            "test": settings.test_worker_url,
+            "security": settings.security_worker_url,
+            "validation": settings.validation_worker_url,
+            "documentation": settings.documentation_worker_url,
+            "github": settings.github_worker_url,
+            "deploy": settings.deploy_worker_url,
+            "qa": settings.qa_worker_url,
+            "memory": settings.memory_worker_url,
+            "data": settings.data_worker_url,
+            "ux": settings.ux_worker_url,
+            "cost": settings.cost_worker_url,
+            "human_resources": settings.human_resources_worker_url,
+        },
+    }
+
+
+def _reports_root_manifest() -> dict[str, Any]:
+    """Summarize all report folders so the debug center can show which tasks produced artifacts."""
+
+    root = settings.reports_dir
+    manifest: dict[str, Any] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "reports_dir": str(root),
+        "exists": False,
+        "tasks": [],
+    }
+    if not root.exists():
+        return manifest
+
+    tasks: list[dict[str, Any]] = []
+    for task_dir in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda item: item.name):
+        files: list[dict[str, Any]] = []
+        total_bytes = 0
+        for report_path in sorted((path for path in task_dir.rglob("*") if path.is_file()), key=lambda item: item.name):
+            relative_path = report_path.relative_to(task_dir).as_posix()
+            size = report_path.stat().st_size
+            total_bytes += size
+            files.append(
+                {
+                    "path": relative_path,
+                    "size_bytes": size,
+                    "size_display": _format_bytes(size),
+                }
+            )
+        tasks.append(
+            {
+                "task_id": task_dir.name,
+                "file_count": len(files),
+                "total_bytes": total_bytes,
+                "total_size_display": _format_bytes(total_bytes),
+                "files": files,
+            }
+        )
+
+    manifest["exists"] = True
+    manifest["tasks"] = tasks
+    return manifest
 
 
 def _current_worker_name(task: dict[str, Any]) -> str | None:
@@ -638,6 +1004,360 @@ async def _api_request(method: str, path: str, *, json_payload: dict | None = No
         )
 
 
+def _build_snapshot(
+    response: httpx.Response,
+    *,
+    path: str,
+    default_value: Any,
+    fallback_message: str,
+) -> dict[str, Any]:
+    """Wrap backend responses in a stable debug envelope so failed calls are still shareable."""
+
+    payload = _response_json(response, default_value)
+    snapshot: dict[str, Any] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "requested_path": path,
+        "ok": response.status_code < 400,
+        "backend_status_code": response.status_code,
+        "detail": None,
+        "payload": payload,
+    }
+    if response.status_code >= 400:
+        snapshot["detail"] = _response_detail(response, fallback_message)
+    response_text = response.text.strip()
+    if response_text and not isinstance(payload, (dict, list)):
+        snapshot["response_text_preview"] = response_text[:2000]
+    elif response.status_code >= 400 and response_text:
+        snapshot["response_text_preview"] = response_text[:2000]
+    return snapshot
+
+
+async def _api_snapshot(path: str, default_value: Any, fallback_message: str) -> dict[str, Any]:
+    """Fetch one orchestrator endpoint and convert it into a downloadable debug snapshot."""
+
+    response = await _api_request("GET", path)
+    return _build_snapshot(
+        response,
+        path=path,
+        default_value=default_value,
+        fallback_message=fallback_message,
+    )
+
+
+def _task_reports_dir(task_id: str) -> Path:
+    """Return the report directory for one task inside the mounted reports volume."""
+
+    return settings.task_report_dir(task_id)
+
+
+def _task_report_entries(task_id: str) -> list[dict[str, Any]]:
+    """Collect downloadable report files for one task in a UI-friendly shape."""
+
+    report_dir = _task_reports_dir(task_id)
+    if not report_dir.exists():
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for report_path in sorted((path for path in report_dir.rglob("*") if path.is_file()), key=lambda item: item.as_posix()):
+        relative_path = report_path.relative_to(report_dir).as_posix()
+        size = report_path.stat().st_size
+        entries.append(
+            {
+                "relative_path": relative_path,
+                "name": report_path.name,
+                "size_bytes": size,
+                "size_display": _format_bytes(size),
+                "href": f"/debug/tasks/{task_id}/reports/{relative_path}",
+            }
+        )
+    return entries
+
+
+def _resolve_task_report_path(task_id: str, report_path: str) -> Path:
+    """Resolve a report download path safely so debug exports cannot escape the report folder."""
+
+    report_dir = _task_reports_dir(task_id).resolve()
+    candidate = (report_dir / report_path).resolve()
+    if not candidate.is_relative_to(report_dir) or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Die angeforderte Report-Datei wurde nicht gefunden.")
+    return candidate
+
+
+def _data_store_entries() -> list[dict[str, Any]]:
+    """List persisted runtime files that can be downloaded directly from the debug center."""
+
+    entries: list[dict[str, Any]] = []
+    for file_name, path in _known_data_store_paths().items():
+        diagnostics = _path_diagnostics(path)
+        entries.append(
+            {
+                "file_name": file_name,
+                "label": file_name,
+                "description": DATA_STORE_FILE_DESCRIPTIONS.get(file_name, "Persistierte Runtime-Datei."),
+                "exists": diagnostics.get("exists", False),
+                "size_display": diagnostics.get("size_display", "unbekannt"),
+                "href": f"/debug/system/files/{file_name}",
+            }
+        )
+    return entries
+
+
+async def _system_snapshot_payload(artifact_key: str) -> tuple[str, Any]:
+    """Resolve one named system artifact to filename plus payload."""
+
+    if artifact_key == "orchestrator-health":
+        return "orchestrator-health.json", await _api_snapshot(
+            "/health",
+            {"service": "orchestrator", "status": "unknown"},
+            "Der Orchestrator-Healthcheck konnte nicht geladen werden.",
+        )
+    if artifact_key == "web-ui-health":
+        return "web-ui-health.json", {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "requested_path": "/health",
+            "ok": True,
+            "backend_status_code": 200,
+            "detail": None,
+            "payload": HealthResponse(service="web-ui").model_dump(mode="json"),
+        }
+    if artifact_key == "tasks":
+        return "tasks.json", await _api_snapshot(
+            "/api/tasks",
+            [],
+            "Die Aufgabenliste konnte nicht geladen werden.",
+        )
+    if artifact_key == "repository-access":
+        return "repository-access.json", await _api_snapshot(
+            "/api/settings/repository-access",
+            {"allowed_repositories": []},
+            "Die Repository-Allowlist konnte nicht geladen werden.",
+        )
+    if artifact_key == "trusted-sources":
+        return "trusted-sources.json", await _api_snapshot(
+            "/api/settings/trusted-sources",
+            {"profiles": [], "active_profile_id": None},
+            "Die Trusted Sources konnten nicht geladen werden.",
+        )
+    if artifact_key == "web-search":
+        return "web-search.json", await _api_snapshot(
+            "/api/settings/web-search",
+            {"providers": []},
+            "Die Web-Search-Einstellungen konnten nicht geladen werden.",
+        )
+    if artifact_key == "worker-guidance":
+        return "worker-guidance.json", await _api_snapshot(
+            "/api/settings/worker-guidance",
+            {"workers": []},
+            "Die Worker-Guidance konnte nicht geladen werden.",
+        )
+    if artifact_key == "suggestions-registry":
+        return "suggestions-registry.json", await _api_snapshot(
+            "/api/suggestions/registry",
+            {"suggestions": []},
+            "Die Suggestions-Registry konnte nicht geladen werden.",
+        )
+    if artifact_key == "runtime-summary":
+        return "runtime-summary.json", _runtime_summary_snapshot()
+    if artifact_key == "reports-manifest":
+        return "reports-manifest.json", _reports_root_manifest()
+    if artifact_key == "host-log-commands":
+        return "host-log-commands.txt", HOST_LOG_COMMANDS
+    raise HTTPException(status_code=404, detail=f"Unbekanntes System-Debug-Artefakt `{artifact_key}`.")
+
+
+async def _task_snapshot_payload(task_id: str, artifact_key: str) -> tuple[str, Any]:
+    """Resolve one task-scoped debug artifact to filename plus payload."""
+
+    if artifact_key == "detail":
+        return "task-detail.json", await _api_snapshot(
+            f"/api/tasks/{task_id}",
+            {},
+            f"Die Aufgabe `{task_id}` konnte nicht geladen werden.",
+        )
+
+    detail_snapshot = await _api_snapshot(
+        f"/api/tasks/{task_id}",
+        {},
+        f"Die Aufgabe `{task_id}` konnte nicht geladen werden.",
+    )
+    detail_payload = _as_mapping(detail_snapshot.get("payload"))
+
+    if artifact_key == "ui-state":
+        snapshot = dict(detail_snapshot)
+        snapshot["payload"] = {
+            "task_id": task_id,
+            "ui_state": _decorate_task(detail_payload) if detail_snapshot["ok"] and detail_payload else None,
+        }
+        return "task-ui-state.json", snapshot
+
+    if artifact_key == "events":
+        snapshot = dict(detail_snapshot)
+        snapshot["payload"] = {
+            "task_id": task_id,
+            "events": _normalize_events(detail_payload.get("events")),
+        }
+        return "task-events.json", snapshot
+
+    if artifact_key == "worker-results":
+        snapshot = dict(detail_snapshot)
+        snapshot["payload"] = {
+            "task_id": task_id,
+            "worker_results": _normalize_worker_results(detail_payload.get("worker_results")),
+        }
+        return "task-worker-results.json", snapshot
+
+    if artifact_key == "suggestions":
+        suggestions_snapshot = await _api_snapshot(
+            "/api/suggestions/registry",
+            {"suggestions": []},
+            "Die Suggestions-Registry konnte nicht geladen werden.",
+        )
+        registry = _as_mapping(suggestions_snapshot.get("payload"))
+        suggestions = _normalize_suggestions(registry.get("suggestions"))
+        filtered = [item for item in suggestions if item.get("task_id") == task_id]
+        suggestions_snapshot["payload"] = {
+            "task_id": task_id,
+            "count": len(filtered),
+            "suggestions": filtered,
+        }
+        return "task-suggestions.json", suggestions_snapshot
+
+    if artifact_key == "reports-manifest":
+        return "task-reports-manifest.json", {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "task_id": task_id,
+            "reports_dir": str(_task_reports_dir(task_id)),
+            "files": _task_report_entries(task_id),
+        }
+
+    raise HTTPException(status_code=404, detail=f"Unbekanntes Task-Debug-Artefakt `{artifact_key}`.")
+
+
+async def _system_bundle_files(prefix: str = "system") -> dict[str, bytes]:
+    """Collect all downloadable system snapshots plus persisted config files for one ZIP bundle."""
+
+    bundle: dict[str, bytes] = {}
+    for artifact in SYSTEM_SNAPSHOT_ARTIFACTS:
+        filename, payload = await _system_snapshot_payload(artifact["key"])
+        archive_name = f"{prefix}/{filename}" if prefix else filename
+        if filename.endswith(".txt"):
+            bundle[archive_name] = _text_bytes(str(payload))
+        else:
+            bundle[archive_name] = _json_bytes(payload)
+
+    for file_name, path in _known_data_store_paths().items():
+        diagnostics = _path_diagnostics(path)
+        if not diagnostics.get("exists") or not diagnostics.get("is_file"):
+            continue
+        try:
+            bundle[f"{prefix}/persisted/{file_name}"] = path.read_bytes()
+        except OSError as exc:
+            bundle[f"{prefix}/persisted/{file_name}.error.json"] = _json_bytes(
+                {
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "file_name": file_name,
+                    "path": str(path),
+                    "detail": f"{exc.__class__.__name__}: {exc}",
+                }
+            )
+
+    return bundle
+
+
+async def _task_bundle_files(task_id: str, prefix: str | None = None) -> dict[str, bytes]:
+    """Collect all task-scoped snapshots and report files for a shareable debug archive."""
+
+    task_prefix = prefix or f"tasks/{task_id}"
+    bundle: dict[str, bytes] = {}
+    for artifact in TASK_SNAPSHOT_ARTIFACTS:
+        filename, payload = await _task_snapshot_payload(task_id, artifact["key"])
+        bundle[f"{task_prefix}/{filename}"] = _json_bytes(payload)
+
+    for entry in _task_report_entries(task_id):
+        report_path = _resolve_task_report_path(task_id, entry["relative_path"])
+        try:
+            bundle[f"{task_prefix}/reports/{entry['relative_path']}"] = report_path.read_bytes()
+        except OSError as exc:
+            bundle[f"{task_prefix}/reports/{entry['relative_path']}.error.json"] = _json_bytes(
+                {
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "task_id": task_id,
+                    "report_path": entry["relative_path"],
+                    "detail": f"{exc.__class__.__name__}: {exc}",
+                }
+            )
+
+    return bundle
+
+
+async def _load_debug_center_context(
+    *,
+    task_id: str | None = None,
+    error_message: str | None = None,
+    success_message: str | None = None,
+) -> dict[str, Any]:
+    """Build the debug-center page without assuming the orchestrator is fully healthy."""
+
+    tasks_snapshot = await _api_snapshot("/api/tasks", [], "Die Aufgabenliste konnte nicht geladen werden.")
+    raw_tasks = _as_list(tasks_snapshot.get("payload"))
+    tasks = [_decorate_task(task) for task in raw_tasks if isinstance(task, dict)]
+
+    messages = [error_message] if error_message else []
+    if not tasks_snapshot["ok"]:
+        messages.append(str(tasks_snapshot.get("detail") or "Die Aufgabenliste konnte nicht geladen werden."))
+
+    selected_task: dict[str, Any] | None = None
+    selected_task_error: str | None = None
+    if task_id:
+        detail_snapshot = await _api_snapshot(
+            f"/api/tasks/{task_id}",
+            {},
+            f"Die Aufgabe `{task_id}` konnte nicht geladen werden.",
+        )
+        detail_payload = _as_mapping(detail_snapshot.get("payload"))
+        if detail_snapshot["ok"] and detail_payload:
+            selected_task = _decorate_task(detail_payload)
+        else:
+            selected_task_error = str(detail_snapshot.get("detail") or f"Die Aufgabe `{task_id}` ist nicht lesbar.")
+            messages.append(selected_task_error)
+
+    system_downloads = [
+        {
+            **artifact,
+            "href": f"/debug/system/{artifact['key']}",
+        }
+        for artifact in SYSTEM_SNAPSHOT_ARTIFACTS
+    ]
+
+    task_downloads = []
+    if task_id:
+        task_downloads = [
+            {
+                **artifact,
+                "href": f"/debug/tasks/{task_id}/{artifact['key']}",
+            }
+            for artifact in TASK_SNAPSHOT_ARTIFACTS
+        ]
+
+    return {
+        "tasks": tasks,
+        "selected_task_id": task_id or "",
+        "selected_task": selected_task,
+        "selected_task_error": selected_task_error,
+        "selected_task_reports": _task_report_entries(task_id) if task_id else [],
+        "system_downloads": system_downloads,
+        "task_downloads": task_downloads,
+        "data_store_entries": _data_store_entries(),
+        "system_bundle_href": "/debug/system/bundle.zip",
+        "combined_bundle_href": f"/debug/bundle.zip?task_id={task_id}" if task_id else "/debug/system/bundle.zip",
+        "task_bundle_href": f"/debug/tasks/{task_id}/bundle.zip" if task_id else None,
+        "host_log_commands": HOST_LOG_COMMANDS,
+        "auto_refresh_seconds": selected_task.get("auto_refresh_seconds", 0) if selected_task else 0,
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message,
+    }
+
+
 async def _load_dashboard_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
     messages = [error_message] if error_message else []
     tasks_response = await _api_request("GET", "/api/tasks")
@@ -888,6 +1608,70 @@ async def suggestions_page(request: Request, task_id: str | None = Query(default
         name="suggestions.html",
         context={"request": request, **context},
     )
+
+
+@app.get("/debug", response_class=HTMLResponse)
+async def debug_center_page(request: Request, task_id: str | None = Query(default=None)) -> HTMLResponse:
+    context = await _load_debug_center_context(task_id=task_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="debug.html",
+        context={"request": request, **context},
+    )
+
+
+@app.get("/debug/system/files/{file_name:path}")
+async def download_system_data_store_file(file_name: str) -> Response:
+    path = _known_data_store_paths().get(file_name)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"Die Runtime-Datei `{file_name}` ist nicht registriert.")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Die Runtime-Datei `{file_name}` existiert derzeit nicht.")
+    return FileResponse(path, filename=file_name)
+
+
+@app.get("/debug/system/bundle.zip")
+async def download_system_debug_bundle() -> Response:
+    bundle = await _system_bundle_files()
+    return _zip_response("feberdin-system-debug.zip", bundle)
+
+
+@app.get("/debug/system/{artifact_key}")
+async def download_system_debug_artifact(artifact_key: str) -> Response:
+    filename, payload = await _system_snapshot_payload(artifact_key)
+    if filename.endswith(".txt"):
+        return _download_text_response(filename, str(payload))
+    return _download_json_response(filename, payload)
+
+
+@app.get("/debug/tasks/{task_id}/reports/{report_path:path}")
+async def download_task_report(task_id: str, report_path: str) -> Response:
+    resolved = _resolve_task_report_path(task_id, report_path)
+    download_name = f"{task_id}-{Path(report_path).name}"
+    return FileResponse(resolved, filename=download_name)
+
+
+@app.get("/debug/tasks/{task_id}/bundle.zip")
+async def download_task_debug_bundle(task_id: str) -> Response:
+    bundle = await _task_bundle_files(task_id)
+    return _zip_response(f"{task_id}-debug.zip", bundle)
+
+
+@app.get("/debug/tasks/{task_id}/{artifact_key}")
+async def download_task_debug_artifact(task_id: str, artifact_key: str) -> Response:
+    filename, payload = await _task_snapshot_payload(task_id, artifact_key)
+    return _download_json_response(f"{task_id}-{filename}", payload)
+
+
+@app.get("/debug/bundle.zip")
+async def download_combined_debug_bundle(task_id: str | None = Query(default=None)) -> Response:
+    bundle = await _system_bundle_files(prefix="system")
+    if task_id:
+        bundle.update(await _task_bundle_files(task_id, prefix=f"tasks/{task_id}"))
+        filename = f"feberdin-debug-{task_id}.zip"
+    else:
+        filename = "feberdin-debug.zip"
+    return _zip_response(filename, bundle)
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)

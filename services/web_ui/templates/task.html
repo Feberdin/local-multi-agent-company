@@ -23,6 +23,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <a href="/suggestions">Mitarbeiterideen</a>
         <a href="/trusted-sources">Trusted Sources</a>
         <a href="/web-search">Web Search Providers</a>
+        <a href="/debug?task_id={{ task.id }}">Debug-Center</a>
       </nav>
 
       <section class="hero">
@@ -71,6 +72,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         {% if task.pull_request_url %}
         <a class="button-link" href="{{ task.pull_request_url }}" target="_blank" rel="noreferrer">Pull Request öffnen</a>
         {% endif %}
+        <a class="button-link secondary" href="/debug?task_id={{ task.id }}">Debug-Daten</a>
       </section>
 
       <section class="grid">

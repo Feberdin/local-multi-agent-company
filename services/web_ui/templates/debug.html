@@ -1,0 +1,206 @@
+<!--
+Purpose: Operator-facing debug center for exporting shareable runtime snapshots and task artifacts.
+Input/Output: Receives sanitized system state, task snapshots, and report manifests from the web UI service.
+Important invariants: Secrets stay masked, unavailable files stay visible as missing, and bundles remain reproducible.
+How to debug: If a download is missing, inspect the matching route in services/web_ui/app.py and the mounted DATA_DIR or REPORTS_DIR.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if auto_refresh_seconds %}
+    <meta http-equiv="refresh" content="{{ auto_refresh_seconds }}">
+    {% endif %}
+    <title>Debug-Center</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug" class="active">Debug-Center</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Feberdin Diagnostics</p>
+        <h1>Debug-Center</h1>
+        <p class="lead">Hier kannst du aktuelle Laufdaten, persistierte Debug-Dateien und Task-Reports einzeln oder gesammelt herunterladen, ohne in Container hineinzugehen.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Bundle-Downloads</h2>
+          <span class="muted">Fuer schnelle Analyse oder zum Weitergeben an mich.</span>
+        </div>
+        <div class="actions">
+          <a class="button-link" href="{{ system_bundle_href }}">System-Bundle herunterladen</a>
+          {% if task_bundle_href %}
+          <a class="button-link" href="{{ task_bundle_href }}">Task-Bundle herunterladen</a>
+          {% endif %}
+          <a class="button-link secondary" href="{{ combined_bundle_href }}">Alles zusammen herunterladen</a>
+        </div>
+        <p class="muted">Die Bundles enthalten API-Snapshots, Runtime-Dateien aus `DATA_DIR`, vorhandene Task-Reports aus `REPORTS_DIR` und eine Textdatei mit Host-Log-Befehlen. Docker-Host-Logs selbst sind nicht eingebettet, weil der Stack keinen Docker-Socket in die Web-UI mountet.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Task fuer Debug-Ansicht waehlen</h2>
+          <span class="muted">Optional fuer task-spezifische Snapshots und Reports.</span>
+        </div>
+        <form method="get" action="/debug" class="stack">
+          <label>
+            Aufgabe
+            <select name="task_id">
+              <option value="">Keine Task auswaehlen</option>
+              {% for task in tasks %}
+              <option value="{{ task.id }}" {% if selected_task_id == task.id %}selected{% endif %}>
+                {{ task.id }} · {{ task.status }} · {{ task.goal }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <div class="actions">
+            <button type="submit">Debug-Ansicht aktualisieren</button>
+            {% if selected_task_id %}
+            <a class="button-link secondary" href="/tasks/{{ selected_task_id }}">Zur Task-Detailseite</a>
+            {% endif %}
+          </div>
+        </form>
+      </section>
+
+      {% if selected_task %}
+      <section class="grid">
+        <article class="panel">
+          <h2>Ausgewaehlte Aufgabe</h2>
+          <p><strong>ID:</strong> {{ selected_task.id }}</p>
+          <p><strong>Status:</strong> <span class="status status-{{ selected_task.status|lower }}">{{ selected_task.status }}</span></p>
+          <p><strong>Aktueller Schritt:</strong> {{ selected_task.current_stage_label }}</p>
+          <p><strong>Aktiver Worker:</strong> {{ selected_task.current_worker_label }}</p>
+          <p><strong>Laeuft seit:</strong> {{ selected_task.running_since_display }}</p>
+          <p><strong>Letzte Aktivitaet:</strong> {{ selected_task.last_activity_at_display }}</p>
+          <p><strong>Letzter Fehler:</strong> {{ selected_task.latest_error or "kein Fehler gespeichert" }}</p>
+        </article>
+
+        <article class="panel">
+          <h2>Task-Snapshots</h2>
+          <div class="download-grid">
+            {% for artifact in task_downloads %}
+            <article class="download-card">
+              <strong>{{ artifact.label }}</strong>
+              <p class="muted">{{ artifact.description }}</p>
+              <a class="button-link secondary" href="{{ artifact.href }}">Datei laden</a>
+            </article>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+      {% elif selected_task_error %}
+      <section class="panel panel-alert">
+        <h2>Task aktuell nicht lesbar</h2>
+        <p>{{ selected_task_error }}</p>
+        <p class="muted">Die Task-spezifischen Snapshot-Downloads bleiben trotzdem verfuegbar, damit wir auch Fehlerzustaende sauber einsammeln koennen.</p>
+      </section>
+      {% endif %}
+
+      {% if task_downloads and not selected_task %}
+      <section class="panel">
+        <h2>Task-Snapshots</h2>
+        <div class="download-grid">
+          {% for artifact in task_downloads %}
+          <article class="download-card">
+            <strong>{{ artifact.label }}</strong>
+            <p class="muted">{{ artifact.description }}</p>
+            <a class="button-link secondary" href="{{ artifact.href }}">Datei laden</a>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>System-Snapshots</h2>
+          <span class="muted">Diese Dateien lassen sich einzeln herunterladen.</span>
+        </div>
+        <div class="download-grid">
+          {% for artifact in system_downloads %}
+          <article class="download-card">
+            <strong>{{ artifact.label }}</strong>
+            <p class="muted">{{ artifact.description }}</p>
+            <a class="button-link secondary" href="{{ artifact.href }}">Datei laden</a>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Persistierte Runtime-Dateien</h2>
+          <div class="download-list">
+            {% for entry in data_store_entries %}
+            <article class="download-row">
+              <div>
+                <strong>{{ entry.label }}</strong>
+                <p class="muted">{{ entry.description }}</p>
+                <p class="muted">Status: {{ "vorhanden" if entry.exists else "noch nicht vorhanden" }}{% if entry.exists %} · {{ entry.size_display }}{% endif %}</p>
+              </div>
+              {% if entry.exists %}
+              <a class="button-link secondary" href="{{ entry.href }}">Datei laden</a>
+              {% else %}
+              <span class="status status-waiting">fehlt</span>
+              {% endif %}
+            </article>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Host-Log-Befehle</h2>
+          <p class="muted">Diese Befehle laufen auf dem Unraid-Host. Sie liegen auch als Textdatei im Bundle.</p>
+          <pre>{{ host_log_commands }}</pre>
+        </article>
+      </section>
+
+      {% if selected_task_id %}
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Task-Report-Dateien</h2>
+          <span class="muted">{{ selected_task_reports|length }} Dateien unter /reports/{{ selected_task_id }}</span>
+        </div>
+        <div class="download-list">
+          {% for report in selected_task_reports %}
+          <article class="download-row">
+            <div>
+              <strong>{{ report.relative_path }}</strong>
+              <p class="muted">Groesse: {{ report.size_display }}</p>
+            </div>
+            <a class="button-link secondary" href="{{ report.href }}">Datei laden</a>
+          </article>
+          {% else %}
+          <p class="muted">Fuer diese Aufgabe liegen aktuell noch keine Report-Dateien unter /reports vor.</p>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

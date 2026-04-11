@@ -201,3 +201,33 @@ Pruefen:
 - Dashboard öffnen
 - Freigabegrund prüfen
 - nur nach bewusster Entscheidung fortsetzen
+
+## Alle Tasks enden auf `FAILED`
+
+Typische Symptome:
+
+- mehrere Aufgaben bleiben kurz in `REQUIREMENTS` oder `Wartet auf den naechsten Schritt`
+- die Detailansicht zeigt nur den letzten Fehler
+- Docker-Logs sind nicht sofort vollstaendig greifbar oder die UI war zwischendurch degradiert
+
+Empfohlener Ablauf:
+
+- `Debug-Center` oeffnen:
+  - `http://<unraid-host>:18088/debug`
+- betroffene Task auswaehlen
+- zuerst `Task-Bundle herunterladen`
+- wenn unklar ist, ob auch die Umgebung selbst instabil war:
+  - `Alles zusammen herunterladen`
+
+Das Bundle enthaelt:
+
+- System-Snapshots vom Orchestrator
+- Task-Detail, Event-Historie, Worker-Ergebnisse und Suggestions
+- vorhandene Report-Dateien unter `REPORTS_DIR/<task-id>`
+- persistierte Runtime-Dateien aus `DATA_DIR`, soweit vorhanden
+- eine Textdatei mit Host-Befehlen fuer zusaetzliche Docker-Logs
+
+Wichtig:
+
+- Docker-Host-Logs selbst sind nicht im ZIP, weil die Web-UI keinen Docker-Socket mountet
+- falls du sie zusaetzlich brauchst, im Debug-Center die `Host-Log-Befehle` mitnehmen und auf Unraid ausfuehren

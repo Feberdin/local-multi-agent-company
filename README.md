@@ -138,8 +138,10 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    - `http://<unraid-host>:18088/suggestions`
    - `http://<unraid-host>:18088/trusted-sources`
    - `http://<unraid-host>:18088/web-search`
+   - `http://<unraid-host>:18088/debug`
 
    Auf der Task-Detailseite zeigt das `Worker-Theater`, welcher Worker gerade denkt, welcher bereits gesprochen hat und wo der Workflow aktuell haengt.
+   Im `Debug-Center` kannst du System-Snapshots, persistierte Runtime-Dateien und Task-Reports einzeln oder als ZIP-Bundle herunterladen.
 
 7. Beispiel-Task anlegen:
 
@@ -232,6 +234,22 @@ docker compose logs -f orchestrator
 curl http://localhost:18080/health
 curl http://localhost:18088/health
 ```
+
+## Debug-Center
+
+Unter [services/web_ui/templates/debug.html](/Users/joachim.stiegler/CodingFamily/services/web_ui/templates/debug.html) bietet die Web-UI jetzt ein eigenes `Debug-Center`:
+
+- Einzel-Downloads fuer aktuelle API-Snapshots wie Tasks, Repository-Allowlist, Trusted Sources, Worker Guidance und Suggestions
+- Direktdownloads fuer persistierte Runtime-Dateien aus `DATA_DIR`, soweit sie vorhanden sind
+- Task-spezifische Snapshots wie Task-Detail, Event-Historie, Worker-Ergebnisse und Suggestions
+- Roh-Reports aus `REPORTS_DIR/<task-id>`
+- ZIP-Bundles fuer `System`, `Task` oder `alles zusammen`
+
+Wichtig:
+
+- Die Bundles enthalten absichtlich keine Secret-Werte.
+- Docker-Host-Logs werden nicht direkt mit ausgeliefert, weil die Web-UI keinen Docker-Socket mountet.
+- Ein Textfile mit den passenden Host-Befehlen liegt trotzdem im Bundle, damit du fuer Support-Faelle die fehlenden Logs schnell nachziehen kannst.
 
 ## Modellrouting
 

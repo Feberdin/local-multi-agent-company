@@ -177,6 +177,31 @@ button.danger {
   gap: 0.8rem;
 }
 
+.download-grid,
+.download-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.download-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.download-card,
+.download-row {
+  display: grid;
+  gap: 0.65rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: white;
+}
+
+.download-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
 .task-card {
   display: grid;
   gap: 0.35rem;
@@ -517,5 +542,9 @@ pre {
 
   .actions {
     align-items: stretch;
+  }
+
+  .download-row {
+    grid-template-columns: 1fr;
   }
 }
