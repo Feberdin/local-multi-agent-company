@@ -36,6 +36,7 @@ from services.shared.agentic_lab.schemas import (
     SourceTestResult,
     TaskCreateRequest,
     TaskDetail,
+    TaskStageRestartRequest,
     TaskSummary,
     TrustedSource,
     TrustedSourceImportPayload,
@@ -123,6 +124,34 @@ async def run_task(task_id: str) -> TaskDetail:
         app.state.running_tasks.add(task_id)
         asyncio.create_task(_run_in_background(task_id))
     return task_service.get_task(task_id)
+
+
+@app.post("/api/tasks/{task_id}/restart-stage", response_model=TaskDetail)
+async def restart_task_stage(task_id: str, request: TaskStageRestartRequest) -> TaskDetail:
+    try:
+        task = task_service.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        policy_service.assert_repository_allowed(task.repository)
+    except RepositoryPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if task_id in app.state.running_tasks:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Diese Aufgabe laeuft bereits im Hintergrund. Warte auf den Abschluss oder den Fehlerzustand, "
+                "bevor du nur einen Teilbereich neu startest."
+            ),
+        )
+
+    updated = task_service.restart_from_worker(task_id, request)
+    if request.run_immediately and task_id not in app.state.running_tasks:
+        app.state.running_tasks.add(task_id)
+        asyncio.create_task(_run_in_background(task_id))
+    return updated
 
 
 @app.post("/api/tasks/{task_id}/approvals", response_model=TaskDetail)

@@ -75,6 +75,33 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <a class="button-link secondary" href="/debug?task_id={{ task.id }}">Debug-Daten</a>
       </section>
 
+      {% if task.can_restart_partially %}
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Teilbereich neu starten</h2>
+          <span class="muted">Nutze denselben Task weiter und starte nur den fehlerhaften oder betroffenen Abschnitt neu.</span>
+        </div>
+        <form method="post" action="/tasks/{{ task.id }}/restart-stage" class="restart-stage-form">
+          <label>
+            Ab diesem Schritt neu ansetzen
+            <select name="worker_name">
+              {% for option in task.restartable_stage_options %}
+              <option value="{{ option.worker_name }}" {% if option.selected %}selected{% endif %}>
+                {{ option.label }} · {{ option.state_label }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Notiz fuer den Neustart
+            <input type="text" name="reason" placeholder="z. B. Git-Fehler behoben, bitte ab Recherche neu laufen lassen">
+          </label>
+          <button type="submit">Nur diesen Teilbereich neu starten</button>
+        </form>
+        <p class="muted">Dabei bleiben Event-Historie und Audit-Trail erhalten. Zurueckgesetzt werden nur die gewaehlte Stage und alle nachfolgenden Worker-Ergebnisse dieses Tasks.</p>
+      </section>
+      {% endif %}
+
       <section class="grid">
         <article class="panel">
           <h2>Aktueller Lauf</h2>
@@ -180,6 +207,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           <p><strong>Approval-Gate:</strong> {{ task.current_approval_gate_name or "keins" }}</p>
           <p><strong>Freigabe nötig:</strong> {{ "Ja" if task.approval_required else "Nein" }}</p>
           <p><strong>Freigabegrund:</strong> {{ task.approval_reason or "keiner" }}</p>
+          <p><strong>Letzter Teil-Neustart:</strong> {{ task.last_restart_display }}</p>
           <p><strong>Letzter Fehler:</strong> {{ task.latest_error or "kein Fehler" }}</p>
           <p><strong>Risikoflags:</strong> {{ task.risk_flags|join(", ") if task.risk_flags else "keine" }}</p>
           <p><strong>Erstellt:</strong> {{ task.created_at_display }}</p>

@@ -23,6 +23,9 @@ from services.shared.agentic_lab.db import (
 )
 from services.shared.agentic_lab.repo_tools import build_task_workspace_path, create_branch_name
 from services.shared.agentic_lab.schemas import (
+    WORKFLOW_WORKER_ORDER,
+    WORKFLOW_WORKER_TO_RESUME_TARGET,
+    WORKFLOW_WORKER_TO_STATUS,
     ApprovalDecision,
     ApprovalRequest,
     ApprovalResponse,
@@ -30,12 +33,34 @@ from services.shared.agentic_lab.schemas import (
     TaskCreateRequest,
     TaskDetail,
     TaskEventResponse,
+    TaskStageRestartRequest,
     TaskStatus,
     TaskSummary,
     WorkerResponse,
+    WorkflowWorkerName,
 )
 
 WORKER_PROJECT_LABEL = "Feberdin local-multi-agent-company worker project"
+WORKFLOW_WORKER_INDEX = {worker.value: index for index, worker in enumerate(WORKFLOW_WORKER_ORDER)}
+WORKFLOW_WORKER_LABELS = {
+    WorkflowWorkerName.REQUIREMENTS.value: "Anforderungen",
+    WorkflowWorkerName.COST.value: "Ressourcenplanung",
+    WorkflowWorkerName.HUMAN_RESOURCES.value: "Worker-Auswahl",
+    WorkflowWorkerName.RESEARCH.value: "Recherche",
+    WorkflowWorkerName.ARCHITECTURE.value: "Architektur",
+    WorkflowWorkerName.DATA.value: "Daten",
+    WorkflowWorkerName.UX.value: "UX",
+    WorkflowWorkerName.CODING.value: "Coding",
+    WorkflowWorkerName.REVIEWER.value: "Review",
+    WorkflowWorkerName.TESTER.value: "Tests",
+    WorkflowWorkerName.SECURITY.value: "Security",
+    WorkflowWorkerName.VALIDATION.value: "Validierung",
+    WorkflowWorkerName.DOCUMENTATION.value: "Dokumentation",
+    WorkflowWorkerName.GITHUB.value: "GitHub",
+    WorkflowWorkerName.DEPLOY.value: "Staging",
+    WorkflowWorkerName.QA.value: "QA",
+    WorkflowWorkerName.MEMORY.value: "Wissen",
+}
 
 
 class TaskService:
@@ -376,11 +401,126 @@ class TaskService:
             session.refresh(record)
             return self.get_task(task_id)
 
+    def restart_from_worker(
+        self,
+        task_id: str,
+        request: TaskStageRestartRequest,
+    ) -> TaskDetail:
+        """Restart one workflow segment in-place without forcing the operator to create a brand-new task."""
+
+        selected_worker = request.worker_name
+        selected_worker_name = selected_worker.value
+        selected_index = WORKFLOW_WORKER_INDEX[selected_worker_name]
+        selected_status = WORKFLOW_WORKER_TO_STATUS[selected_worker]
+        resume_target = WORKFLOW_WORKER_TO_RESUME_TARGET[selected_worker]
+        selected_label = WORKFLOW_WORKER_LABELS.get(selected_worker_name, selected_worker_name)
+        github_index = WORKFLOW_WORKER_INDEX[WorkflowWorkerName.GITHUB.value]
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            metadata = dict(record.metadata_json or {})
+            worker_progress = dict(metadata.get("worker_progress") or {})
+            worker_results = dict(record.worker_results_json or {})
+
+            cleared_workers: list[str] = []
+            for worker in WORKFLOW_WORKER_ORDER:
+                worker_name = worker.value
+                if WORKFLOW_WORKER_INDEX[worker_name] < selected_index:
+                    continue
+                if worker_name in worker_progress:
+                    worker_progress.pop(worker_name, None)
+                    cleared_workers.append(worker_name)
+                if worker_name in worker_results:
+                    worker_results.pop(worker_name, None)
+                    if worker_name not in cleared_workers:
+                        cleared_workers.append(worker_name)
+
+            metadata["worker_progress"] = worker_progress
+            metadata["current_approval_gate_name"] = None
+            metadata["last_restart_request"] = {
+                "worker_name": selected_worker_name,
+                "worker_label": selected_label,
+                "reason": request.reason,
+                "actor": request.actor,
+                "requested_at": datetime.now(UTC).isoformat(),
+                "cleared_workers": cleared_workers,
+            }
+
+            record.metadata_json = metadata
+            record.worker_results_json = worker_results
+            record.risk_flags_json = self._collect_risk_flags(worker_results)
+            record.status = selected_status.value
+            record.resume_target = resume_target
+            record.approval_required = False
+            record.approval_reason = None
+            record.latest_error = None
+            if selected_index <= github_index:
+                record.pull_request_url = None
+
+            self._add_event(
+                session,
+                task_id,
+                selected_status.value,
+                f"{selected_label} wird ab diesem Schritt neu gestartet.",
+                {
+                    "event_kind": "stage_restart_requested",
+                    "worker_name": selected_worker_name,
+                    "state": "waiting",
+                    "current_step": selected_label,
+                    "current_action": "Teilbereich wird fuer einen erneuten Lauf vorbereitet.",
+                    "current_instruction": (
+                        f"{selected_label} wurde fuer einen gezielten Neustart markiert. "
+                        "Die betroffene Stage und alle spaeteren Ergebnisse werden frisch neu aufgebaut."
+                    ),
+                    "current_prompt_summary": (
+                        f"{selected_label} wird erneut gestartet, damit der Workflow nicht komplett neu begonnen werden muss."
+                    ),
+                    "progress_message": f"{selected_label} wurde fuer einen Teil-Neustart eingeplant.",
+                    "waiting_for": "Neustart des Worker-Laufs",
+                    "last_result_summary": (
+                        f"Vorbereitung fuer Neustart abgeschlossen. "
+                        f"Zurueckgesetzt: {', '.join(cleared_workers) if cleared_workers else 'keine gespeicherten Ergebnisse'}."
+                    ),
+                    "started_at": datetime.now(UTC).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "elapsed_seconds": 0.0,
+                    "restart_reason": request.reason,
+                    "restart_actor": request.actor,
+                    "restart_resume_target": resume_target,
+                    "cleared_workers": cleared_workers,
+                },
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                selected_status.value,
+                {
+                    "restart": request.model_dump(),
+                    "resume_target": resume_target,
+                    "cleared_workers": cleared_workers,
+                    "pull_request_cleared": selected_index <= github_index,
+                },
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
     def _require_task(self, session: Session, task_id: str) -> TaskRecord:
         record = session.get(TaskRecord, task_id)
         if record is None:
             raise KeyError(f"Task {task_id} was not found.")
         return record
+
+    def _collect_risk_flags(self, worker_results: dict[str, Any]) -> list[str]:
+        """Rebuild risk flags from the still-valid worker results after a partial restart."""
+
+        merged_flags: set[str] = set()
+        for result in worker_results.values():
+            if not isinstance(result, dict):
+                continue
+            for item in result.get("risk_flags", []):
+                merged_flags.add(str(item))
+        return sorted(merged_flags)
 
     def _add_event(
         self,

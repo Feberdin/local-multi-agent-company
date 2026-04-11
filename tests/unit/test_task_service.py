@@ -7,7 +7,15 @@ How to debug: If these tests fail, inspect the TaskService methods and the SQLAl
 
 from __future__ import annotations
 
-from services.shared.agentic_lab.schemas import ApprovalDecision, ApprovalRequest, TaskCreateRequest, WorkerResponse
+from services.shared.agentic_lab.schemas import (
+    ApprovalDecision,
+    ApprovalRequest,
+    TaskCreateRequest,
+    TaskStageRestartRequest,
+    TaskStatus,
+    WorkerResponse,
+    WorkflowWorkerName,
+)
 from services.shared.agentic_lab.task_service import TaskService
 
 
@@ -139,3 +147,68 @@ def test_task_service_persists_structured_worker_progress_in_metadata(isolated_s
     assert coding_progress["state"] == "waiting"
     assert coding_progress["waiting_for"] == "Lokales Modell"
     assert coding_progress["progress_message"] == "Coding wartet auf Modellantwort."
+
+
+def test_task_service_can_restart_one_worker_segment_without_creating_a_new_task(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Analysiere das Repository, liefere einen Coding-Vorschlag und erlaube spaeter einen gezielten Neustart.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+
+    service.store_worker_result(
+        summary.id,
+        "requirements",
+        WorkerResponse(worker="requirements", summary="Requirements liegen vor.", risk_flags=["scope-known"]),
+    )
+    service.store_worker_result(
+        summary.id,
+        "research",
+        WorkerResponse(worker="research", summary="Recherche wurde abgeschlossen.", risk_flags=["docs-reviewed"]),
+    )
+    service.store_worker_result(
+        summary.id,
+        "coding",
+        WorkerResponse(worker="coding", summary="Coding ist fehlgeschlagen.", errors=["Git clone failed."]),
+    )
+    service.append_event(
+        summary.id,
+        stage="CODING",
+        message="Coding ist am Git-Setup gescheitert.",
+        details={
+            "worker_name": "coding",
+            "state": "failed",
+            "current_instruction": "Behebe den Git-Fehler und starte diesen Teil erneut.",
+            "last_error": "Git clone failed.",
+        },
+        level="WARNING",
+    )
+    service.update_status(
+        summary.id,
+        TaskStatus.FAILED,
+        message="Coding ist fehlgeschlagen.",
+        latest_error="Git clone failed.",
+    )
+
+    restarted = service.restart_from_worker(
+        summary.id,
+        TaskStageRestartRequest(
+            worker_name=WorkflowWorkerName.RESEARCH,
+            actor="dashboard",
+            reason="Git-Umgebung ist korrigiert, bitte ab Recherche neu laufen lassen.",
+        ),
+    )
+
+    assert restarted.status == TaskStatus.RESEARCHING
+    assert restarted.resume_target == "research"
+    assert restarted.latest_error is None
+    assert restarted.worker_results["requirements"]["summary"] == "Requirements liegen vor."
+    assert "research" not in restarted.worker_results
+    assert "coding" not in restarted.worker_results
+    assert restarted.metadata["worker_progress"]["research"]["state"] == "waiting"
+    assert restarted.metadata["last_restart_request"]["worker_name"] == "research"
+    assert restarted.metadata["last_restart_request"]["actor"] == "dashboard"
+    assert restarted.events[-1].details["event_kind"] == "stage_restart_requested"

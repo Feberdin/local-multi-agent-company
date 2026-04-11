@@ -1019,6 +1019,49 @@ def _group_worker_cast(cast: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sections
 
 
+def _build_restartable_stage_options(task: dict[str, Any], worker_timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Offer only the already reached workflow stages for partial restarts so operators do not need a brand-new task."""
+
+    current_worker = _current_worker_name(task)
+    metadata = _as_mapping(task.get("metadata"))
+    last_restart = _as_mapping(metadata.get("last_restart_request"))
+    selected_worker_name = str(last_restart.get("worker_name") or current_worker or "")
+
+    relevant_indices: list[int] = []
+    for worker_name in _normalize_worker_results(task.get("worker_results")):
+        if worker_name in WORKER_SEQUENCE_INDEX:
+            relevant_indices.append(WORKER_SEQUENCE_INDEX[worker_name])
+    for worker_name in _normalize_worker_progress(metadata.get("worker_progress")):
+        if worker_name in WORKER_SEQUENCE_INDEX:
+            relevant_indices.append(WORKER_SEQUENCE_INDEX[worker_name])
+    if current_worker in WORKER_SEQUENCE_INDEX:
+        relevant_indices.append(WORKER_SEQUENCE_INDEX[current_worker])
+
+    if not relevant_indices:
+        return []
+
+    max_index = max(relevant_indices)
+    options: list[dict[str, Any]] = []
+    for step in worker_timeline:
+        worker_name = str(step.get("worker_name") or "")
+        worker_index = WORKER_SEQUENCE_INDEX.get(worker_name)
+        if worker_index is None or worker_index > max_index:
+            continue
+        if step.get("state") in {"idle", "queued"} and worker_name != current_worker:
+            continue
+        options.append(
+            {
+                "worker_name": worker_name,
+                "label": step.get("label", worker_name),
+                "description": step.get("description", ""),
+                "state": step.get("state", "waiting"),
+                "state_label": step.get("state_label", "wartet"),
+                "selected": worker_name == selected_worker_name or (not selected_worker_name and worker_name == current_worker),
+            }
+        )
+    return options
+
+
 def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     """Enrich a raw task payload with operator-focused progress details for the dashboard and detail page."""
 
@@ -1041,6 +1084,8 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     decorated["worker_timeline"] = _build_worker_timeline(decorated)
     decorated["worker_cast"] = _build_worker_cast(decorated)
     decorated["worker_cast_groups"] = _group_worker_cast(decorated["worker_cast"])
+    decorated["restartable_stage_options"] = _build_restartable_stage_options(decorated, decorated["worker_timeline"])
+    decorated["can_restart_partially"] = bool(decorated["restartable_stage_options"])
     decorated["status_lower"] = str(decorated.get("status", "")).lower()
     decorated["created_at_display"] = _format_timestamp(decorated.get("created_at"))
     decorated["updated_at_display"] = _format_timestamp(decorated.get("updated_at"))
@@ -1088,6 +1133,14 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     ) or "niemanden"
     decorated["current_last_result_summary"] = str(current_progress.get("last_result_summary") or "noch kein Ergebnis")
     decorated["current_last_error"] = str(current_progress.get("last_error") or decorated.get("latest_error") or "")
+    last_restart = _as_mapping(decorated["metadata"].get("last_restart_request"))
+    restarted_worker_name = str(last_restart.get("worker_name") or "")
+    decorated["last_restart"] = last_restart
+    decorated["last_restart_display"] = (
+        f"{WORKER_LABELS.get(restarted_worker_name, restarted_worker_name)} · {_format_timestamp(last_restart.get('requested_at'))}"
+        if restarted_worker_name
+        else "noch kein Teil-Neustart"
+    )
     decorated["events_latest_first"] = list(reversed(decorated["events"]))
     decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES
     decorated["auto_refresh_seconds"] = AUTO_REFRESH_SECONDS if decorated["is_active"] else 0
@@ -2286,6 +2339,38 @@ async def run_task(request: Request, task_id: str) -> Response:
     response = await _api_request("POST", f"/api/tasks/{task_id}/run")
     if response.status_code >= 400:
         detail = _response_detail(response, "Der Workflow konnte nicht gestartet oder fortgesetzt werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
+    return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
+
+
+@app.post("/tasks/{task_id}/restart-stage")
+async def restart_task_stage(
+    request: Request,
+    task_id: str,
+    worker_name: str = Form(...),
+    reason: str = Form(""),
+) -> Response:
+    response = await _api_request(
+        "POST",
+        f"/api/tasks/{task_id}/restart-stage",
+        json_payload={
+            "worker_name": worker_name,
+            "actor": "dashboard",
+            "reason": reason.strip() or None,
+            "run_immediately": True,
+        },
+    )
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Der Teilbereich konnte nicht neu gestartet werden.")
         try:
             context = await _load_task_detail_context(task_id, error_message=detail)
             return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})

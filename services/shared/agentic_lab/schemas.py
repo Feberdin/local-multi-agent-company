@@ -35,6 +35,87 @@ class TaskStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class WorkflowWorkerName(StrEnum):
+    REQUIREMENTS = "requirements"
+    COST = "cost"
+    HUMAN_RESOURCES = "human_resources"
+    RESEARCH = "research"
+    ARCHITECTURE = "architecture"
+    DATA = "data"
+    UX = "ux"
+    CODING = "coding"
+    REVIEWER = "reviewer"
+    TESTER = "tester"
+    SECURITY = "security"
+    VALIDATION = "validation"
+    DOCUMENTATION = "documentation"
+    GITHUB = "github"
+    DEPLOY = "deploy"
+    QA = "qa"
+    MEMORY = "memory"
+
+
+WORKFLOW_WORKER_ORDER: tuple[WorkflowWorkerName, ...] = (
+    WorkflowWorkerName.REQUIREMENTS,
+    WorkflowWorkerName.COST,
+    WorkflowWorkerName.HUMAN_RESOURCES,
+    WorkflowWorkerName.RESEARCH,
+    WorkflowWorkerName.ARCHITECTURE,
+    WorkflowWorkerName.DATA,
+    WorkflowWorkerName.UX,
+    WorkflowWorkerName.CODING,
+    WorkflowWorkerName.REVIEWER,
+    WorkflowWorkerName.TESTER,
+    WorkflowWorkerName.SECURITY,
+    WorkflowWorkerName.VALIDATION,
+    WorkflowWorkerName.DOCUMENTATION,
+    WorkflowWorkerName.GITHUB,
+    WorkflowWorkerName.DEPLOY,
+    WorkflowWorkerName.QA,
+    WorkflowWorkerName.MEMORY,
+)
+
+WORKFLOW_WORKER_TO_RESUME_TARGET: dict[WorkflowWorkerName, str] = {
+    WorkflowWorkerName.REQUIREMENTS: "requirements",
+    WorkflowWorkerName.COST: "cost",
+    WorkflowWorkerName.HUMAN_RESOURCES: "human_resources",
+    WorkflowWorkerName.RESEARCH: "research",
+    WorkflowWorkerName.ARCHITECTURE: "architecture",
+    WorkflowWorkerName.DATA: "data",
+    WorkflowWorkerName.UX: "ux",
+    WorkflowWorkerName.CODING: "coding",
+    WorkflowWorkerName.REVIEWER: "review",
+    WorkflowWorkerName.TESTER: "testing",
+    WorkflowWorkerName.SECURITY: "security",
+    WorkflowWorkerName.VALIDATION: "validation",
+    WorkflowWorkerName.DOCUMENTATION: "documentation",
+    WorkflowWorkerName.GITHUB: "github",
+    WorkflowWorkerName.DEPLOY: "deploy",
+    WorkflowWorkerName.QA: "qa",
+    WorkflowWorkerName.MEMORY: "memory",
+}
+
+WORKFLOW_WORKER_TO_STATUS: dict[WorkflowWorkerName, TaskStatus] = {
+    WorkflowWorkerName.REQUIREMENTS: TaskStatus.REQUIREMENTS,
+    WorkflowWorkerName.COST: TaskStatus.RESOURCE_PLANNING,
+    WorkflowWorkerName.HUMAN_RESOURCES: TaskStatus.RESOURCE_PLANNING,
+    WorkflowWorkerName.RESEARCH: TaskStatus.RESEARCHING,
+    WorkflowWorkerName.ARCHITECTURE: TaskStatus.ARCHITECTING,
+    WorkflowWorkerName.DATA: TaskStatus.ARCHITECTING,
+    WorkflowWorkerName.UX: TaskStatus.ARCHITECTING,
+    WorkflowWorkerName.CODING: TaskStatus.CODING,
+    WorkflowWorkerName.REVIEWER: TaskStatus.REVIEWING,
+    WorkflowWorkerName.TESTER: TaskStatus.TESTING,
+    WorkflowWorkerName.SECURITY: TaskStatus.SECURITY_REVIEW,
+    WorkflowWorkerName.VALIDATION: TaskStatus.VALIDATING,
+    WorkflowWorkerName.DOCUMENTATION: TaskStatus.DOCUMENTING,
+    WorkflowWorkerName.GITHUB: TaskStatus.PR_CREATED,
+    WorkflowWorkerName.DEPLOY: TaskStatus.STAGING_DEPLOYED,
+    WorkflowWorkerName.QA: TaskStatus.QA_PENDING,
+    WorkflowWorkerName.MEMORY: TaskStatus.MEMORY_UPDATING,
+}
+
+
 class ApprovalDecision(StrEnum):
     APPROVE = "APPROVE"
     REJECT = "REJECT"
@@ -213,6 +294,13 @@ class ApprovalRequest(BaseModel):
     decision: ApprovalDecision
     actor: str = "human-operator"
     reason: str | None = None
+
+
+class TaskStageRestartRequest(BaseModel):
+    worker_name: WorkflowWorkerName
+    actor: str = "human-operator"
+    reason: str | None = None
+    run_immediately: bool = True
 
 
 class RepositoryAccessSettings(BaseModel):

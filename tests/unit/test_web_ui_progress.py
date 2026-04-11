@@ -100,6 +100,8 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
     assert decorated["current_instruction"] == "Strukturiere Anforderungen und warte auf das lokale Modell."
     assert decorated["events"][-1]["is_heartbeat"] is True
     assert decorated["auto_refresh_seconds"] > 0
+    assert decorated["can_restart_partially"] is True
+    assert decorated["restartable_stage_options"][0]["worker_name"] == "requirements"
 
 
 def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, monkeypatch) -> None:
@@ -250,3 +252,34 @@ def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) 
     assert response.status_code == 200
     assert "TypeError: simulated detail payload bug" in response.text
     assert "docker logs --tail=200 fmac-web" in response.text
+
+
+def test_restart_stage_form_posts_selected_worker_name(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_payload"] = json_payload
+        return httpx.Response(200, json={"ok": True})
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/tasks/task-1/restart-stage",
+            data={"worker_name": "research", "reason": "Git-Fehler wurde behoben."},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/tasks/task-1"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/tasks/task-1/restart-stage"
+    assert captured["json_payload"] == {
+        "worker_name": "research",
+        "actor": "dashboard",
+        "reason": "Git-Fehler wurde behoben.",
+        "run_immediately": True,
+    }

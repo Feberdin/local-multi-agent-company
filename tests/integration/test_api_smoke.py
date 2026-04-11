@@ -38,6 +38,14 @@ def test_create_and_fetch_task(tmp_path) -> None:
         assert fetch_response.status_code == 200
         assert fetch_response.json()["repository"] == "Feberdin/example-repo"
 
+        restart_response = client.post(
+            f"/api/tasks/{task_id}/restart-stage",
+            json={"worker_name": "requirements", "actor": "test-suite", "run_immediately": False},
+        )
+        assert restart_response.status_code == 200
+        assert restart_response.json()["resume_target"] == "requirements"
+        assert restart_response.json()["status"] == "REQUIREMENTS"
+
         trusted_sources_response = client.get("/api/settings/trusted-sources")
         assert trusted_sources_response.status_code == 200
         assert trusted_sources_response.json()["active_profile_id"] == "trusted_coding"

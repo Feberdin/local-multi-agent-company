@@ -120,6 +120,14 @@ body {
   gap: 0.9rem;
 }
 
+.restart-stage-form {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: minmax(220px, 280px) minmax(240px, 1fr) auto;
+  align-items: end;
+  margin-top: 0.9rem;
+}
+
 label {
   display: grid;
   gap: 0.35rem;
@@ -181,6 +189,12 @@ button.danger {
 .download-list {
   display: grid;
   gap: 0.8rem;
+}
+
+@media (max-width: 900px) {
+  .restart-stage-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .download-grid {

@@ -320,6 +320,31 @@ Wichtig:
 - Docker-Host-Logs selbst sind nicht im ZIP, weil die Web-UI keinen Docker-Socket mountet
 - falls du sie zusaetzlich brauchst, im Debug-Center die `Host-Log-Befehle` mitnehmen und auf Unraid ausfuehren
 
+## Nur den fehlerhaften Teilbereich neu starten
+
+Typisches Symptom:
+
+- ein Task ist an `Recherche`, `Coding` oder einer spaeteren Stage gescheitert
+- die vorherigen Schritte waren aber bereits sinnvoll und sollen nicht komplett neu erzeugt werden
+
+Vorgehen:
+
+- die Task-Detailseite der betroffenen Aufgabe oeffnen
+- den Bereich `Teilbereich neu starten` verwenden
+- den fruehesten Schritt waehlen, der neu laufen soll
+- optional kurz notieren, was behoben wurde
+
+Aktuelles Verhalten:
+
+- derselbe Task bleibt erhalten
+- Event-Historie und Audit-Trail bleiben sichtbar
+- zurueckgesetzt werden nur die gewaehlte Stage und alle nachfolgenden Worker-Ergebnisse
+- der Neustart laeuft danach direkt wieder im Hintergrund an
+
+Hinweis:
+
+- wenn der Fehler in `Coding` lag, ist oft `Recherche` oder `Architektur` der sinnvollere Neustartpunkt, falls sich der technische Kontext geaendert hat
+
 ## Research-Worker endet mit HTTP 500
 
 Typische Symptome:
