@@ -2116,6 +2116,83 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
 
 
+def _format_duration_ms(ms: float) -> str:
+    """Render a millisecond duration in a human-readable format."""
+    if ms < 1000:
+        return f"{ms:.0f} ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f} s"
+    return f"{ms / 60_000:.1f} min"
+
+
+def _decorate_readiness_report(raw: dict[str, Any]) -> dict[str, Any]:
+    """Add display fields to the raw readiness report dict for template rendering."""
+
+    report = dict(raw)
+    report["duration_ms_display"] = _format_duration_ms(float(raw.get("duration_ms") or 0))
+    report["started_at_display"] = _format_timestamp(_parse_timestamp(raw.get("started_at")))
+
+    for section in report.get("sections", []):
+        for check in section.get("checks", []):
+            check["duration_ms_display"] = _format_duration_ms(float(check.get("duration_ms") or 0))
+
+    return report
+
+
+async def _load_readiness_context(
+    *,
+    run_check: bool = False,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    """Load (and optionally trigger) the system readiness check from the orchestrator."""
+
+    report: dict[str, Any] | None = None
+    if run_check:
+        try:
+            response = await _api_request("GET", "/api/system/readiness")
+            if response.status_code < 400:
+                raw = response.json()
+                if isinstance(raw, dict):
+                    report = _decorate_readiness_report(raw)
+            else:
+                error_message = (
+                    f"Bereitschaftspruefung schlug fehl (HTTP {response.status_code}). "
+                    "Pruefe, ob der Orchestrator laeuft."
+                )
+        except Exception as exc:
+            error_message = f"Bereitschaftspruefung konnte nicht ausgefuehrt werden: {exc}"
+
+    # LLM timeout shown as human-readable hint on the page
+    from services.shared.agentic_lab.readiness import LLM_TIMEOUT
+    llm_timeout_display = _format_duration_ms(LLM_TIMEOUT * 1000)
+
+    return {
+        "report": report,
+        "error_message": error_message,
+        "llm_timeout_display": llm_timeout_display,
+    }
+
+
+@app.get("/system-check", response_class=HTMLResponse)
+async def system_check_page(request: Request) -> HTMLResponse:
+    context = await _load_readiness_context()
+    return templates.TemplateResponse(
+        request=request,
+        name="readiness.html",
+        context={"request": request, **context},
+    )
+
+
+@app.post("/system-check", response_class=HTMLResponse)
+async def run_system_check(request: Request) -> HTMLResponse:
+    context = await _load_readiness_context(run_check=True)
+    return templates.TemplateResponse(
+        request=request,
+        name="readiness.html",
+        context={"request": request, **context},
+    )
+
+
 @app.get("/benchmarks", response_class=HTMLResponse)
 async def benchmarks_page(request: Request) -> HTMLResponse:
     context = await _load_benchmarks_context()

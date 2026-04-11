@@ -684,6 +684,7 @@ class WorkflowOrchestrator:
             worker_name="github",
             service_url=self._service_url("github"),
             stage_status=TaskStatus.DOCUMENTING,
+            resume_target="github",
         )
         if stage_state.get("current_status") == TaskStatus.FAILED.value:
             return stage_state
@@ -781,6 +782,7 @@ class WorkflowOrchestrator:
         worker_name: str,
         service_url: str,
         stage_status: TaskStatus,
+        resume_target: str | None = None,
     ) -> WorkflowState:
         """Shared worker-stage behavior with logging, retries, persistence, and failure handling."""
 
@@ -805,6 +807,7 @@ class WorkflowOrchestrator:
                 elapsed_seconds=0.0,
                 progress_message=f"{stage_meta['label']} wurde gestartet.",
             ),
+            resume_target=resume_target,
         )
         self.task_service.append_event(
             task_id,

@@ -155,21 +155,75 @@ class LLMClient:
         *,
         worker_name: str = "default",
     ) -> dict[str, Any]:
-        """Ask the model for JSON and parse the first JSON object found in its reply."""
+        """Ask the model for JSON and parse the first JSON object found in its reply.
 
+        Extraction order per attempt:
+        1. Direct parse of the whole response.
+        2. Content of the first ```...``` code block.
+        3. Substring from the first '{' to the last '}' (handles prose wrappers).
+
+        If the first attempt yields no parseable JSON at all, one retry is made with
+        a minimal system prompt that asks the model to reformat its previous answer.
+        """
+
+        # JSON instruction goes first so instruction-tuned models see it before
+        # any role description that might pull them toward prose answers.
+        json_instruction = (
+            "IMPORTANT: Your entire reply must be a single valid JSON object. "
+            "Do not write any text before or after the JSON. "
+            "Do not use markdown. Start with '{' and end with '}'.\n\n"
+        )
         raw = await self.complete(
-            system_prompt=system_prompt + "\nReturn JSON only.",
+            system_prompt=json_instruction + system_prompt,
             user_prompt=user_prompt,
             worker_name=worker_name,
             temperature=0.1,
         )
 
-        json_text = raw.strip()
-        if "```" in json_text:
-            json_text = json_text.split("```")[1]
-            json_text = json_text.replace("json", "", 1).strip()
+        result = self._extract_json(raw)
+        if result is not None:
+            return result
 
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as exc:
-            raise LLMError(f"Model did not return valid JSON: {raw}") from exc
+        # One retry: ask the model to convert its own prose answer into JSON.
+        # Truncate the input so local small models are not overwhelmed by the full response.
+        retry_input = raw[:3000] + ("..." if len(raw) > 3000 else "")
+        retry_raw = await self.complete(
+            system_prompt=(
+                "You must output a valid JSON object and nothing else. "
+                "No prose, no markdown, no explanation. "
+                "Start your reply with '{' and end with '}'. "
+                "Convert the following text into a JSON object that captures its key information."
+            ),
+            user_prompt=retry_input,
+            worker_name=worker_name,
+            temperature=0.0,
+        )
+        result = self._extract_json(retry_raw)
+        if result is not None:
+            return result
+
+        raise LLMError(f"Model did not return valid JSON: {raw}")
+
+    @staticmethod
+    def _extract_json(text: str) -> dict[str, Any] | None:
+        """Try three extraction strategies and return the first parseable dict, or None."""
+
+        candidates: list[str] = [text.strip()]
+
+        if "```" in text:
+            block = text.split("```")[1]
+            candidates.append(block.replace("json", "", 1).strip())
+
+        brace_start = text.find("{")
+        brace_end = text.rfind("}")
+        if brace_start != -1 and brace_end > brace_start:
+            candidates.append(text[brace_start : brace_end + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return None

@@ -9,9 +9,6 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    {% if task.auto_refresh_seconds %}
-    <meta http-equiv="refresh" content="{{ task.auto_refresh_seconds }}">
-    {% endif %}
     <title>Task {{ task.id }}</title>
     <link rel="stylesheet" href="/static/style.css">
   </head>
@@ -347,5 +344,48 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         </div>
       </section>
     </main>
+    {% if task.auto_refresh_seconds %}
+    <script>
+    // Auto-Refresh ohne Seitenneuladung: Speichere aufgeklappte Details und
+    // Scroll-Position vor dem Reload, stelle sie danach wieder her.
+    (function () {
+      var STORAGE_KEY = "task-ui-state-{{ task.id }}";
+
+      function saveState() {
+        var els = document.querySelectorAll("details");
+        var open = [];
+        for (var i = 0; i < els.length; i++) {
+          open.push(els[i].open);
+        }
+        try {
+          sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+            open: open,
+            scrollY: window.scrollY || 0
+          }));
+        } catch (e) {}
+      }
+
+      function restoreState() {
+        var raw = sessionStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        try {
+          var state = JSON.parse(raw);
+          var els = document.querySelectorAll("details");
+          for (var i = 0; i < els.length && i < state.open.length; i++) {
+            els[i].open = state.open[i];
+          }
+          if (state.scrollY) window.scrollTo(0, state.scrollY);
+        } catch (e) {}
+      }
+
+      restoreState();
+
+      setInterval(function () {
+        saveState();
+        window.location.reload();
+      }, {{ task.auto_refresh_seconds * 1000 }});
+    }());
+    </script>
+    {% endif %}
   </body>
 </html>

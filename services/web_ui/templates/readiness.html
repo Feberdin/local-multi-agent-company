@@ -1,0 +1,185 @@
+<!--
+Purpose: System readiness / preflight check page showing all worker, LLM, workspace, and config checks.
+Input/Output: Receives a readiness_report object and renders it as a compact, color-coded dashboard.
+Important invariants: No secret values are shown. All checks are individually labelled with hints.
+How to debug: Run GET /api/system/readiness on the orchestrator to see the raw JSON.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>System-Check</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+      .readiness-banner {
+        border-radius: 8px;
+        padding: 1rem 1.5rem;
+        margin-bottom: 1.5rem;
+        font-size: 1.1rem;
+        font-weight: 600;
+      }
+      .readiness-banner.ok      { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+      .readiness-banner.warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+      .readiness-banner.failed  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+      .readiness-banner.skipped { background: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
+
+      .check-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--border, #e5e7eb);
+      }
+      .check-row:last-child { border-bottom: none; }
+      .check-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        margin-top: 5px;
+      }
+      .check-dot.ok      { background: #28a745; }
+      .check-dot.warning { background: #ffc107; }
+      .check-dot.failed  { background: #dc3545; }
+      .check-dot.skipped { background: #6c757d; }
+
+      .check-label { font-weight: 600; min-width: 220px; flex-shrink: 0; }
+      .check-message { flex: 1; }
+      .check-hint { font-size: 0.85rem; color: #6c757d; margin-top: 0.15rem; }
+      .check-duration { font-size: 0.8rem; color: #aaa; white-space: nowrap; }
+
+      .summary-bar { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+      .summary-pill {
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+      .pill-ok      { background: #d4edda; color: #155724; }
+      .pill-warning { background: #fff3cd; color: #856404; }
+      .pill-failed  { background: #f8d7da; color: #721c24; }
+      .pill-skipped { background: #e2e3e5; color: #383d41; }
+    </style>
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug">Debug-Center</a>
+        <a href="/system-check" class="active">System-Check</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Preflight</p>
+        <h1>System-Bereitschaftspruefung</h1>
+        <p class="lead">
+          Prueft Worker, LLM-Endpoints, Workspace und Konfiguration, bevor ein Workflow gestartet wird.
+        </p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Fehler beim Laden des Berichts</h2>
+        <p>{{ error_message }}</p>
+        <p class="muted">Pruefe, ob der Orchestrator erreichbar ist, und versuche die Seite neu zu laden.</p>
+      </section>
+      {% endif %}
+
+      {% if report %}
+
+      {% set overall = report.get("overall_status", "skipped") %}
+      <div class="readiness-banner {{ overall }}">
+        {% if overall == "ok" %}
+        ✅ {{ report.workflow_message }}
+        {% elif overall == "warning" %}
+        ⚠️ {{ report.workflow_message }}
+        {% else %}
+        🔴 {{ report.workflow_message }}
+        {% endif %}
+      </div>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Zusammenfassung</h2>
+          <span class="muted">
+            Pruefung in {{ report.duration_ms_display }} durchgefuehrt
+            · {{ report.started_at_display }}
+          </span>
+        </div>
+        <div class="summary-bar">
+          <span class="summary-pill pill-ok">✅ {{ report.summary.checks_ok }} OK</span>
+          {% if report.summary.checks_warning %}
+          <span class="summary-pill pill-warning">⚠️ {{ report.summary.checks_warning }} Warnung{{ "en" if report.summary.checks_warning != 1 }}</span>
+          {% endif %}
+          {% if report.summary.checks_failed %}
+          <span class="summary-pill pill-failed">🔴 {{ report.summary.checks_failed }} Fehler</span>
+          {% endif %}
+          {% if report.summary.checks_skipped %}
+          <span class="summary-pill pill-skipped">— {{ report.summary.checks_skipped }} uebersprungen</span>
+          {% endif %}
+          <span class="summary-pill" style="background:#f0f0f0;color:#333;">
+            {{ report.summary.checks_total }} Pruefungen gesamt
+          </span>
+        </div>
+      </section>
+
+      {% for section in report.sections %}
+      <section class="panel">
+        <div class="panel-header">
+          <h2>
+            {% if section.status == "ok" %}✅{% elif section.status == "warning" %}⚠️{% elif section.status == "failed" %}🔴{% else %}—{% endif %}
+            {{ section.label }}
+          </h2>
+          <span class="status status-{{ section.status }}">{{ section.status }}</span>
+        </div>
+
+        {% for check in section.checks %}
+        <div class="check-row">
+          <div class="check-dot {{ check.status }}"></div>
+          <div class="check-label">{{ check.label }}</div>
+          <div class="check-message">
+            <div>{{ check.message }}</div>
+            {% if check.hint %}
+            <div class="check-hint">💡 {{ check.hint }}</div>
+            {% endif %}
+          </div>
+          {% if check.duration_ms > 0 %}
+          <div class="check-duration">{{ check.duration_ms_display }}</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </section>
+      {% endfor %}
+
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Preflight erneut ausfuehren</h2>
+        </div>
+        <form method="post" action="/system-check">
+          <button type="submit">Pruefung jetzt wiederholen</button>
+        </form>
+        <p class="muted">
+          Der Check benoetigt einige Sekunden, da LLM-Endpoints mit einem kurzen Completion-Test geprueft werden.
+          Auf langsamer Hardware kann das bis zu {{ llm_timeout_display }} dauern.
+        </p>
+      </section>
+
+      {% else %}
+      <section class="panel panel-note">
+        <h2>Bereit zum Pruefen</h2>
+        <p>Starte die Pruefung, um den aktuellen System-Status zu sehen.</p>
+        <form method="post" action="/system-check">
+          <button type="submit">Pruefung starten</button>
+        </form>
+      </section>
+      {% endif %}
+
+    </main>
+  </body>
+</html>

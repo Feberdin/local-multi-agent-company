@@ -18,6 +18,7 @@ from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import init_db
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
+from services.shared.agentic_lab.readiness import ReadinessReport, run_system_readiness_check
 from services.shared.agentic_lab.schemas import (
     ApprovalRequest,
     HealthResponse,
@@ -354,6 +355,12 @@ async def health_check_web_search_provider(provider_id: str) -> SearchProviderTe
         return await search_provider_service.health_check(provider_id)
     except SearchProviderError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/system/readiness", response_model=ReadinessReport)
+async def system_readiness() -> ReadinessReport:
+    """Run a full preflight check and return a structured readiness report."""
+    return await run_system_readiness_check(settings)
 
 
 async def _run_in_background(task_id: str) -> None:

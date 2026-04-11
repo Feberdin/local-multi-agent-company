@@ -106,9 +106,13 @@ async def _run_local_patch_backend(
     try:
         patch_plan = await llm.complete_json(
             system_prompt=(
-                "You are a careful coding agent. Return JSON with keys summary and operations. "
-                "Each operation must have action=create_or_update, path, reason, content. "
-                "Keep the change set small, coherent, and safe."
+                "You are a careful coding agent implementing file changes for a software repository.\n"
+                "Return a JSON object with EXACTLY this structure — no other keys, no prose:\n"
+                '{"summary": "one-line description", "operations": [{"action": "create_or_update", "path": "relative/path/to/file.py", "reason": "why", "content": "full file content"}]}\n'
+                "Each operation MUST have action, path, reason, and content. "
+                "Paths are relative to the repo root. Only touch files that directly address the goal.\n"
+                "If the goal requires NO file changes (e.g. analysis, brainstorming, explanation), "
+                'return {"summary": "No code changes needed: <reason>", "operations": []} — never prose.'
                 f"{guidance_block}"
             ),
             user_prompt=(
