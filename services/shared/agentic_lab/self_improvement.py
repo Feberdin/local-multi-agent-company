@@ -575,7 +575,6 @@ class SelfImprovementService:
                 cycle_id=record.id,
                 problem_hint=problem_hint,
                 run_task_fn=run_task_fn,
-                running_tasks_set=running_tasks_set,
             )
         )
         return SelfImprovementCycleResponse.from_record(record)
@@ -620,7 +619,6 @@ class SelfImprovementService:
                 cycle_id=cycle_id,
                 goal=cycle.goal or "",
                 run_task_fn=run_task_fn,
-                running_tasks_set=running_tasks_set,
             )
         )
         return SelfImprovementCycleResponse.from_record(self.get_cycle(cycle_id))
@@ -656,7 +654,6 @@ class SelfImprovementService:
         cycle_id: str,
         problem_hint: str | None,
         run_task_fn: Callable[[str], Awaitable[None]] | None,
-        running_tasks_set: set[str] | None,
     ) -> None:
         """Async pipeline: analyze → plan → (gate?) → implement → monitor."""
         try:
@@ -693,7 +690,6 @@ class SelfImprovementService:
                 cycle_id=cycle_id,
                 goal=goal,
                 run_task_fn=run_task_fn,
-                running_tasks_set=running_tasks_set,
             )
 
         except SelfImprovementError as exc:
@@ -716,7 +712,6 @@ class SelfImprovementService:
         cycle_id: str,
         goal: str,
         run_task_fn: Callable[[str], Awaitable[None]] | None,
-        running_tasks_set: set[str] | None,
     ) -> None:
         """Create a workflow task for this improvement and start monitoring it."""
         try:
@@ -738,12 +733,16 @@ class SelfImprovementService:
 
             self._update(cycle_id, task_id=task_id)
 
-            if running_tasks_set is not None:
-                running_tasks_set.add(task_id)
+            # run_task_fn handles adding task_id to running_tasks and starting the workflow.
+            # Do NOT pre-add here — the idempotency guard in run_task_fn would block the start.
             if run_task_fn is not None:
                 asyncio.create_task(run_task_fn(task_id))
 
-            await self._monitor_task(cycle_id=cycle_id, task_id=task_id)
+            await self._monitor_task(
+                cycle_id=cycle_id,
+                task_id=task_id,
+                run_task_fn=run_task_fn,
+            )
 
         except Exception as exc:
             self._update(
@@ -759,21 +758,23 @@ class SelfImprovementService:
         task_id: str,
         poll_interval: float = 30.0,
         max_wait_hours: float = 4.0,
+        run_task_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """
         Poll the linked task every poll_interval seconds.
         Update the cycle record as the task progresses.
-        Handles retries up to max_retries before marking the cycle as FAILED.
+        On failure, creates a brand-new task for each retry (up to max_retries).
         """
         import time
 
         deadline = time.monotonic() + max_wait_hours * 3600
+        current_task_id = task_id
 
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
 
             try:
-                task = self.task_service.get_task(task_id)
+                task = self.task_service.get_task(current_task_id)
             except (KeyError, Exception):
                 continue
 
@@ -805,13 +806,42 @@ class SelfImprovementService:
                     )
                     return
 
-                # Schedule a retry: restart the coding stage
-                self._update(
-                    cycle_id,
-                    retry_count=new_retry,
-                    status=CycleStatus.IMPLEMENTING.value,
-                    latest_error=task.latest_error,
-                )
+                # Create a fresh task for the retry (the old failed task cannot be restarted).
+                try:
+                    goal = cycle.goal or ""
+                    retry_request = TaskCreateRequest(
+                        goal=goal,
+                        repository=self.settings.self_improvement_target_repo,
+                        local_repo_path=self.settings.self_improvement_local_repo_path,
+                        base_branch=self.settings.default_base_branch,
+                        allow_repository_modifications=True,
+                        auto_deploy_staging=self.settings.self_improvement_deploy_after_success,
+                        metadata={
+                            "self_improvement_cycle_id": cycle_id,
+                            "worker_project_label": "Self-Improvement-Zyklus",
+                            "allow_repository_modifications": True,
+                            "retry_attempt": new_retry,
+                        },
+                    )
+                    retry_summary = self.task_service.create_task(retry_request)
+                    current_task_id = retry_summary.id
+                    self._update(
+                        cycle_id,
+                        retry_count=new_retry,
+                        status=CycleStatus.IMPLEMENTING.value,
+                        task_id=current_task_id,
+                        latest_error=task.latest_error,
+                    )
+                    if run_task_fn is not None:
+                        asyncio.create_task(run_task_fn(current_task_id))
+                except Exception as retry_exc:
+                    self._update(
+                        cycle_id,
+                        status=CycleStatus.FAILED.value,
+                        completed_at=datetime.now(UTC),
+                        latest_error=f"Retry-Task-Erstellung fehlgeschlagen: {retry_exc}",
+                    )
+                    return
                 continue
 
             if task.status in {TaskStatus.APPROVAL_REQUIRED}:
