@@ -372,12 +372,27 @@ class SourceTestResult(BaseModel):
     matched: bool = False
 
 
+class SearchProviderProbeResult(BaseModel):
+    name: str
+    ok: bool
+    message: str
+    url: str
+    http_status: int | None = None
+    response_format: str | None = None
+    response_preview: str | None = None
+
+
 class SearchProviderTestResult(BaseModel):
     provider_id: str
     status: SearchProviderHealthStatus
     message: str
     results: list[SearchResultItem] = Field(default_factory=list)
     checked_url: str | None = None
+    base_url: str | None = None
+    request_preview: dict[str, Any] = Field(default_factory=dict)
+    health_checks: list[SearchProviderProbeResult] = Field(default_factory=list)
+    api_ready: bool | None = None
+    technical_cause: str | None = None
 
 
 class SourceRoutingDecision(BaseModel):

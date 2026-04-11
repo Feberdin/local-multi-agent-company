@@ -360,6 +360,21 @@ Verhalten:
 - Brave optional als Fallback
 - Dry-Run, Connectivity-Checks und JSON Import/Export direkt im Dashboard
 - der Stack bringt standardmaessig keinen eigenen SearXNG-Container mit; die Provider-Konfiguration verweist daher auf eine externe Instanz
+- SearXNG wird fuer Worker immer ueber die offizielle JSON-API auf `GET /search` mit `format=json` angesprochen
+
+Wichtig zu SearXNG:
+
+- Browser-HTML allein reicht nicht aus; produktiv zaehlt nur der JSON-Healthcheck
+- die Instanz muss in ihrer `settings.yml` JSON ausdruecklich freischalten:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+- wenn der Basis-Check funktioniert, aber der JSON-Check `403 Forbidden` liefert, ist oft genau diese JSON-Freigabe oder eine serverseitige Zugriffsbeschraenkung die Ursache
 
 Wichtig zu Keys:
 

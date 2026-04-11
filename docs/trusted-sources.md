@@ -91,6 +91,7 @@ Sichere Defaults:
 - `Brave` ist optionaler Fallback und initial deaktiviert
 - Trusted Sources behalten Vorrang
 - Fallback-Ergebnisse werden domain-gefiltert
+- SearXNG wird immer ueber die offizielle JSON-API auf `GET /search` mit Query-Parametern genutzt
 
 Aktivierung:
 
@@ -104,6 +105,19 @@ Hinweis zu Brave:
 - Brave bleibt in diesem Projekt bewusst optional.
 - Laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen.
 - Fuer lokale oder sparsame Setups ist es oft sinnvoller, zunaechst nur Trusted Sources und optional eine eigene SearXNG-Instanz zu betreiben.
+
+Hinweis zu SearXNG:
+
+- Fuer produktive Worker-Nutzung muss JSON in der SearXNG-`settings.yml` aktiv sein:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+- Wenn nur die Browser-Suche funktioniert, aber der JSON-Healthcheck nicht, ist die Instanz fuer strukturierte Agent-Anfragen noch nicht fertig konfiguriert.
 
 ## Keys: was du wirklich brauchst
 

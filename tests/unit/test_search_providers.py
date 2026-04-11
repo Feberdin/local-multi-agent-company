@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from services.shared.agentic_lab.config import get_settings
-from services.shared.agentic_lab.schemas import SearchProviderTestRequest, SearchProviderType
+from services.shared.agentic_lab.schemas import SearchProviderHealthStatus, SearchProviderTestRequest, SearchProviderType
 from services.shared.agentic_lab.search_providers import SearchProviderError, SearchProviderService
 from services.shared.agentic_lab.trusted_sources import TrustedSourceService
 
@@ -164,4 +164,39 @@ async def test_searxng_404_error_explains_external_instance_expectation() -> Non
     message = str(exc_info.value)
     assert "HTTP 404" in message
     assert "/search" in message
-    assert "does not start a SearXNG container by default" in message
+    assert "keinen eigenen SearXNG-Container" in message
+
+
+@pytest.mark.asyncio
+async def test_searxng_health_check_flags_html_only_instance_as_degraded() -> None:
+    provider_service, _trusted_source_service = _configure_enabled_providers()
+    provider_settings = provider_service.load_settings()
+    searxng_provider = next(
+        provider for provider in provider_settings.providers if provider.provider_type is SearchProviderType.SEARXNG
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("format") == "json":
+            return httpx.Response(
+                403,
+                text="Forbidden",
+                headers={"content-type": "text/html; charset=utf-8"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text="<html>ok</html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await provider_service.health_check(searxng_provider.id, client=client)
+
+    assert result.status is SearchProviderHealthStatus.DEGRADED
+    assert result.api_ready is False
+    assert result.base_url == searxng_provider.base_url
+    assert len(result.health_checks) == 2
+    assert result.health_checks[0].ok is True
+    assert result.health_checks[1].ok is False
+    assert "search.formats" in result.message

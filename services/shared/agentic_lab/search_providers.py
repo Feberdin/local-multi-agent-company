@@ -21,6 +21,7 @@ from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.schemas import (
     SearchProvider,
     SearchProviderHealthStatus,
+    SearchProviderProbeResult,
     SearchProviderSettings,
     SearchProviderTestRequest,
     SearchProviderTestResult,
@@ -29,6 +30,7 @@ from services.shared.agentic_lab.schemas import (
     SourceAuthType,
     TrustedSourceProfile,
 )
+from services.shared.agentic_lab.searxng_client import SearXNGClient, SearXNGClientError
 from services.shared.agentic_lab.trusted_sources import TrustedSourceService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -118,7 +120,24 @@ class SearchProviderService:
 
         settings = self.load_settings()
         provider = self._require_provider(settings, request.provider_id)
-        results = await self._search_provider(provider, request.query, client=client)
+        request_preview = self._provider_request_preview(provider, request.query)
+        checked_url = self._provider_endpoint(provider)
+        if provider.provider_type is SearchProviderType.SEARXNG:
+            searxng_client = self._searxng_client(provider)
+            try:
+                searxng_response = await searxng_client.search(
+                    request.query,
+                    client=client,
+                    limit=provider.max_results,
+                )
+            except SearXNGClientError as exc:
+                self._record_provider_health(provider.id, SearchProviderHealthStatus.FAILED)
+                raise SearchProviderError(self._provider_error_message(provider, request.query, searxng_client.endpoint, exc)) from exc
+            results = searxng_response.results
+            request_preview = searxng_response.request_params
+            checked_url = searxng_response.endpoint
+        else:
+            results = await self._search_provider(provider, request.query, client=client)
         filtered_results = self._filter_results(results, trusted_source_service, trusted_profile)
         status = SearchProviderHealthStatus.HEALTHY if filtered_results else SearchProviderHealthStatus.DEGRADED
         message = (
@@ -129,12 +148,16 @@ class SearchProviderService:
                 "This is expected when the trusted profile enforces whitelist-only fallback."
             )
         )
+        self._record_provider_health(provider.id, status)
         return SearchProviderTestResult(
             provider_id=provider.id,
             status=status,
             message=message,
             results=filtered_results,
-            checked_url=self._provider_endpoint(provider),
+            checked_url=checked_url,
+            base_url=provider.base_url,
+            request_preview=request_preview,
+            api_ready=True,
         )
 
     async def health_check(
@@ -147,6 +170,27 @@ class SearchProviderService:
 
         settings = self.load_settings()
         provider = self._require_provider(settings, provider_id)
+        if provider.provider_type is SearchProviderType.SEARXNG:
+            searxng_client = self._searxng_client(provider)
+            report = await searxng_client.health_check(client=client)
+            status = SearchProviderHealthStatus.HEALTHY if report.api_ready else (
+                SearchProviderHealthStatus.DEGRADED if report.html_check.ok else SearchProviderHealthStatus.FAILED
+            )
+            self._record_provider_health(provider.id, status)
+            return SearchProviderTestResult(
+                provider_id=provider.id,
+                status=status,
+                message=report.message,
+                checked_url=report.json_check.url,
+                base_url=provider.base_url,
+                request_preview=searxng_client.build_request_preview("test"),
+                health_checks=[
+                    SearchProviderProbeResult(**report.html_check.__dict__),
+                    SearchProviderProbeResult(**report.json_check.__dict__),
+                ],
+                api_ready=report.api_ready,
+                technical_cause=(report.json_check.message if not report.api_ready else None),
+            )
         try:
             health_request = SearchProviderTestRequest(provider_id=provider.id, query="official docs health check")
             test_result = await self.test_provider(
@@ -156,6 +200,7 @@ class SearchProviderService:
                 client=client,
             )
         except (httpx.HTTPError, SearchProviderError) as exc:
+            self._record_provider_health(provider.id, SearchProviderHealthStatus.FAILED)
             return SearchProviderTestResult(
                 provider_id=provider.id,
                 status=SearchProviderHealthStatus.FAILED,
@@ -164,13 +209,22 @@ class SearchProviderService:
                     "Check the provider URL, network reachability, or server-side API-key configuration."
                 ),
                 checked_url=self._provider_endpoint(provider),
+                base_url=provider.base_url,
+                api_ready=False,
+                technical_cause=str(exc),
             )
+        self._record_provider_health(provider.id, test_result.status)
         return SearchProviderTestResult(
             provider_id=provider.id,
             status=test_result.status,
             message=f"Health check for `{provider.name}` completed. {test_result.message}",
             results=test_result.results,
-            checked_url=self._provider_endpoint(provider),
+            checked_url=test_result.checked_url,
+            base_url=provider.base_url,
+            request_preview=test_result.request_preview,
+            health_checks=test_result.health_checks,
+            api_ready=test_result.api_ready,
+            technical_cause=test_result.technical_cause,
         )
 
     async def search(
@@ -254,6 +308,12 @@ class SearchProviderService:
             raise SearchProviderError(
                 f"Provider `{provider.name}` uses unsupported method `{provider.method}`. Only GET and POST are allowed."
             )
+        if provider.provider_type is SearchProviderType.SEARXNG:
+            if search_path != "/search":
+                raise SearchProviderError(
+                    f"SearXNG provider `{provider.name}` must use the official `/search` endpoint."
+                )
+            method = "GET"
 
         created_at = provider.created_at
         return SearchProvider(
@@ -269,8 +329,14 @@ class SearchProviderService:
             auth_env_var=(provider.auth_env_var or "").strip() or None,
             timeout_seconds=provider.timeout_seconds,
             max_results=provider.max_results,
-            default_language=provider.default_language.strip() or "en",
-            default_categories=[value.strip() for value in provider.default_categories if value.strip()],
+            default_language=(
+                provider.default_language.strip()
+                or ("auto" if provider.provider_type is SearchProviderType.SEARXNG else "en")
+            ),
+            default_categories=(
+                [value.strip() for value in provider.default_categories if value.strip()]
+                or (["general"] if provider.provider_type is SearchProviderType.SEARXNG else [])
+            ),
             safe_search=provider.safe_search,
             health_status=provider.health_status,
             last_checked_at=provider.last_checked_at,
@@ -341,49 +407,12 @@ class SearchProviderService:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> list[SearchResultItem]:
-        params: dict[str, str | int] = {
-            "q": query,
-            "format": "json",
-            "language": provider.default_language,
-            "safesearch": provider.safe_search,
-            "categories": ",".join(provider.default_categories),
-        }
-        owned_client = client is None
-        async_client = client or httpx.AsyncClient(timeout=provider.timeout_seconds, follow_redirects=True)
+        searxng_client = self._searxng_client(provider)
         try:
-            endpoint = self._provider_endpoint(provider)
-            headers = self._provider_headers(provider)
-            if provider.method == "POST":
-                response = await async_client.post(endpoint, data=params, headers=headers)
-            else:
-                response = await async_client.get(endpoint, params=params, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.HTTPError as exc:
-            raise SearchProviderError(self._provider_error_message(provider, query, endpoint, exc)) from exc
-        except ValueError as exc:
-            raise SearchProviderError(
-                f"SearXNG provider `{provider.name}` at `{endpoint}` returned a non-JSON response for query `{query}`. "
-                "The service answered, but not with the expected SearXNG JSON payload. "
-                "Check whether `base_url` and `search_path` really point to a SearXNG search endpoint."
-            ) from exc
-        finally:
-            if owned_client:
-                await async_client.aclose()
-
-        items: list[SearchResultItem] = []
-        for raw_item in payload.get("results", [])[: provider.max_results]:
-            items.append(
-                SearchResultItem(
-                    title=(raw_item.get("title") or "").strip() or raw_item.get("url", "Untitled result"),
-                    url=raw_item.get("url", ""),
-                    snippet=(raw_item.get("content") or "").strip(),
-                    engine=raw_item.get("engine"),
-                    category=raw_item.get("category"),
-                    result_type="general_web_search",
-                )
-            )
-        return items
+            provider_response = await searxng_client.search(query, client=client, limit=provider.max_results)
+        except SearXNGClientError as exc:
+            raise SearchProviderError(self._provider_error_message(provider, query, searxng_client.endpoint, exc)) from exc
+        return provider_response.results
 
     async def _search_brave(
         self,
@@ -484,11 +513,14 @@ class SearchProviderService:
         provider: SearchProvider,
         query: str,
         endpoint: str,
-        exc: httpx.HTTPError,
+        exc: Exception,
     ) -> str:
         """Translate low-level HTTP client failures into operator-facing diagnostics."""
 
         timeout_hint = f"timeout={provider.timeout_seconds}s"
+        if isinstance(exc, SearXNGClientError):
+            preview_suffix = f" Backend said: {exc.response_preview}" if exc.response_preview else ""
+            return f"{exc}{preview_suffix}"
         if isinstance(exc, httpx.ReadTimeout):
             return (
                 f"Provider `{provider.name}` timed out while reading results for query `{query}` at `{endpoint}` "
@@ -520,6 +552,51 @@ class SearchProviderService:
                 f"Backend said: {exc.response.text[:300]}"
             )
         return f"Provider `{provider.name}` failed for query `{query}` at `{endpoint}`: {exc}"
+
+    def _record_provider_health(self, provider_id: str, status: SearchProviderHealthStatus) -> None:
+        """Persist the last known provider health so the dashboard reflects reality between checks."""
+
+        settings = self.load_settings()
+        providers: list[SearchProvider] = []
+        updated = False
+        now = datetime.now(UTC)
+        for provider in settings.providers:
+            if provider.id == provider_id:
+                providers.append(
+                    provider.model_copy(
+                        update={
+                            "health_status": status,
+                            "last_checked_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                )
+                updated = True
+            else:
+                providers.append(provider)
+        if updated:
+            self._write_settings(settings.model_copy(update={"providers": providers}))
+
+    def _provider_request_preview(self, provider: SearchProvider, query: str) -> dict[str, str | int]:
+        if provider.provider_type is SearchProviderType.SEARXNG:
+            return self._searxng_client(provider).build_request_preview(query)
+        if provider.provider_type is SearchProviderType.BRAVE:
+            return {
+                "q": query.strip(),
+                "count": provider.max_results,
+                "search_lang": provider.default_language,
+            }
+        return {"q": query.strip()}
+
+    def _searxng_client(self, provider: SearchProvider) -> SearXNGClient:
+        return SearXNGClient(
+            base_url=provider.base_url,
+            search_path=provider.search_path,
+            timeout_seconds=provider.timeout_seconds,
+            language=provider.default_language,
+            categories=provider.default_categories,
+            safe_search=provider.safe_search,
+        )
 
     def _filter_results(
         self,

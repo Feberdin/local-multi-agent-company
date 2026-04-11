@@ -33,6 +33,11 @@ How to debug: If provider tests fail, inspect base URL, auth ENV name, and wheth
         <h2>Wichtig fuer Unraid</h2>
         <p>Dieser Stack startet standardmaessig keinen eigenen SearXNG-Container. Trage hier daher eine bestehende SearXNG-Instanz ein oder lasse den Provider deaktiviert.</p>
         <p class="muted">Ein typischer JSON-Endpunkt ist <strong>/search</strong>. Wenn ein 404 erscheint, stimmen meist <strong>base_url</strong> oder <strong>search_path</strong> nicht mit der echten SearXNG-Instanz ueberein.</p>
+        <p class="muted">Fuer die Worker zaehlt nur die JSON-API. Browser-HTML allein reicht nicht aus. Wenn der JSON-Healthcheck scheitert, pruefe in der SearXNG-<strong>settings.yml</strong> besonders:</p>
+        <pre>search:
+  formats:
+    - html
+    - json</pre>
         <p class="muted">Brave ist in diesem Stack nur ein optionaler Fallback. Laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen, nicht von einem dauerhaft freien Default.</p>
       </section>
 
@@ -212,6 +217,9 @@ How to debug: If provider tests fail, inspect base URL, auth ENV name, and wheth
               Safe Search
               <input type="number" name="safe_search" min="0" max="2" value="{{ provider_form_values.safe_search }}" required>
             </label>
+            {% if provider_form_values.provider_type == "searxng" %}
+            <p class="muted">SearXNG wird immer als offizieller <strong>GET /search</strong>-JSON-API-Client verwendet. Die Anfrage nutzt standardmaessig <strong>format=json</strong>, <strong>categories=general</strong>, <strong>language=auto</strong> und <strong>safesearch=0</strong>.</p>
+            {% endif %}
             <button type="submit">Provider speichern</button>
           </form>
         </article>
@@ -234,10 +242,85 @@ How to debug: If provider tests fail, inspect base URL, auth ENV name, and wheth
             <button type="submit">Testabfrage</button>
           </form>
           {% if provider_test_result %}
-          <details open>
-            <summary>Testergebnis</summary>
-            <pre>{{ provider_test_result | safe_json }}</pre>
-          </details>
+          <section class="provider-diagnostics">
+            <div class="panel-header">
+              <h3>Testergebnis</h3>
+              <span class="status status-{{ provider_test_result.status }}">{{ provider_test_result.status }}</span>
+            </div>
+            <p>{{ provider_test_result.message }}</p>
+            <div class="diagnostic-grid">
+              <div class="diagnostic-card">
+                <strong>Base URL</strong>
+                <p>{{ provider_test_result.base_url or "-" }}</p>
+              </div>
+              <div class="diagnostic-card">
+                <strong>Gepruefte URL</strong>
+                <p>{{ provider_test_result.checked_url or "-" }}</p>
+              </div>
+              <div class="diagnostic-card">
+                <strong>JSON-API bereit</strong>
+                <p>{{ "Ja" if provider_test_result.api_ready else "Nein" if provider_test_result.api_ready is not none else "-" }}</p>
+              </div>
+              <div class="diagnostic-card">
+                <strong>Technische Ursache</strong>
+                <p>{{ provider_test_result.technical_cause or "-" }}</p>
+              </div>
+            </div>
+            {% if provider_test_result.health_checks %}
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Healthcheck</th>
+                    <th>Status</th>
+                    <th>HTTP</th>
+                    <th>Format</th>
+                    <th>URL</th>
+                    <th>Hinweis</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for check in provider_test_result.health_checks %}
+                  <tr>
+                    <td>{{ check.name }}</td>
+                    <td><span class="status status-{{ 'complete' if check.ok else 'failed' }}">{{ "OK" if check.ok else "Fehler" }}</span></td>
+                    <td>{{ check.http_status or "-" }}</td>
+                    <td>{{ check.response_format or "-" }}</td>
+                    <td>{{ check.url }}</td>
+                    <td>{{ check.message }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% endif %}
+            {% if provider_test_result.results %}
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Titel</th>
+                    <th>URL</th>
+                    <th>Snippet</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for result in provider_test_result.results %}
+                  <tr>
+                    <td>{{ result.title }}</td>
+                    <td>{{ result.url }}</td>
+                    <td>{{ result.snippet }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% endif %}
+            <details>
+              <summary>Rohdaten</summary>
+              <pre>{{ provider_test_result | safe_json }}</pre>
+            </details>
+          </section>
           {% endif %}
         </article>
       </section>

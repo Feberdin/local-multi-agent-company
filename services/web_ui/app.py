@@ -957,11 +957,11 @@ def _default_provider_form_values() -> dict[str, Any]:
         "method": "GET",
         "auth_type": "none",
         "auth_env_var": "",
-        "timeout_seconds": 10,
+        "timeout_seconds": 20,
         "max_results": 8,
-        "default_language": "en",
+        "default_language": "auto",
         "default_categories_text": "general",
-        "safe_search": 1,
+        "safe_search": 0,
     }
 
 
@@ -2019,12 +2019,17 @@ async def upsert_web_search_provider(
     method: str = Form("GET"),
     auth_type: str = Form("none"),
     auth_env_var: str = Form(""),
-    timeout_seconds: float = Form(10.0),
+    timeout_seconds: float = Form(20.0),
     max_results: int = Form(8),
-    default_language: str = Form("en"),
+    default_language: str = Form("auto"),
     default_categories_text: str = Form("general"),
-    safe_search: int = Form(1),
+    safe_search: int = Form(0),
 ) -> Response:
+    normalized_search_path = "/search" if provider_type == "searxng" else search_path
+    normalized_method = "GET" if provider_type == "searxng" else method
+    normalized_default_language = (default_language.strip() or ("auto" if provider_type == "searxng" else "en"))
+    normalized_safe_search = 0 if provider_type == "searxng" and safe_search is None else safe_search
+    normalized_categories_text = default_categories_text.strip() or "general"
     payload = {
         "id": provider_id or name,
         "name": name,
@@ -2032,15 +2037,15 @@ async def upsert_web_search_provider(
         "enabled": enabled,
         "priority": priority,
         "base_url": base_url,
-        "search_path": search_path,
-        "method": method,
+        "search_path": normalized_search_path,
+        "method": normalized_method,
         "auth_type": auth_type,
         "auth_env_var": auth_env_var or None,
         "timeout_seconds": timeout_seconds,
         "max_results": max_results,
-        "default_language": default_language,
-        "default_categories": _split_lines(default_categories_text),
-        "safe_search": safe_search,
+        "default_language": normalized_default_language,
+        "default_categories": _split_lines(normalized_categories_text),
+        "safe_search": normalized_safe_search,
         "health_status": "unknown",
         "last_checked_at": None,
     }
@@ -2051,7 +2056,7 @@ async def upsert_web_search_provider(
         detail = _response_detail(response, "Der Provider konnte nicht gespeichert werden.")
         context = await _load_web_search_context(edit_provider_id=provider_id or None, error_message=detail)
         context["provider_form_values"].update(payload)
-        context["provider_form_values"]["default_categories_text"] = default_categories_text
+        context["provider_form_values"]["default_categories_text"] = normalized_categories_text
         return templates.TemplateResponse(request=request, name="web_search.html", context={"request": request, **context})
     return RedirectResponse(url="/web-search", status_code=303)
 

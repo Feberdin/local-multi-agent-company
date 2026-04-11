@@ -167,6 +167,41 @@ Empfehlung:
 - wenn du noch keine eigene SearXNG-Instanz betreibst, lass den Provider deaktiviert
 - oder trage bewusst eine bestehende externe Instanz ein
 
+## SearXNG antwortet mit `403 Forbidden` auf `format=json`
+
+Typisches Symptom:
+
+- `GET /search?q=test` funktioniert oder die Browser-Suche funktioniert sichtbar
+- der JSON-Healthcheck oder ein Providertest mit `format=json` liefert `403 Forbidden`
+
+Haeufige Ursache:
+
+- in der SearXNG-`settings.yml` ist JSON nicht unter `search.formats` aktiviert
+- oder die Instanz bzw. ein vorgeschalteter Proxy blockiert API-Aufrufe
+
+Pflicht-Konfiguration:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+Pruefen:
+
+- `curl "http://<searxng-host>/search?q=test"`
+- `curl "http://<searxng-host>/search?q=test&format=json&categories=general&language=auto&safesearch=0"`
+
+Interpretation:
+
+- HTML ok, JSON ok:
+  - die Instanz ist fuer Worker nutzbar
+- HTML ok, JSON 403:
+  - SearXNG ist erreichbar, aber die JSON-API ist nicht aktiv oder gesperrt
+- HTML und JSON beide kaputt:
+  - Base-URL, Port, Reverse Proxy oder SearXNG selbst pruefen
+
 ## Web-UI zeigt lange Stage nicht mehr als Freeze
 
 Aktuelles Verhalten:

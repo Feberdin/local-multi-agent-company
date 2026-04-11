@@ -16,13 +16,13 @@
       "method": "GET",
       "auth_type": "none",
       "auth_env_var": null,
-      "timeout_seconds": 10.0,
+      "timeout_seconds": 20.0,
       "max_results": 8,
-      "default_language": "de",
+      "default_language": "auto",
       "default_categories": [
         "general"
       ],
-      "safe_search": 1,
+      "safe_search": 0,
       "health_status": "unknown",
       "last_checked_at": null
     },

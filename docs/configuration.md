@@ -118,11 +118,22 @@ Sichere Defaults:
 - `Brave` als optionaler Fallback
 - beide initial deaktiviert
 - Trusted Sources behalten Vorrang
+- SearXNG nutzt standardmaessig `GET /search` mit `format=json`, `categories=general`, `language=auto` und `safesearch=0`
 
 Hinweis:
 
 - Der Compose-Stack startet aktuell keinen eigenen SearXNG-Container. Trage deshalb eine bestehende SearXNG-Instanz in `base_url` und `search_path` ein oder lasse den Provider deaktiviert.
 - Ein typischer JSON-Endpunkt ist `http://<host>:8080/search` oder `https://<host>/search`.
+- SearXNG muss fuer Maschinenzugriffe JSON aktiviert haben:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+- Wenn der normale `/search?q=test`-Check funktioniert, aber `/search?q=test&format=json` mit `403` scheitert, fehlt oft genau diese JSON-Freigabe oder eine API-Zugriffsbeschraenkung.
 - Wenn deine lokalen Modelle ohne Auth laufen, bleiben `MODEL_API_KEY`, `MISTRAL_API_KEY` und `QWEN_API_KEY` leer.
 - `BRAVE_SEARCH_API_KEY` wird nur benötigt, wenn Brave wirklich aktiviert wird.
 - Laut der oeffentlichen Brave-Preisuebersicht vom 11. April 2026 solltest du fuer neue Setups von kostenpflichtigen Search-/Answers-Tarifen mit monatlichem Guthaben ausgehen. Plane Brave daher bewusst als optionalen Bezahl-Fallback ein, nicht als kostenlosen Pflichtbaustein.

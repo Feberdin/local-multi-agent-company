@@ -202,6 +202,33 @@ button.danger {
   align-items: center;
 }
 
+.provider-diagnostics {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+}
+
+.diagnostic-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: white;
+}
+
+.diagnostic-card p {
+  margin: 0;
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .task-card {
   display: grid;
   gap: 0.35rem;
