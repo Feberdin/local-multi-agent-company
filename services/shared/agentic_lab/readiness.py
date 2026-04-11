@@ -671,6 +671,198 @@ def _check_config(settings: Settings) -> ReadinessSection:
 
 
 # ---------------------------------------------------------------------------
+# F. Docker / self-update access (Unraid)
+# ---------------------------------------------------------------------------
+
+
+def _check_docker_socket() -> ReadinessCheckItem:
+    """Check whether /var/run/docker.sock is accessible from inside the container."""
+    import subprocess
+    start = _now_ms()
+    socket_path = Path("/var/run/docker.sock")
+    if not socket_path.exists():
+        return ReadinessCheckItem(
+            name="docker-socket",
+            label="Docker Socket",
+            status=CheckStatus.FAILED,
+            duration_ms=_elapsed_ms(start),
+            message="/var/run/docker.sock nicht gefunden. Der Container hat keinen Zugriff auf den Docker-Daemon.",
+            hint=(
+                "Binde den Socket in docker-compose.yml ein:\n"
+                "  volumes:\n"
+                "    - /var/run/docker.sock:/var/run/docker.sock"
+            ),
+            details={"socket": str(socket_path)},
+        )
+    readable = os.access(socket_path, os.R_OK)
+    writable = os.access(socket_path, os.W_OK)
+    if not readable:
+        return ReadinessCheckItem(
+            name="docker-socket",
+            label="Docker Socket",
+            status=CheckStatus.FAILED,
+            duration_ms=_elapsed_ms(start),
+            message="/var/run/docker.sock vorhanden, aber nicht lesbar.",
+            hint="Pruefe PUID/PGID und ob der Benutzer in der docker-Gruppe ist.",
+            details={"socket": str(socket_path), "readable": False},
+        )
+    # Verify docker CLI is available and can talk to the daemon
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        elapsed = _elapsed_ms(start)
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            return ReadinessCheckItem(
+                name="docker-socket",
+                label="Docker Socket",
+                status=CheckStatus.OK,
+                duration_ms=elapsed,
+                message=f"Docker-Daemon erreichbar. Server-Version: {version}",
+                details={"socket": str(socket_path), "server_version": version, "writable": writable},
+            )
+        return ReadinessCheckItem(
+            name="docker-socket",
+            label="Docker Socket",
+            status=CheckStatus.FAILED,
+            duration_ms=elapsed,
+            message=f"docker info fehlgeschlagen (exit {result.returncode}): {result.stderr.strip()[:200]}",
+            hint="Pruefe ob die docker-Gruppe im Container korrekt gesetzt ist.",
+            details={"socket": str(socket_path)},
+        )
+    except FileNotFoundError:
+        return ReadinessCheckItem(
+            name="docker-socket",
+            label="Docker Socket",
+            status=CheckStatus.FAILED,
+            duration_ms=_elapsed_ms(start),
+            message="Docker CLI nicht gefunden. Stelle sicher dass docker im Container-Image installiert ist.",
+            hint="Fuge 'RUN apk add docker-cli' (Alpine) oder 'RUN apt-get install -y docker.io' ins Dockerfile ein.",
+            details={"socket": str(socket_path)},
+        )
+    except Exception as exc:
+        return ReadinessCheckItem(
+            name="docker-socket",
+            label="Docker Socket",
+            status=CheckStatus.WARNING,
+            duration_ms=_elapsed_ms(start),
+            message=f"Docker-Pruefung nicht eindeutig: {exc}",
+            details={"socket": str(socket_path)},
+        )
+
+
+def _check_docker_compose_available() -> ReadinessCheckItem:
+    """Check whether docker compose (v2 plugin) can be called."""
+    import subprocess
+    start = _now_ms()
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        elapsed = _elapsed_ms(start)
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            return ReadinessCheckItem(
+                name="docker-compose",
+                label="Docker Compose v2",
+                status=CheckStatus.OK,
+                duration_ms=elapsed,
+                message=version,
+                details={"version_output": version},
+            )
+        return ReadinessCheckItem(
+            name="docker-compose",
+            label="Docker Compose v2",
+            status=CheckStatus.FAILED,
+            duration_ms=elapsed,
+            message=f"'docker compose version' fehlgeschlagen: {result.stderr.strip()[:200]}",
+            hint="Installiere das Docker Compose v2 Plugin im Container-Image.",
+            details={},
+        )
+    except FileNotFoundError:
+        return ReadinessCheckItem(
+            name="docker-compose",
+            label="Docker Compose v2",
+            status=CheckStatus.FAILED,
+            duration_ms=_elapsed_ms(start),
+            message="docker-Befehl nicht gefunden.",
+            hint="Installiere docker-cli im Container-Image.",
+            details={},
+        )
+    except Exception as exc:
+        return ReadinessCheckItem(
+            name="docker-compose",
+            label="Docker Compose v2",
+            status=CheckStatus.WARNING,
+            duration_ms=_elapsed_ms(start),
+            message=f"Pruefung nicht eindeutig: {exc}",
+            details={},
+        )
+
+
+def _check_compose_file_accessible(settings: Settings) -> ReadinessCheckItem:
+    """Check whether the docker-compose.yml is readable (needed for self-update)."""
+    start = _now_ms()
+    compose_path = Path(settings.self_improvement_local_repo_path) / "docker-compose.yml"
+    if not compose_path.exists():
+        # Try common alternative paths
+        for candidate in ["compose.yml", "docker-compose.yaml", "compose.yaml"]:
+            alt = compose_path.parent / candidate
+            if alt.exists():
+                compose_path = alt
+                break
+        else:
+            return ReadinessCheckItem(
+                name="compose-file",
+                label="docker-compose.yml erreichbar",
+                status=CheckStatus.WARNING,
+                duration_ms=_elapsed_ms(start),
+                message=f"Keine Compose-Datei gefunden in: {compose_path.parent}",
+                hint=(
+                    "Pruefe, ob SELF_IMPROVEMENT_LOCAL_REPO_PATH korrekt auf das Repository-Verzeichnis zeigt "
+                    "und ob docker-compose.yml darin liegt."
+                ),
+                details={"searched_in": str(compose_path.parent)},
+            )
+    readable = os.access(compose_path, os.R_OK)
+    if not readable:
+        return ReadinessCheckItem(
+            name="compose-file",
+            label="docker-compose.yml erreichbar",
+            status=CheckStatus.FAILED,
+            duration_ms=_elapsed_ms(start),
+            message=f"Compose-Datei nicht lesbar: {compose_path}",
+            hint="Pruefe Bind-Mounts und PUID/PGID.",
+            details={"path": str(compose_path)},
+        )
+    return ReadinessCheckItem(
+        name="compose-file",
+        label="docker-compose.yml erreichbar",
+        status=CheckStatus.OK,
+        duration_ms=_elapsed_ms(start),
+        message=f"Lesbar: {compose_path}",
+        details={"path": str(compose_path)},
+    )
+
+
+def _check_self_update_access(settings: Settings) -> ReadinessSection:
+    checks = [
+        _check_docker_socket(),
+        _check_docker_compose_available(),
+        _check_compose_file_accessible(settings),
+    ]
+    return ReadinessSection(
+        name="self_update",
+        label="Docker / Self-Update-Zugriff",
+        status=_section_status(checks),
+        checks=checks,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -688,8 +880,9 @@ async def run_system_readiness_check(settings: Settings) -> ReadinessReport:
     )
     workspace_section = _check_workspace(settings)
     config_section = _check_config(settings)
+    self_update_section = _check_self_update_access(settings)
 
-    sections = [orchestrator_section, workers_section, llm_section, workspace_section, config_section]
+    sections = [orchestrator_section, workers_section, llm_section, workspace_section, config_section, self_update_section]
     overall = _overall_status(sections)
     summary = _summarize(sections)
     workflow_ready, workflow_message = _workflow_message(overall, summary)

@@ -2149,7 +2149,12 @@ async def _load_readiness_context(
     report: dict[str, Any] | None = None
     if run_check:
         try:
-            response = await _api_request("GET", "/api/system/readiness")
+            # The readiness check runs a live LLM inference (up to 180 s) — use a long timeout.
+            url = f"{settings.orchestrator_internal_url.rstrip('/')}/api/system/readiness"
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+            ) as client:
+                response = await client.get(url)
             if response.status_code < 400:
                 raw = response.json()
                 if isinstance(raw, dict):
