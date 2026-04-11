@@ -93,7 +93,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             if (repo_path / path).exists() and (repo_path / path).is_file()
         }
 
-        source_plan = source_router.route(SourceRoutingRequest(query=request.goal))
+        source_plan = source_router.route(SourceRoutingRequest(query=request.goal[:900]))
         web_results: list[SearchResultItem] = []
         web_sources: list[str] = []
         provider_notes: list[str] = []
