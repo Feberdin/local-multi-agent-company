@@ -244,6 +244,10 @@ class Settings(BaseSettings):
         alias="SELF_IMPROVEMENT_LOCAL_REPO_PATH",
     )
 
+    # ── Auto-Debug ────────────────────────────────────────────────────────────
+    auto_debug_enabled: bool = Field(default=False, alias="AUTO_DEBUG_ENABLED")
+    auto_debug_max_attempts: int = Field(default=2, alias="AUTO_DEBUG_MAX_ATTEMPTS")
+
     def ensure_runtime_directories(self) -> None:
         """Create runtime directories early so services fail less often at first write."""
 

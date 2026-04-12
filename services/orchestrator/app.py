@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from services.orchestrator.workflow import WorkflowOrchestrator
+from services.shared.agentic_lab.auto_debug import AutoDebugService
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import init_db
 from services.shared.agentic_lab.llm import LLMClient
@@ -84,6 +85,7 @@ workflow = WorkflowOrchestrator(
 )
 llm_client = LLMClient(settings)
 self_improvement_service = SelfImprovementService(task_service, llm_client, settings=settings)
+auto_debug_service = AutoDebugService(task_service, llm_client, settings=settings)
 
 
 @asynccontextmanager
@@ -433,6 +435,12 @@ async def _run_in_background(task_id: str) -> None:
         await workflow.run_task(task_id)
     finally:
         app.state.running_tasks.discard(task_id)
+
+    # After the workflow finishes, check if it failed and trigger autonomous self-debug.
+    try:
+        asyncio.create_task(auto_debug_service.maybe_debug(task_id, _run_workflow_task))
+    except Exception as exc:  # pragma: no cover - never let auto-debug crash the orchestrator
+        logger.warning("auto-debug: unexpected error scheduling debug for task %s: %s", task_id, exc)
 
 
 async def _run_workflow_task(task_id: str) -> None:
