@@ -1076,7 +1076,7 @@ def _git_safe_directory_probe(ctx: ReadinessContext) -> dict[str, Any]:
             "safe.directory wird uebersprungen, weil der Repo-Pfad fehlt.",
             target=str(repo_path),
         )
-    env = prepare_git_environment()
+    env = prepare_git_environment(repo_path)
     gitconfig_path = env.get("GIT_CONFIG_GLOBAL")
     result = subprocess.run(
         ["git", "config", "--global", "--get-all", "safe.directory"],
@@ -1302,7 +1302,7 @@ async def _secrets_files(ctx: ReadinessContext) -> dict[str, Any]:
             ReadinessSeverity.HIGH,
             "Mindestens eine konfigurierte Secret-Datei ist nicht lesbar.",
             detail=", ".join(failures),
-            hint="Pruefe Host-Rechte, PUID/PGID und ob der Container denselben Secret-Pfad sieht wie der Host.",
+            hint="Setze auf dem Host `chmod 644 <HOST_SECRETS_DIR>/*`, damit PUID=99 die Dateien lesen kann.",
             raw_value=states,
         )
     if warnings:

@@ -78,6 +78,7 @@ class LLMClient:
         worker_name: str,
         temperature: float,
         max_tokens: int | None,
+        json_mode: bool = False,
     ) -> str:
         """Run one chat completion against one concrete provider and return plain text content."""
 
@@ -94,6 +95,11 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            # Ollama: forces JSON output at the inference level regardless of prompt phrasing.
+            # OpenAI-compatible backends that support response_format will also respect this.
+            payload["format"] = "json"
+            payload["response_format"] = {"type": "json_object"}
         request_url = f"{provider.base_url.rstrip('/')}/chat/completions"
         timeout_summary = self.settings.llm_timeout_summary(request_deadline_seconds=route.request_timeout_seconds)
         client = self._get_client()
@@ -225,6 +231,7 @@ class LLMClient:
                     worker_name=worker_name,
                     temperature=0.1,
                     max_tokens=route.max_tokens,
+                    json_mode=True,
                 )
             except LLMError as exc:
                 errors.append(str(exc))
@@ -255,6 +262,7 @@ class LLMClient:
                     worker_name=worker_name,
                     temperature=0.0,
                     max_tokens=route.max_tokens,
+                    json_mode=True,
                 )
             except LLMError as exc:
                 errors.append(str(exc))
