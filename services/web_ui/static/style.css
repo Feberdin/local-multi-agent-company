@@ -942,34 +942,226 @@ pre {
     --bg: #101513;
     --panel: #161d1a;
     --ink: #e8efe9;
-    --muted: #a7b7b0;
-    --accent: #da8a62;
+    --muted: #8fa89f;
+    --accent: #e09468;
     --accent-soft: #573728;
     --danger: #ff8d7f;
-    --line: #2a3530;
-    --shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+    --line: #2e3d37;
+    --shadow: 0 14px 30px rgba(0, 0, 0, 0.36);
   }
 
   body {
     background:
-      radial-gradient(circle at top left, rgba(218, 138, 98, 0.18), transparent 30%),
-      linear-gradient(180deg, #101513 0%, var(--bg) 100%);
+      radial-gradient(circle at top left, rgba(218, 138, 98, 0.12), transparent 30%),
+      linear-gradient(180deg, #0e1310 0%, var(--bg) 100%);
   }
 
+  /* Navigation */
+  .topnav a {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--ink);
+  }
+
+  /* Forms */
+  input,
+  select,
+  textarea {
+    background: #1a211e;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+
+  .button-link.secondary {
+    background: #253028;
+    color: var(--ink);
+  }
+
+  /* Cards with hardcoded white backgrounds */
+  .task-card,
+  .download-card,
+  .download-row,
+  .benchmark-card,
+  .diagnostic-card,
+  .worker-card,
+  .stage-card,
+  .decision-node,
   .readiness-metric-card,
   .readiness-recommendation,
   .readiness-worker-card,
-  .decision-node,
   .readiness-details {
     background: #1a211e;
   }
 
+  /* Panels */
+  .panel-alert {
+    background: #271a19;
+    border-color: #5a2e2a;
+  }
+
+  .panel-success {
+    background: #152118;
+    border-color: #2a4d33;
+  }
+
+  .panel-note {
+    background: #1e1a14;
+    border-color: #4a3c28;
+  }
+
+  /* Benchmark cards */
+  .benchmark-card-ok {
+    background: #152118;
+    border-color: #2a4d33;
+  }
+
+  .benchmark-card-warning {
+    background: #1e1a10;
+    border-color: #4a3c1a;
+  }
+
+  .benchmark-card-error {
+    background: #271a19;
+    border-color: #5a2e2a;
+  }
+
+  .benchmark-card-idle {
+    background: #181e1b;
+  }
+
+  /* Worker card states */
+  .worker-card-running {
+    background: #1e1a14;
+    border-color: var(--accent);
+  }
+
+  .worker-card-complete {
+    background: #152118;
+    border-color: #2a4d33;
+  }
+
+  .worker-card-failed,
+  .worker-card-blocked {
+    background: #271a19;
+    border-color: #5a2e2a;
+  }
+
+  .worker-card-waiting,
+  .worker-card-queued,
+  .worker-card-skipped,
+  .worker-card-idle {
+    background: #181e1b;
+  }
+
+  /* Stage card states */
+  .stage-card-complete {
+    background: #152118;
+    border-color: #2a4d33;
+  }
+
+  .stage-card-failed,
+  .stage-card-blocked {
+    background: #271a19;
+    border-color: #5a2e2a;
+  }
+
+  .stage-card-skipped {
+    background: #181e1b;
+  }
+
+  .stage-card-queued,
+  .stage-card-idle {
+    background: #181e1b;
+  }
+
+  /* Speech bubbles */
+  .bubble {
+    background: #1e2a26;
+  }
+
+  .bubble-thought {
+    background: #221c12;
+    border-color: #5a4020;
+  }
+
+  .bubble-thought::after {
+    background: #221c12;
+    border-color: #5a4020;
+  }
+
+  .bubble-speech {
+    background: #12202b;
+    border-color: #2a4060;
+  }
+
+  .bubble-coffee {
+    background: #1e1a10;
+    border-color: #4a3c1a;
+  }
+
+  .bubble-sleep,
+  .bubble-quiet {
+    background: #181e1b;
+  }
+
+  /* Status badges */
+  .status {
+    background: #253028;
+    color: var(--ink);
+  }
+
+  .status-approval_required,
+  .status-failed,
+  .status-error {
+    background: #3a1c1a;
+    color: #ff9e93;
+  }
+
+  .status-running,
+  .status-info {
+    background: #352414;
+    color: #e8a87a;
+  }
+
+  .status-done,
+  .status-staging_deployed,
+  .status-complete {
+    background: #152118;
+    color: #7ecb8e;
+  }
+
+  .status-waiting,
+  .status-queued,
+  .status-idle,
+  .status-skipped {
+    background: #1e2a26;
+    color: var(--muted);
+  }
+
+  .status-blocked,
+  .status-warning {
+    background: #2e2210;
+    color: #d4a855;
+  }
+
+  /* Worker avatar */
+  .worker-avatar {
+    background: linear-gradient(180deg, #1e2a26 0%, #253028 100%);
+    border-color: #2e3d37;
+  }
+
+  /* Code & pre */
   pre {
-    background: #121815;
+    background: #0e1310;
+    border-color: var(--line);
   }
 
   code {
     background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* Readiness details background */
+  .readiness-details {
+    background: #141a17;
   }
 }
 
