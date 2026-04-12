@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.shared.agentic_lab.config import Settings
-from services.shared.agentic_lab.schemas import TaskCreateRequest
+from services.shared.agentic_lab.schemas import TaskCreateRequest, TaskStatus
 from services.shared.agentic_lab.self_improvement import (
     CycleStatus,
     ProblemClass,
@@ -21,6 +21,11 @@ from services.shared.agentic_lab.self_improvement import (
     SelfImprovementService,
     classify_error_text,
     classify_risk,
+)
+from services.shared.agentic_lab.self_update_watchdog import (
+    SelfUpdateWatchdogState,
+    SelfUpdateWatchdogStatus,
+    write_watchdog_state,
 )
 from services.shared.agentic_lab.task_service import TaskService
 
@@ -371,3 +376,137 @@ async def test_failed_cycle_creates_incident_and_rollback_task(
     assert refreshed_cycle is not None
     assert (refreshed_cycle.metadata_json or {})["incident_id"] == incident.id
     assert (refreshed_cycle.metadata_json or {})["rollback_task_id"] == incident.rollback_task_id
+
+
+def test_resume_orphaned_cycle_uses_watchdog_success_state(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+
+    summary = task_service.create_task(
+        TaskCreateRequest(
+            goal="Fahre einen Self-Update-Zyklus kontrolliert zu Ende.",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=settings.self_improvement_local_repo_path,
+            base_branch="main",
+            allow_repository_modifications=True,
+            auto_deploy_staging=True,
+            metadata={"deployment_target": "self"},
+        )
+    )
+    task_service.update_status(
+        summary.id,
+        TaskStatus.SELF_UPDATING,
+        message="Rollback-Watchdog ueberwacht den Self-Update-Rollout.",
+    )
+    cycle = service._create_record(trigger="automatic", problem_hint="self-update")  # noqa: SLF001
+    service._update(  # noqa: SLF001
+        cycle.id,
+        status=CycleStatus.IMPLEMENTING.value,
+        goal="Deploye die eigene Agent-Instanz kontrolliert neu.",
+        task_id=summary.id,
+        metadata_json={"allow_deploy_after_success": True},
+    )
+    write_watchdog_state(
+        SelfUpdateWatchdogState(
+            task_id=summary.id,
+            status=SelfUpdateWatchdogStatus.HEALTHY,
+            branch_name="feature/self-update",
+            health_url="http://tower.local:18080/health",
+            project_dir="/mnt/user/appdata/feberdin-agent-team/repo",
+            compose_file="docker-compose.yml",
+            ssh_host="tower.local",
+            ssh_user="root",
+            ssh_port=22,
+            previous_sha="abc111",
+            current_sha="def222",
+            observed_target_change=True,
+        ),
+        settings,
+    )
+
+    service.resume_orphaned_cycles()
+
+    refreshed_cycle = service.get_cycle(cycle.id)
+    refreshed_task = task_service.get_task(summary.id)
+    assert refreshed_cycle is not None
+    assert refreshed_cycle.status == CycleStatus.COMPLETED.value
+    assert refreshed_task.status == TaskStatus.DONE
+
+
+def test_resume_orphaned_cycle_uses_watchdog_rollback_state(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+
+    summary = task_service.create_task(
+        TaskCreateRequest(
+            goal="Reagiere sauber auf einen fehlgeschlagenen Self-Update-Rollout.",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=settings.self_improvement_local_repo_path,
+            base_branch="main",
+            allow_repository_modifications=True,
+            auto_deploy_staging=True,
+            metadata={"deployment_target": "self"},
+        )
+    )
+    task_service.update_status(
+        summary.id,
+        TaskStatus.SELF_UPDATING,
+        message="Rollback-Watchdog ueberwacht den Self-Update-Rollout.",
+    )
+    cycle = service._create_record(trigger="automatic", problem_hint="self-update")  # noqa: SLF001
+    service._update(  # noqa: SLF001
+        cycle.id,
+        status=CycleStatus.IMPLEMENTING.value,
+        goal="Deploye die eigene Agent-Instanz kontrolliert neu.",
+        problem_hypothesis="Der neue Rollout ist nach dem Neustart nicht gesund geworden.",
+        task_id=summary.id,
+        metadata_json={"allow_deploy_after_success": True},
+    )
+    write_watchdog_state(
+        SelfUpdateWatchdogState(
+            task_id=summary.id,
+            status=SelfUpdateWatchdogStatus.ROLLED_BACK,
+            branch_name="feature/self-update",
+            health_url="http://tower.local:18080/health",
+            project_dir="/mnt/user/appdata/feberdin-agent-team/repo",
+            compose_file="docker-compose.yml",
+            ssh_host="tower.local",
+            ssh_user="root",
+            ssh_port=22,
+            previous_sha="abc111",
+            current_sha="def222",
+            observed_target_change=True,
+            last_error="Healthcheck blieb rot; automatischer Host-Rollback wurde ausgefuehrt.",
+        ),
+        settings,
+    )
+
+    service.resume_orphaned_cycles()
+
+    refreshed_cycle = service.get_cycle(cycle.id)
+    refreshed_task = task_service.get_task(summary.id)
+    incidents = service.list_incidents()
+    assert refreshed_cycle is not None
+    assert refreshed_cycle.status == CycleStatus.FAILED.value
+    assert refreshed_task.status == TaskStatus.FAILED
+    assert incidents[0].rollback_status == "rolled_back"

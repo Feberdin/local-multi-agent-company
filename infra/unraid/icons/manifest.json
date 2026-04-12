@@ -21,6 +21,7 @@
     { "service": "ux-worker", "container_name": "fmac-ux", "label": "UX", "icon": "infra/unraid/icons/ux.svg" },
     { "service": "cost-worker", "container_name": "fmac-cost", "label": "Cost", "icon": "infra/unraid/icons/cost.svg" },
     { "service": "human-resources-worker", "container_name": "fmac-hr", "label": "HR", "icon": "infra/unraid/icons/hr.svg" },
+    { "service": "rollback-worker", "container_name": "fmac-rb", "label": "Rollback", "icon": "infra/unraid/icons/rb.svg" },
     { "service": "web-ui", "container_name": "fmac-web", "label": "Web UI", "icon": "infra/unraid/icons/web.svg" },
     { "service": "bootstrap-template", "container_name": "fmac-bootstrap", "label": "Bootstrap", "icon": "infra/unraid/icons/bootstrap.svg" }
   ]

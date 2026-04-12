@@ -1,10 +1,10 @@
 #!/bin/sh
-# Purpose: Apply a self-improvement fix branch to the running Feberdin agent stack on Unraid.
+# Purpose: Dispatch a self-improvement fix branch to the running Feberdin agent stack on Unraid.
 # Input/Output: Receives branch name and SSH target, SSHes to the Unraid host, checks out the branch,
-#               rebuilds all agent containers, and verifies the orchestrator is healthy again.
+#               and starts a detached rollout process that rebuilds all services except the rollback worker.
 # Important invariants: The repo on the Unraid host must already exist (cloned during initial setup).
-#                       Only the agent stack itself is updated — staging targets are untouched.
-# How to debug: Run the ssh commands manually on the Unraid host to isolate git or compose failures.
+#                       The rollback worker intentionally stays on the old image until the rollout is confirmed healthy.
+# How to debug: Inspect `.agentic-releases/self-update/<task-id>/watch.log` on the Unraid host for the detached rollout.
 
 set -eu
 
@@ -16,6 +16,7 @@ SSH_HOST="${5:?missing ssh host}"
 SSH_PORT="${6:?missing ssh port}"
 HEALTH_URL="${7:-}"
 SSH_KEY="${8:-}"
+TASK_ID="${9:-manual-self-update}"
 
 REMOTE="${SSH_USER}@${SSH_HOST}"
 
@@ -41,31 +42,44 @@ PREVIOUS_SHA=\$(git -C "${PROJECT_DIR}" rev-parse HEAD 2>/dev/null || echo "unkn
 printf '%s\n' "\${PREVIOUS_SHA}" > "${PROJECT_DIR}/.agentic-releases/previous.sha"
 echo "self-update: previous SHA saved: \${PREVIOUS_SHA}"
 
-git -C "${PROJECT_DIR}" fetch origin
-git -C "${PROJECT_DIR}" checkout "${BRANCH_NAME}"
-git -C "${PROJECT_DIR}" pull --ff-only origin "${BRANCH_NAME}" || true
-echo "self-update: checked out ${BRANCH_NAME}"
+STATE_DIR="${PROJECT_DIR}/.agentic-releases/self-update/${TASK_ID}"
+SCRIPT_PATH="\${STATE_DIR}/run.sh"
+LOG_PATH="\${STATE_DIR}/watch.log"
+mkdir -p "\${STATE_DIR}"
 
-docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" up -d --build
-echo "self-update: containers rebuilt and restarted"
+cat > "\${SCRIPT_PATH}" <<'REMOTE_SCRIPT'
+#!/bin/sh
+set -eu
+
+PROJECT_DIR="\$1"
+COMPOSE_FILE="\$2"
+BRANCH_NAME="\$3"
+
+services_without_rollback() {
+  docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" config --services | grep -v '^rollback-worker$' | tr '\n' ' '
+}
+
+SERVICES="\$(services_without_rollback)"
+
+git -C "\${PROJECT_DIR}" fetch origin
+git -C "\${PROJECT_DIR}" checkout "\${BRANCH_NAME}"
+git -C "\${PROJECT_DIR}" pull --ff-only origin "\${BRANCH_NAME}" || true
+echo "self-update: checked out \${BRANCH_NAME}"
+
+if [ -n "\${SERVICES}" ]; then
+  # Why this exists: the rollback worker must stay alive while the rest of the stack restarts.
+  # What happens here: rebuild every service except `rollback-worker`, so health monitoring survives the rollout.
+  docker compose -f "\${PROJECT_DIR}/\${COMPOSE_FILE}" up -d --build \${SERVICES}
+else
+  docker compose -f "\${PROJECT_DIR}/\${COMPOSE_FILE}" up -d --build
+fi
+echo "self-update: rollout dispatched"
+REMOTE_SCRIPT
+
+chmod +x "\${SCRIPT_PATH}"
+nohup "\${SCRIPT_PATH}" "${PROJECT_DIR}" "${COMPOSE_FILE}" "${BRANCH_NAME}" > "\${LOG_PATH}" 2>&1 < /dev/null &
+printf '%s\n' "\$!" > "\${STATE_DIR}/pid"
+echo "self-update: detached rollout pid \$(cat "\${STATE_DIR}/pid")"
 EOF
 
 echo "self-update: deploy command sent to ${SSH_HOST}"
-
-# Optional healthcheck — wait up to 60s for the orchestrator to come back up
-if [ -n "${HEALTH_URL}" ]; then
-  echo "self-update: waiting for orchestrator health at ${HEALTH_URL}"
-  ATTEMPTS=0
-  while [ "${ATTEMPTS}" -lt 12 ]; do
-    ATTEMPTS=$((ATTEMPTS + 1))
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${HEALTH_URL}" 2>/dev/null || echo "000")
-    if [ "${STATUS}" = "200" ]; then
-      echo "self-update: orchestrator healthy after ${ATTEMPTS} attempt(s)."
-      exit 0
-    fi
-    echo "self-update: attempt ${ATTEMPTS}/12 — status=${STATUS}, retrying in 5s..."
-    sleep 5
-  done
-  echo "self-update: orchestrator did not become healthy within 60s." >&2
-  exit 1
-fi

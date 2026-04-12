@@ -84,6 +84,10 @@ WORKER_STAGE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "label": "Coding",
         "description": "Codeaenderungen werden vorbereitet oder umgesetzt.",
     },
+    "rollback": {
+        "label": "Rollback",
+        "description": "Deterministische Ruecknahme oder Self-Update-Watchdog laufen.",
+    },
     "reviewer": {
         "label": "Review",
         "description": "Korrektheit, Risiken und Wartbarkeit werden geprueft.",
@@ -169,6 +173,7 @@ class WorkflowOrchestrator:
         graph.add_node("data", self._data_node)
         graph.add_node("ux", self._ux_node)
         graph.add_node("coding", self._coding_node)
+        graph.add_node("rollback", self._rollback_node)
         graph.add_node("review", self._review_node)
         graph.add_node("testing", self._testing_node)
         graph.add_node("security", self._security_node)
@@ -191,6 +196,7 @@ class WorkflowOrchestrator:
                 "data": "data",
                 "ux": "ux",
                 "coding": "coding",
+                "rollback": "rollback",
                 "review": "review",
                 "testing": "testing",
                 "security": "security",
@@ -222,6 +228,7 @@ class WorkflowOrchestrator:
         )
         graph.add_conditional_edges("data", self._route_after_data, {"ux": "ux", "coding": "coding", "stop": END})
         graph.add_conditional_edges("ux", self._route_after_ux, {"coding": "coding", "stop": END})
+        graph.add_conditional_edges("rollback", self._route_after_rollback, {"stop": END})
         graph.add_conditional_edges("coding", self._route_after_coding, {"review": "review", "stop": END})
         graph.add_conditional_edges("review", self._route_after_review, {"testing": "testing", "stop": END})
         graph.add_conditional_edges("testing", self._route_after_testing, {"security": "security", "stop": END})
@@ -257,6 +264,10 @@ class WorkflowOrchestrator:
             return "stop"
         if state.get("resume_target"):
             return state["resume_target"]  # type: ignore[return-value]
+        if state.get("metadata", {}).get("rollback_commit_sha"):
+            return "rollback"
+        if state.get("current_status") == TaskStatus.SELF_UPDATING.value:
+            return "stop"
 
         if state.get("current_status") == TaskStatus.PR_CREATED.value:
             return "deploy" if state.get("auto_deploy_staging", True) else "memory"
@@ -268,6 +279,7 @@ class WorkflowOrchestrator:
             TaskStatus.RESEARCHING.value: "research",
             TaskStatus.ARCHITECTING.value: "architecture",
             TaskStatus.CODING.value: "coding",
+            TaskStatus.ROLLING_BACK.value: "rollback",
             TaskStatus.REVIEWING.value: "review",
             TaskStatus.TESTING.value: "testing",
             TaskStatus.SECURITY_REVIEW.value: "security",
@@ -308,6 +320,9 @@ class WorkflowOrchestrator:
     def _route_after_ux(self, state: WorkflowState) -> str:
         return "stop" if self._should_stop(state) else "coding"
 
+    def _route_after_rollback(self, state: WorkflowState) -> str:
+        return "stop"
+
     def _route_after_coding(self, state: WorkflowState) -> str:
         return "stop" if self._should_stop(state) else "review"
 
@@ -332,6 +347,8 @@ class WorkflowOrchestrator:
         return "deploy" if state.get("auto_deploy_staging", True) else "memory"
 
     def _route_after_deploy(self, state: WorkflowState) -> str:
+        if state.get("metadata", {}).get("deployment_target") == "self":
+            return "stop"
         return "stop" if self._should_stop(state) else "qa"
 
     def _route_after_qa(self, state: WorkflowState) -> str:
@@ -362,6 +379,7 @@ class WorkflowOrchestrator:
             "data": self.settings.data_worker_url,
             "ux": self.settings.ux_worker_url,
             "coding": self.settings.coding_worker_url,
+            "rollback": self.settings.rollback_worker_url,
             "reviewer": self.settings.reviewer_worker_url,
             "tester": self.settings.test_worker_url,
             "security": self.settings.security_worker_url,
@@ -445,6 +463,7 @@ class WorkflowOrchestrator:
             "data": "Untersuche Datenfluss, Parsing oder Klassifikation nur fuer die wirklich noetigen Teile.",
             "ux": "Pruefe Nutzerfuehrung, Bedienfluss und klare Rueckmeldungen fuer die Oberflaeche.",
             "coding": "Bereite minimale, nachvollziehbare Codeaenderungen im isolierten Task-Workspace vor.",
+            "rollback": "Ueberwache Self-Updates oder stelle den letzten stabilen Commit deterministisch wieder her.",
             "reviewer": "Suche gezielt nach Bugs, Risiken, Regressionen und fehlenden Tests.",
             "tester": "Fuehre sichere Test-, Lint- und Typpruefungen aus und fasse Abweichungen knapp zusammen.",
             "security": "Pruefe Secrets, riskante Shell-Kommandos und Supply-Chain-Risiken.",
@@ -630,6 +649,24 @@ class WorkflowOrchestrator:
             stage_status=TaskStatus.CODING,
         )
 
+    async def _rollback_node(self, state: WorkflowState) -> WorkflowState:
+        stage_state = await self._run_stage(
+            state=state,
+            worker_name="rollback",
+            service_url=self._service_url("rollback"),
+            stage_status=TaskStatus.ROLLING_BACK,
+        )
+        if stage_state.get("current_status") == TaskStatus.FAILED.value:
+            return stage_state
+
+        task = self.task_service.update_status(
+            stage_state["task_id"],
+            TaskStatus.DONE,
+            message="Rollback wurde erfolgreich abgeschlossen.",
+            details={"rollback_completed": True},
+        )
+        return self._task_to_state(task)
+
     async def _review_node(self, state: WorkflowState) -> WorkflowState:
         return await self._run_stage(
             state=state,
@@ -714,6 +751,33 @@ class WorkflowOrchestrator:
         )
         if stage_state.get("current_status") == TaskStatus.FAILED.value:
             return stage_state
+
+        if state.get("metadata", {}).get("deployment_target") == "self":
+            rollback_meta = self._stage_metadata("rollback")
+            watchdog_summary = (
+                stage_state.get("worker_results", {}).get("deploy", {}).get("outputs", {}).get("watchdog_status")
+                or "monitoring"
+            )
+            task = self.task_service.update_status(
+                stage_state["task_id"],
+                TaskStatus.SELF_UPDATING,
+                message="Self-Update wurde dispatcht; rollback-worker ueberwacht jetzt Health und Rollback.",
+                details=self._progress_details(
+                    state=stage_state,
+                    worker_name="rollback",
+                    stage_meta=rollback_meta,
+                    event_kind="self_update_monitoring",
+                    worker_state="waiting",
+                    service_url=self._service_url("rollback"),
+                    route_summary=self._model_route_summary("rollback"),
+                    started_at_iso=datetime.now(UTC).isoformat(),
+                    elapsed_seconds=0.0,
+                    waiting_for="Healthcheck-Rueckkehr des aktualisierten Stacks",
+                    last_result_summary=f"Watchdog-Status: {watchdog_summary}",
+                    progress_message="Rollback-Watchdog beobachtet den Self-Update-Rollout.",
+                ),
+            )
+            return self._task_to_state(task)
 
         task = self.task_service.update_status(
             stage_state["task_id"],

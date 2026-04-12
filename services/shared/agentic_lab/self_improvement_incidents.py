@@ -160,3 +160,35 @@ class SelfImprovementIncidentService:
             session.commit()
             session.refresh(record)
             return SelfImprovementIncidentResponse.from_record(record)
+
+    def update_rollback_status(
+        self,
+        incident_id: str,
+        *,
+        rollback_status: str,
+        latest_error: str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> SelfImprovementIncidentResponse:
+        """Persist a later rollback outcome for incidents that were already created earlier."""
+
+        with self._session() as session:
+            record = session.get(SelfImprovementIncidentRecord, incident_id)
+            if record is None:
+                raise KeyError(f"Incident {incident_id} not found.")
+            record.rollback_status = rollback_status
+            if rollback_status == IncidentStatus.ROLLED_BACK.value:
+                record.status = IncidentStatus.ROLLED_BACK.value
+            elif rollback_status == IncidentStatus.ROLLBACK_RUNNING.value:
+                record.status = IncidentStatus.ROLLBACK_RUNNING.value
+            elif rollback_status == IncidentStatus.ROLLBACK_PREPARED.value:
+                record.status = IncidentStatus.ROLLBACK_PREPARED.value
+            if latest_error is not None:
+                record.latest_error = latest_error
+            if metadata_updates:
+                merged = dict(record.metadata_json or {})
+                merged.update(metadata_updates)
+                record.metadata_json = merged
+            record.updated_at = datetime.now(UTC)
+            session.commit()
+            session.refresh(record)
+            return SelfImprovementIncidentResponse.from_record(record)

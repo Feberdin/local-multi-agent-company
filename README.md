@@ -24,6 +24,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 - `data-worker`: Datenverarbeitungs-Hinweise bei Parsing-/Extraktionsaufgaben
 - `ux-worker`: UI-/Flow-Hinweise bei UI-orientierten Zielen
 - `coding-worker`: branch-basiertes Coding via `local_patch` oder optional OpenHands
+- `rollback-worker`: dedizierter Rollback- und Self-Update-Watchdog fuer Host-Restarts
 - `reviewer-worker`: Logik-, Stil-, Test- und Architekturreview
 - `test-worker`: Linting, Typing, Unit-/Integrationstests
 - `security-worker`: Prompt-Injection-, Secret-, Diff- und Dependency-Risiken
@@ -31,6 +32,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 - `documentation-worker`: erstellt verständliche Handover-/Ops-Zusammenfassungen
 - `github-worker`: Commit, Push, Draft-PR
 - `deploy-worker`: Staging-Deployment auf Unraid
+- Self-Update-Rollouts werden von einem persistenten Rollback-Watchdog ueberwacht
 - `qa-worker`: Smoke-/Health-/API-Checks
 - `memory-worker`: speichert Entscheidungen und Learnings dauerhaft
 - `web-ui`: Aufgaben, Status, Logs, Freigaben
@@ -83,6 +85,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 │   ├── qa_worker/
 │   ├── requirements_worker/
 │   ├── research_worker/
+│   ├── rollback_worker/
 │   ├── reviewer_worker/
 │   ├── security_worker/
 │   ├── shared/agentic_lab/
@@ -272,7 +275,8 @@ Wichtige Bausteine:
   - `automatic`: niedrige Risiken vollautonom, hohe Risiken vorbereitet mit Approval-Gate
 - dauerhafte Cycle-Historie in `self_improvement_cycles`
 - Incident-Audit-Tabelle `self_improvement_incidents`
-- Rollback-Vorbereitung ueber einen eigenen Task mit deterministischem `git revert`
+- Rollback-Vorbereitung ueber einen eigenen `rollback-worker` mit deterministischem `git revert`
+- Self-Updates bewaffnen vor dem Neustart einen Watchdog, der Healthchecks und Host-Rollback ueberlebt
 - E-Mail-Outbox unter `DATA_DIR/self-improvement-email-outbox`
 
 Wichtig fuer den Betrieb:

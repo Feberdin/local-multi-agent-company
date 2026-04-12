@@ -147,6 +147,18 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             output_contract="edit_plan",
             routing_note="Bevorzugt das lokal robustere Modell fuer parsebare Patch- und Dateioperationen.",
         ),
+        "rollback": _route(
+            structured_provider,
+            secondary_structured_provider,
+            temperature=0.0,
+            max_tokens=1200,
+            budget_tokens=3000,
+            request_timeout_seconds=600.0,
+            reasoning="low",
+            purpose="Deterministic rollback summaries and self-update watchdog operator notes.",
+            output_contract="json",
+            routing_note="Bevorzugt knappe, auditierbare Rollback- und Watchdog-Zusammenfassungen.",
+        ),
         "reviewer": _route(
             structured_provider,
             secondary_structured_provider,

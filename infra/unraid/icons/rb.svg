@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Rollback Worker">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#10253d"/>
+      <stop offset="100%" stop-color="#1d6f8c"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="18" fill="url(#bg)"/>
+  <path d="M28 34h26v-8l14 14-14 14v-8H34c-4.4 0-8 3.6-8 8v10h-8V54c0-8.8 7.2-16 16-16z" fill="#f5fbff"/>
+  <circle cx="30" cy="64" r="10" fill="#9fe7ff"/>
+</svg>

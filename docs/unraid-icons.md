@@ -32,6 +32,7 @@ Wichtig:
 | UX | `ux-worker` | `fmac-ux` | `ux.svg` |
 | Cost | `cost-worker` | `fmac-cost` | `cost.svg` |
 | HR | `human-resources-worker` | `fmac-hr` | `hr.svg` |
+| Rollback | `rollback-worker` | `fmac-rb` | `rb.svg` |
 | Web UI | `web-ui` | `fmac-web` | `web.svg` |
 
 Die maschinenlesbare Quelle dazu ist [infra/unraid/icons/manifest.json](/Users/joachim.stiegler/CodingFamily/infra/unraid/icons/manifest.json).

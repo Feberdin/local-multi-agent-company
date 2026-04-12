@@ -37,6 +37,7 @@ REQUIRED_RUNTIME_SERVICES = (
     "ux-worker",
     "cost-worker",
     "human-resources-worker",
+    "rollback-worker",
     "web-ui",
 )
 REQUIRED_TARGETS = {"/data", "/reports", "/workspace", "/staging-stacks", "/app"}
@@ -119,6 +120,7 @@ def test_env_example_uses_conflict_aware_ports_and_unique_keys() -> None:
     assert env_values["WEB_UI_PORT"] == "18088"
     assert env_values["RUNTIME_HOME_DIR"] == "/tmp/agent-home"
     assert env_values["TASK_WORKSPACE_ROOT"] == "/workspace/.task-workspaces"
+    assert env_values["ROLLBACK_WORKER_URL"] == "http://rollback-worker:8107"
 
 
 def test_runtime_env_validation_rejects_duplicate_keys(tmp_path: Path) -> None:

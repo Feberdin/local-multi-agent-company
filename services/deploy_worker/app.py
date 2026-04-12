@@ -9,16 +9,38 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import CommandError, run_command, write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.self_update_watchdog import (
+    SelfUpdateWatchdogState,
+    SelfUpdateWatchdogStatus,
+    read_watchdog_state,
+    write_watchdog_state,
+)
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 app = FastAPI(title="Feberdin Deploy Worker", version="0.1.0")
+
+
+class SelfUpdateWatchdogStartRequest(BaseModel):
+    task_id: str
+    branch_name: str
+    ssh_user: str
+    ssh_host: str
+    ssh_port: int
+    ssh_key_file: str = ""
+    project_dir: str
+    compose_file: str
+    health_url: str
+    poll_seconds: float | None = None
+    timeout_seconds: float | None = None
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -111,6 +133,23 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
             summary="Self-update not configured.",
             errors=["SELF_HOST_PROJECT_DIR is not set. Set it to the feberdin repo path on the Unraid host."],
         )
+    if not settings.self_host_health_url:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update not configured.",
+            errors=["SELF_HOST_HEALTH_URL is not set. The rollback worker needs a reachable health URL to supervise the rollout."],
+        )
+
+    try:
+        watchdog_state = await _start_self_update_watchdog(request.task_id, branch_name)
+    except httpx.HTTPError as exc:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update watchdog konnte nicht gestartet werden.",
+            errors=[f"Rollback-Worker unter {settings.rollback_worker_url} antwortet nicht stabil: {exc}"],
+        )
 
     script_path = Path("/app/scripts/unraid/self-update.sh")
     task_logger.info("Self-update: deploying branch %s to %s", branch_name, settings.self_host_ssh_host)
@@ -128,10 +167,12 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
                 str(settings.self_host_ssh_port),
                 settings.self_host_health_url,
                 settings.self_host_ssh_key_file,
+                request.task_id,
             ],
-            timeout=300,
+            timeout=120,
         )
     except CommandError as exc:
+        _mark_watchdog_dispatch_failed(request.task_id, str(exc))
         return WorkerResponse(
             worker="deploy",
             success=False,
@@ -145,24 +186,68 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
         "branch": branch_name,
         "host": settings.self_host_ssh_host,
         "project_dir": settings.self_host_project_dir,
+        "watchdog": watchdog_state.model_dump(mode="json"),
     }
     report_path = write_report(settings.task_report_dir(request.task_id), "deploy-report.json", report)
-    task_logger.info("Self-update deployment completed on %s.", settings.self_host_ssh_host)
+    task_logger.info("Self-update rollout dispatched on %s with rollback watchdog.", settings.self_host_ssh_host)
 
     return WorkerResponse(
         worker="deploy",
-        summary=f"Agent-Stack auf {settings.self_host_ssh_host} aktualisiert (Branch: {branch_name}).",
+        summary=(
+            f"Self-Update fuer {settings.self_host_ssh_host} wurde gestartet. "
+            "Der rollback-worker ueberwacht Healthchecks und fuehrt bei Bedarf den Host-Rollback aus."
+        ),
         outputs={
             "branch_name": branch_name,
             "host": settings.self_host_ssh_host,
             "project_dir": settings.self_host_project_dir,
             "health_url": settings.self_host_health_url,
+            "watchdog_status": watchdog_state.status.value,
+            "watchdog_previous_sha": watchdog_state.previous_sha,
+            "watchdog_state_path": str(write_watchdog_state(watchdog_state, settings)),
         },
         artifacts=[
             Artifact(
                 name="deploy-report",
                 path=str(report_path),
-                description="Self-update stdout, stderr, and host details.",
+                description="Self-update dispatch stdout, stderr, watchdog state, and host details.",
             )
         ],
     )
+
+
+async def _start_self_update_watchdog(task_id: str, branch_name: str) -> SelfUpdateWatchdogState:
+    """Arm the dedicated rollback worker before the self-update restarts the rest of the stack."""
+
+    payload = SelfUpdateWatchdogStartRequest(
+        task_id=task_id,
+        branch_name=branch_name,
+        ssh_user=settings.self_host_ssh_user,
+        ssh_host=settings.self_host_ssh_host,
+        ssh_port=settings.self_host_ssh_port,
+        ssh_key_file=settings.self_host_ssh_key_file,
+        project_dir=settings.self_host_project_dir,
+        compose_file=settings.self_host_compose_file,
+        health_url=settings.self_host_health_url,
+        poll_seconds=settings.self_update_watchdog_poll_seconds,
+        timeout_seconds=settings.self_update_watchdog_timeout_seconds,
+    )
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(
+            f"{settings.rollback_worker_url.rstrip('/')}/watchdogs/start",
+            json=payload.model_dump(),
+        )
+        response.raise_for_status()
+    return SelfUpdateWatchdogState.model_validate(response.json())
+
+
+def _mark_watchdog_dispatch_failed(task_id: str, error_text: str) -> None:
+    """Persist an explicit watchdog failure if the remote update could not even be dispatched."""
+
+    state = read_watchdog_state(task_id, settings)
+    if state is None:
+        return
+    state.status = SelfUpdateWatchdogStatus.DISPATCH_FAILED
+    state.last_error = error_text
+    state.notes.append("Self-update dispatch failed before the remote rollout could start.")
+    write_watchdog_state(state, settings)

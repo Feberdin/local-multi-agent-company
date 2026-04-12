@@ -228,6 +228,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
           Governance: <strong>{{ si_active_cycle.governance_status }}</strong>
           {% if si_active_cycle.governance_action %} · Aktion: {{ si_active_cycle.governance_action }}{% endif %}
           {% if si_active_cycle.approval_email_status %} · E-Mail: {{ si_active_cycle.approval_email_status }}{% endif %}
+          {% if si_active_cycle.metadata.get("watchdog_status") %} · Watchdog: {{ si_active_cycle.metadata.get("watchdog_status") }}{% endif %}
           {% if si_active_cycle.rollback_status %} · Rollback: {{ si_active_cycle.rollback_status }}{% endif %}
         </p>
 
@@ -548,6 +549,9 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
                 <td>
                   {{ incident.rollback_status or "—" }}
                   {% if incident.rollback_task_id %}<br><a href="/tasks/{{ incident.rollback_task_id }}">{{ incident.rollback_task_id[:8] }}…</a>{% endif %}
+                  {% if incident.metadata.get("watchdog_state", {}).get("status") %}
+                  <br><span class="muted">Watchdog: {{ incident.metadata.get("watchdog_state", {}).get("status") }}</span>
+                  {% endif %}
                 </td>
                 <td>{{ incident.updated_at_display }}</td>
               </tr>

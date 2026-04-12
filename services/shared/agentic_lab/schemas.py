@@ -21,6 +21,7 @@ class TaskStatus(StrEnum):
     RESEARCHING = "RESEARCHING"
     ARCHITECTING = "ARCHITECTING"
     CODING = "CODING"
+    ROLLING_BACK = "ROLLING_BACK"
     REVIEWING = "REVIEWING"
     TESTING = "TESTING"
     SECURITY_REVIEW = "SECURITY_REVIEW"
@@ -28,6 +29,7 @@ class TaskStatus(StrEnum):
     DOCUMENTING = "DOCUMENTING"
     PR_CREATED = "PR_CREATED"
     STAGING_DEPLOYED = "STAGING_DEPLOYED"
+    SELF_UPDATING = "SELF_UPDATING"
     QA_PENDING = "QA_PENDING"
     MEMORY_UPDATING = "MEMORY_UPDATING"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
@@ -44,6 +46,7 @@ class WorkflowWorkerName(StrEnum):
     DATA = "data"
     UX = "ux"
     CODING = "coding"
+    ROLLBACK = "rollback"
     REVIEWER = "reviewer"
     TESTER = "tester"
     SECURITY = "security"
@@ -64,6 +67,7 @@ WORKFLOW_WORKER_ORDER: tuple[WorkflowWorkerName, ...] = (
     WorkflowWorkerName.DATA,
     WorkflowWorkerName.UX,
     WorkflowWorkerName.CODING,
+    WorkflowWorkerName.ROLLBACK,
     WorkflowWorkerName.REVIEWER,
     WorkflowWorkerName.TESTER,
     WorkflowWorkerName.SECURITY,
@@ -84,6 +88,7 @@ WORKFLOW_WORKER_TO_RESUME_TARGET: dict[WorkflowWorkerName, str] = {
     WorkflowWorkerName.DATA: "data",
     WorkflowWorkerName.UX: "ux",
     WorkflowWorkerName.CODING: "coding",
+    WorkflowWorkerName.ROLLBACK: "rollback",
     WorkflowWorkerName.REVIEWER: "review",
     WorkflowWorkerName.TESTER: "testing",
     WorkflowWorkerName.SECURITY: "security",
@@ -104,6 +109,7 @@ WORKFLOW_WORKER_TO_STATUS: dict[WorkflowWorkerName, TaskStatus] = {
     WorkflowWorkerName.DATA: TaskStatus.ARCHITECTING,
     WorkflowWorkerName.UX: TaskStatus.ARCHITECTING,
     WorkflowWorkerName.CODING: TaskStatus.CODING,
+    WorkflowWorkerName.ROLLBACK: TaskStatus.ROLLING_BACK,
     WorkflowWorkerName.REVIEWER: TaskStatus.REVIEWING,
     WorkflowWorkerName.TESTER: TaskStatus.TESTING,
     WorkflowWorkerName.SECURITY: TaskStatus.SECURITY_REVIEW,

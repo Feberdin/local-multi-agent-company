@@ -77,6 +77,12 @@ Hinweis:
 - `docker compose up -d --build` aktualisiert nur Staging
 - Rollback erfolgt mit `scripts/unraid/rollback-staging.sh`
 
+## Self-Update-Rollback
+
+- Der Stack bringt jetzt einen dedizierten `rollback-worker` mit.
+- Bei Self-Updates bleibt dieser Worker absichtlich auf dem alten Container aktiv, waehrend der Rest des Stacks neu gestartet wird.
+- Dadurch kann ein Watchdog weiter Heartbeats schreiben, den Healthcheck pruefen und bei Bedarf `scripts/unraid/rollback-self-update.sh` ausloesen.
+
 ## Preflight und Mount-Prüfung
 
 Der wichtigste Vorab-Check ist jetzt [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh). Das Skript bricht mit einer klaren Fehlermeldung ab, wenn:

@@ -333,12 +333,13 @@ Pruefen:
 
 - `http://<host>:18088/self-improvement`
 - `curl http://localhost:18080/api/self-improvement/incidents`
-- `docker compose logs --tail=200 coding-worker`
+- `docker compose logs --tail=200 rollback-worker`
 - `docker compose logs --tail=200 orchestrator`
 
 Technischer Hinweis:
 
-- der Rollback-Task nutzt einen deterministischen `git revert`-Pfad im Coding-Worker
+- der Rollback-Task nutzt einen deterministischen `git revert`-Pfad im `rollback-worker`
+- der Self-Update-Watchdog bleibt beim Host-Restart absichtlich auf dem alten Container aktiv
 - wenn kein Commit-SHA vorliegt, kann nur ein Incident erzeugt werden, aber kein automatischer Revert
 
 - die Task-Ansicht aktualisiert sich waehrend aktiver Stages automatisch

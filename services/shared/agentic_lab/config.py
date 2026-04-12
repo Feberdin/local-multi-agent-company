@@ -246,6 +246,7 @@ class Settings(BaseSettings):
         default="http://human-resources-worker:8106",
         alias="HUMAN_RESOURCES_WORKER_URL",
     )
+    rollback_worker_url: str = Field(default="http://rollback-worker:8107", alias="ROLLBACK_WORKER_URL")
     worker_connect_timeout_seconds: float = Field(
         default=30.0,
         validation_alias=AliasChoices("WORKER_CONNECT_TIMEOUT_SECONDS", "WORKER_TIMEOUT_CONNECT_SECONDS"),
@@ -408,6 +409,14 @@ class Settings(BaseSettings):
     self_improvement_email_timeout_seconds: float = Field(
         default=20.0,
         alias="SELF_IMPROVEMENT_EMAIL_TIMEOUT_SECONDS",
+    )
+    self_update_watchdog_poll_seconds: float = Field(
+        default=5.0,
+        alias="SELF_UPDATE_WATCHDOG_POLL_SECONDS",
+    )
+    self_update_watchdog_timeout_seconds: float = Field(
+        default=240.0,
+        alias="SELF_UPDATE_WATCHDOG_TIMEOUT_SECONDS",
     )
 
     # ── Self-Host (autonomous self-update of the agent stack itself) ─────────

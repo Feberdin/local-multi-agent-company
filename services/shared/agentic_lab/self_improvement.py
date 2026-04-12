@@ -50,6 +50,11 @@ from services.shared.agentic_lab.self_improvement_incidents import (
     SelfImprovementIncidentResponse,
     SelfImprovementIncidentService,
 )
+from services.shared.agentic_lab.self_update_watchdog import (
+    SelfUpdateWatchdogState,
+    SelfUpdateWatchdogStatus,
+    read_watchdog_state,
+)
 from services.shared.agentic_lab.task_service import TaskService
 
 TaskRunner = Callable[[str], Coroutine[Any, Any, None]]
@@ -763,6 +768,8 @@ class SelfImprovementService:
         """
         active = self.get_active_cycle()
         if active is not None:
+            if self._resume_self_update_watchdog_cycle(active.id):
+                return
             self._update(
                 active.id,
                 status=CycleStatus.FAILED.value,
@@ -772,6 +779,180 @@ class SelfImprovementService:
                     "Starte einen neuen Zyklus, um fortzufahren."
                 ),
             )
+
+    def _resume_self_update_watchdog_cycle(self, cycle_id: str) -> bool:
+        """Resume external self-update monitoring instead of failing immediately after an orchestrator restart."""
+
+        cycle = self.get_cycle(cycle_id)
+        if cycle is None or not cycle.task_id:
+            return False
+        metadata = dict(cycle.metadata_json or {})
+        if not metadata.get("allow_deploy_after_success"):
+            return False
+
+        state = read_watchdog_state(cycle.task_id, self.settings)
+        if state is None:
+            return False
+        if state.status in {
+            SelfUpdateWatchdogStatus.ARMED,
+            SelfUpdateWatchdogStatus.MONITORING,
+            SelfUpdateWatchdogStatus.ROLLBACK_RUNNING,
+        }:
+            asyncio.create_task(self._monitor_external_watchdog(cycle.id, cycle.task_id))
+            return True
+
+        self._finalize_cycle_from_watchdog(cycle.id, cycle.task_id, state)
+        return True
+
+    async def _monitor_external_watchdog(self, cycle_id: str, task_id: str) -> None:
+        """Keep observing a persisted self-update watchdog after the orchestrator has restarted."""
+
+        while True:
+            await asyncio.sleep(max(3.0, self.settings.self_update_watchdog_poll_seconds))
+            state = read_watchdog_state(task_id, self.settings)
+            if state is None:
+                return
+            if state.status in {
+                SelfUpdateWatchdogStatus.ARMED,
+                SelfUpdateWatchdogStatus.MONITORING,
+                SelfUpdateWatchdogStatus.ROLLBACK_RUNNING,
+            }:
+                cycle = self.get_cycle(cycle_id)
+                if cycle is None:
+                    return
+                metadata = dict(cycle.metadata_json or {})
+                metadata.update(
+                    {
+                        "watchdog_status": state.status.value,
+                        "watchdog_updated_at": state.updated_at.isoformat(),
+                        "rollback_status": state.status.value
+                        if state.status == SelfUpdateWatchdogStatus.ROLLBACK_RUNNING
+                        else metadata.get("rollback_status"),
+                    }
+                )
+                self._update(cycle_id, metadata_json=metadata)
+                continue
+
+            self._finalize_cycle_from_watchdog(cycle_id, task_id, state)
+            return
+
+    def _finalize_cycle_from_watchdog(
+        self,
+        cycle_id: str,
+        task_id: str,
+        state: SelfUpdateWatchdogState,
+    ) -> None:
+        """Translate one persisted watchdog outcome into durable task and cycle state."""
+
+        cycle = self.get_cycle(cycle_id)
+        if cycle is None:
+            return
+
+        metadata = dict(cycle.metadata_json or {})
+        metadata.update(
+            {
+                "watchdog_status": state.status.value,
+                "watchdog_updated_at": state.updated_at.isoformat(),
+            }
+        )
+
+        try:
+            if state.status == SelfUpdateWatchdogStatus.HEALTHY:
+                self.task_service.update_status(
+                    task_id,
+                    TaskStatus.DONE,
+                    message="Self-Update erfolgreich abgeschlossen; der Rollback-Watchdog hat den gesunden Stack bestaetigt.",
+                    details={
+                        "watchdog_status": state.status.value,
+                        "health_url": state.health_url,
+                        "watchdog_previous_sha": state.previous_sha,
+                        "watchdog_current_sha": state.current_sha,
+                    },
+                )
+                self._update(
+                    cycle_id,
+                    status=CycleStatus.COMPLETED.value,
+                    completed_at=datetime.now(UTC),
+                    latest_error=None,
+                    deploy_result_json={
+                        "watchdog_status": state.status.value,
+                        "project_dir": state.project_dir,
+                        "branch_name": state.branch_name,
+                    },
+                    healthcheck_result_json={
+                        "status": "ok",
+                        "health_url": state.health_url,
+                        "observed_target_change": state.observed_target_change,
+                    },
+                    metadata_json=metadata,
+                )
+                return
+        except KeyError:
+            pass
+
+        rollback_status = (
+            IncidentStatus.ROLLED_BACK.value
+            if state.status == SelfUpdateWatchdogStatus.ROLLED_BACK
+            else state.status.value
+        )
+        metadata["rollback_status"] = rollback_status
+        latest_error = state.last_error or (
+            "Self-Update blieb nicht gesund; der Rollback-Watchdog hat einen Fehler festgestellt."
+        )
+
+        incident_id = str(metadata.get("incident_id") or "").strip()
+        if incident_id:
+            self.incident_service.update_rollback_status(
+                incident_id,
+                rollback_status=rollback_status,
+                latest_error=latest_error,
+                metadata_updates={"watchdog_state": state.model_dump(mode="json")},
+            )
+        else:
+            incident = self.incident_service.create_incident(
+                cycle_id=cycle_id,
+                task_id=task_id,
+                severity=cycle.risk_level or RiskLevel.HIGH.value,
+                summary="Self-Update wurde vom Rollback-Watchdog als fehlgeschlagen erkannt.",
+                failure_stage="deploy",
+                latest_error=latest_error,
+                root_cause=cycle.problem_hypothesis,
+                commit_sha=state.current_sha,
+                branch_name=state.branch_name,
+                metadata={"watchdog_state": state.model_dump(mode="json")},
+            )
+            incident_id = incident.id
+            metadata["incident_id"] = incident.id
+            self.incident_service.update_rollback_status(
+                incident.id,
+                rollback_status=rollback_status,
+                latest_error=latest_error,
+                metadata_updates={"watchdog_state": state.model_dump(mode="json")},
+            )
+
+        try:
+            self.task_service.update_status(
+                task_id,
+                TaskStatus.FAILED,
+                message="Self-Update wurde vom Rollback-Watchdog als fehlgeschlagen markiert.",
+                details={
+                    "watchdog_status": state.status.value,
+                    "health_url": state.health_url,
+                    "watchdog_previous_sha": state.previous_sha,
+                    "watchdog_current_sha": state.current_sha,
+                },
+                latest_error=latest_error,
+            )
+        except KeyError:
+            pass
+
+        self._update(
+            cycle_id,
+            status=CycleStatus.FAILED.value,
+            completed_at=datetime.now(UTC),
+            latest_error=latest_error,
+            metadata_json=metadata,
+        )
 
     async def _send_cycle_email(
         self,
@@ -1275,6 +1456,32 @@ class SelfImprovementService:
                     return
                 current_task_id = handled_task_id
                 continue
+
+            if task.status == TaskStatus.SELF_UPDATING:
+                watchdog_state = read_watchdog_state(task.id, self.settings)
+                if watchdog_state is not None:
+                    if watchdog_state.status in {
+                        SelfUpdateWatchdogStatus.ARMED,
+                        SelfUpdateWatchdogStatus.MONITORING,
+                        SelfUpdateWatchdogStatus.ROLLBACK_RUNNING,
+                    }:
+                        cycle = self.get_cycle(cycle_id)
+                        if cycle is not None:
+                            metadata = dict(cycle.metadata_json or {})
+                            metadata.update(
+                                {
+                                    "watchdog_status": watchdog_state.status.value,
+                                    "watchdog_updated_at": watchdog_state.updated_at.isoformat(),
+                                    "rollback_status": watchdog_state.status.value
+                                    if watchdog_state.status == SelfUpdateWatchdogStatus.ROLLBACK_RUNNING
+                                    else metadata.get("rollback_status"),
+                                }
+                            )
+                            self._update(cycle_id, metadata_json=metadata)
+                        continue
+
+                    self._finalize_cycle_from_watchdog(cycle_id, task.id, watchdog_state)
+                    return
 
             if task.status in {TaskStatus.APPROVAL_REQUIRED}:
                 cycle = self.get_cycle(cycle_id)

@@ -52,6 +52,7 @@ WORKFLOW_WORKER_LABELS = {
     WorkflowWorkerName.DATA.value: "Daten",
     WorkflowWorkerName.UX.value: "UX",
     WorkflowWorkerName.CODING.value: "Coding",
+    WorkflowWorkerName.ROLLBACK.value: "Rollback",
     WorkflowWorkerName.REVIEWER.value: "Review",
     WorkflowWorkerName.TESTER.value: "Tests",
     WorkflowWorkerName.SECURITY.value: "Security",

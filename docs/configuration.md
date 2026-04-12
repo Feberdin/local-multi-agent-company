@@ -67,6 +67,8 @@ Wichtige Schalter:
 - `SELF_IMPROVEMENT_AUTO_ROLLBACK`
 - `SELF_IMPROVEMENT_TARGET_REPO`
 - `SELF_IMPROVEMENT_LOCAL_REPO_PATH`
+- `SELF_UPDATE_WATCHDOG_POLL_SECONDS`
+- `SELF_UPDATE_WATCHDOG_TIMEOUT_SECONDS`
 
 E-Mail- und Approval-Schalter:
 
@@ -130,7 +132,9 @@ E-Mail-Verhalten:
 Rollback-Verhalten:
 
 - Bei fehlgeschlagenen Self-Improvement-Tasks kann das System einen Incident anlegen und einen Rollback-Task erzeugen.
-- Der Rollback nutzt einen deterministischen `git revert`-Pfad im Coding-Worker.
+- Der Rollback nutzt einen deterministischen `git revert`-Pfad im dedizierten `rollback-worker`.
+- Self-Updates werden vor dem Host-Restart von einem Watchdog im `rollback-worker` bewaffnet.
+- Der Watchdog speichert Heartbeats und Endstatus unter `DATA_DIR/self-update-watchdogs/`.
 - Der Rollback-Task bleibt voll auditierbar und erscheint im Incident-Bereich des Dashboards.
 
 Regel:

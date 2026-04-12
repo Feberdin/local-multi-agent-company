@@ -250,6 +250,7 @@ STATUS_TO_WORKER_HINT = {
     TaskStatus.RESEARCHING.value: "research",
     TaskStatus.ARCHITECTING.value: "architecture",
     TaskStatus.CODING.value: "coding",
+    TaskStatus.ROLLING_BACK.value: "rollback",
     TaskStatus.REVIEWING.value: "reviewer",
     TaskStatus.TESTING.value: "tester",
     TaskStatus.SECURITY_REVIEW.value: "security",
@@ -257,6 +258,7 @@ STATUS_TO_WORKER_HINT = {
     TaskStatus.DOCUMENTING.value: "documentation",
     TaskStatus.PR_CREATED.value: "github",
     TaskStatus.STAGING_DEPLOYED.value: "deploy",
+    TaskStatus.SELF_UPDATING.value: "rollback",
     TaskStatus.QA_PENDING.value: "qa",
     TaskStatus.MEMORY_UPDATING.value: "memory",
 }
@@ -266,6 +268,7 @@ ACTIVE_TASK_STATUSES = {
     TaskStatus.RESEARCHING.value,
     TaskStatus.ARCHITECTING.value,
     TaskStatus.CODING.value,
+    TaskStatus.ROLLING_BACK.value,
     TaskStatus.REVIEWING.value,
     TaskStatus.TESTING.value,
     TaskStatus.SECURITY_REVIEW.value,
@@ -273,6 +276,7 @@ ACTIVE_TASK_STATUSES = {
     TaskStatus.DOCUMENTING.value,
     TaskStatus.PR_CREATED.value,
     TaskStatus.STAGING_DEPLOYED.value,
+    TaskStatus.SELF_UPDATING.value,
     TaskStatus.QA_PENDING.value,
     TaskStatus.MEMORY_UPDATING.value,
 }
