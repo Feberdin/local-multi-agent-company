@@ -41,7 +41,11 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             system_prompt=(
                 "You are a staff-plus architect. Return JSON with keys summary, components, responsibilities, "
                 "data_flows, module_boundaries, deployment_strategy, logging_strategy, implementation_plan, "
-                "test_strategy, risks, approval_gates, touched_areas."
+                "test_strategy, risks, approval_gates, touched_areas.\n"
+                "CRITICAL: touched_areas must be a list of actual relative file paths that need to be modified "
+                "(e.g. ['services/coding_worker/app.py', 'services/shared/agentic_lab/repo_tools.py']). "
+                "Use the research candidate_files and repository file listing to identify the exact source files. "
+                "NEVER use generic descriptions like 'Backend-Infrastruktur' or directory names — only real relative file paths."
                 f"{guidance_block}"
             ),
             user_prompt=(
@@ -49,7 +53,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 f"Requirements:\n{requirements}\n\n"
                 f"Research:\n{research}\n\n"
                 f"Resource plan:\n{cost_plan}\n\n"
-                "Design a practical implementation for a local-first, reviewable system."
+                "Design a practical implementation for a local-first, reviewable system. "
+                "For touched_areas, look at the research results and list the specific source files to edit."
             ),
             worker_name="architecture",
         )

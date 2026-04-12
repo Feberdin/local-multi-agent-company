@@ -102,8 +102,14 @@ async def _run_local_patch_backend(
         for path in architecture.get("touched_areas", [])
         or architecture.get("module_boundaries", [])
         or research.get("candidate_files", [])
-        if (repo_path / path).exists() and (repo_path / path).is_file()
+        if isinstance(path, str) and (repo_path / path).exists() and (repo_path / path).is_file()
     ][:6]
+
+    # Fallback: when architecture/research returned no usable file paths, grep the repo
+    # for Python source files that contain keywords from the goal.
+    if not candidate_files:
+        candidate_files = _grep_for_candidates(repo_path, request.goal)
+
     file_context = {path: read_text_file(repo_path, path) for path in candidate_files}
 
     # Build a lightweight symbol index for Python candidate files so the LLM can
@@ -214,6 +220,40 @@ async def _run_local_patch_backend(
             )
         ],
     )
+
+
+def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list[str]:
+    """Fallback file discovery: grep Python sources for keywords from the goal.
+
+    Used when architecture/research workers returned no valid file paths. Extracts
+    short keyword tokens from the goal and searches .py files for matches.
+    """
+    import re
+    import subprocess
+
+    stopwords = {"add", "the", "to", "in", "for", "a", "an", "and", "or", "with", "of", "from", "on", "by"}
+    tokens = [t for t in re.split(r"\W+", goal.lower()) if len(t) > 3 and t not in stopwords]
+    if not tokens:
+        return []
+
+    hits: dict[str, int] = {}
+    for token in tokens[:4]:
+        try:
+            result = subprocess.run(
+                ["grep", "-rl", "--include=*.py", token, str(repo_path)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                rel = str(Path(line).relative_to(repo_path))
+                hits[rel] = hits.get(rel, 0) + 1
+        except Exception:
+            continue
+
+    # Sort by hit count descending, prefer non-test files
+    ranked = sorted(hits.items(), key=lambda x: (x[0].startswith("tests/"), -x[1]))
+    return [path for path, _ in ranked[:max_files]]
 
 
 def _coding_system_prompt(guidance_block: str) -> str:
