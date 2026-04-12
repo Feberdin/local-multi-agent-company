@@ -19,6 +19,7 @@ def _prepare_web_ui_module(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "workspace"))
     monkeypatch.setenv("STAGING_STACK_ROOT", str(tmp_path / "staging-stacks"))
+    monkeypatch.setenv("UI_TIMEZONE", "Europe/Berlin")
     from services.shared.agentic_lab.config import get_settings
 
     get_settings.cache_clear()
@@ -211,7 +212,7 @@ def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, 
 
 def test_decorate_task_normalizes_naive_timestamps_from_older_rows(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 1, 12, 12, 0, 0, tzinfo=UTC)
     naive_now = now.replace(tzinfo=None)
 
     task = {
@@ -254,7 +255,15 @@ def test_decorate_task_normalizes_naive_timestamps_from_older_rows(tmp_path, mon
 
     assert decorated["is_active"] is True
     assert decorated["running_for_display"] != "unbekannt"
-    assert decorated["running_since_display"].endswith("UTC")
+    assert decorated["running_since_display"] == "2026-01-12 13:00:00 CET"
+
+
+def test_format_timestamp_uses_configured_ui_timezone(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    formatted = app_module._format_timestamp("2026-04-12T19:51:00+00:00")
+
+    assert formatted == "2026-04-12 21:51:00 CEST"
 
 
 def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) -> None:

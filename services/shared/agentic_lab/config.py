@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     service_name: str = Field(default="agent-service", alias="SERVICE_NAME")
     service_port: int = Field(default=8080, alias="SERVICE_PORT")
+    ui_timezone: str = Field(
+        default="Europe/Berlin",
+        validation_alias=AliasChoices("UI_TIMEZONE", "TZ"),
+    )
 
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     reports_dir: Path = Field(default=Path("./reports"), alias="REPORTS_DIR")

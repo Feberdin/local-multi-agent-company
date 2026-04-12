@@ -190,6 +190,14 @@ def test_settings_load_readiness_timeout_defaults(monkeypatch) -> None:
     assert settings.readiness_slow_warning_seconds == 25
 
 
+def test_settings_load_ui_timezone_from_dedicated_env(monkeypatch) -> None:
+    monkeypatch.setenv("UI_TIMEZONE", "Europe/Berlin")
+
+    settings = Settings()
+
+    assert settings.ui_timezone == "Europe/Berlin"
+
+
 def test_inspect_secret_file_distinguishes_empty_directory_and_readable_file(tmp_path: Path) -> None:
     secret_file = tmp_path / "token"
     secret_file.write_text("value\n", encoding="utf-8")

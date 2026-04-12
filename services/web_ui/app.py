@@ -14,12 +14,13 @@ import os
 import subprocess
 import zipfile
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -681,8 +682,8 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         # Why this exists:
         # Older persisted rows may contain naive UTC timestamps from SQLite or earlier service versions.
-        # The dashboard always renders and compares timestamps in UTC, so we normalize naive values instead
-        # of crashing when they meet aware datetimes from `datetime.now(UTC)`.
+        # The runtime still compares timestamps in UTC, so we normalize naive values first and only convert
+        # to the operator-facing display timezone when formatting for the UI.
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value
     if value in {None, ""}:
         return None
@@ -693,13 +694,31 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
 
+@lru_cache(maxsize=1)
+def _display_timezone() -> tuple[tzinfo, str]:
+    """Resolve the operator-facing timezone once and fall back to UTC if the config is invalid."""
+
+    timezone_name = (settings.ui_timezone or "Europe/Berlin").strip() or "Europe/Berlin"
+    try:
+        return ZoneInfo(timezone_name), timezone_name
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "Configured UI timezone %r is unknown. Falling back to UTC for timestamp rendering.",
+            timezone_name,
+        )
+        return UTC, "UTC"
+
+
 def _format_timestamp(value: Any) -> str:
     """Render timestamps consistently so long-running stages remain readable at a glance."""
 
     parsed = _parse_timestamp(value)
     if parsed is None:
         return str(value or "unbekannt")
-    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    display_tz, display_name = _display_timezone()
+    localized = parsed.astimezone(display_tz)
+    timezone_label = localized.tzname() or display_name
+    return f"{localized.strftime('%Y-%m-%d %H:%M:%S')} {timezone_label}"
 
 
 def _format_duration(seconds: float | int | None) -> str:

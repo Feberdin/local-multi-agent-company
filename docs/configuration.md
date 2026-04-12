@@ -35,6 +35,7 @@
 - `MODEL_ROUTING_CONFIG`
 - `ORCHESTRATOR_PORT`
 - `WEB_UI_PORT`
+- `UI_TIMEZONE`
 - `STAGING_*`
 - `SELF_IMPROVEMENT_*`
 
@@ -42,6 +43,7 @@ Wichtige Defaults:
 
 - `ORCHESTRATOR_PORT=18080`
 - `WEB_UI_PORT=18088`
+- `UI_TIMEZONE=Europe/Berlin`
 - `DEFAULT_MODEL_PROVIDER=mistral`
 - `LLM_READ_TIMEOUT_SECONDS=1200`
 - `LLM_REQUEST_DEADLINE_SECONDS=1500`
@@ -140,6 +142,12 @@ Rollback-Verhalten:
 Regel:
 
 - Jeder Schlüssel darf in `.env` nur einmal vorkommen. Doppelte Einträge werden vom Runtime-Doctor und von den Services als Fehler behandelt.
+
+Zeitanzeige im Dashboard:
+
+- Die Runtime speichert alle Audit-Zeitstempel intern weiterhin in UTC.
+- Das Web-UI rendert Zeitangaben fuer Operatoren in `UI_TIMEZONE`.
+- Fuer Deutschland ist `UI_TIMEZONE=Europe/Berlin` der passende Startwert; dadurch erscheinen Anzeigen mit `CET` oder `CEST` statt `UTC`.
 
 Hinweis zur Rueckwaertskompatibilitaet:
 
