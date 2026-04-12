@@ -157,6 +157,89 @@ async def test_complete_json_falls_back_when_primary_provider_returns_non_json_t
 
 
 @pytest.mark.asyncio
+async def test_thinking_blocks_are_stripped_before_returning_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """qwen3.5 and other reasoning models emit <think>...</think> before the actual answer.
+    The client must strip these so callers receive only the real response."""
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  research:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider:\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "<think>\nsome internal reasoning\n</think>\n\nActual answer here."
+                        }
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+    response = await client.complete("system", "user", worker_name="research")
+    assert response == "Actual answer here."
+    assert "<think>" not in response
+
+
+@pytest.mark.asyncio
+async def test_thinking_blocks_stripped_before_json_extraction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the thinking block contains a JSON-like object, _extract_json must not grab it.
+    The real JSON after the </think> tag must be returned instead."""
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider:\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '<think>\n{"fake": "json inside thinking block"}\n</think>\n\n'
+                                '{"summary": "real answer", "operations": [{"action": "create_file"}]}'
+                            )
+                        }
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+    result = await client.complete_json("system", "user", worker_name="coding")
+    assert result["summary"] == "real answer"
+    assert "fake" not in result
+
+
+@pytest.mark.asyncio
 async def test_complete_json_error_mentions_all_provider_attempts_when_json_never_recovers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import httpx
@@ -145,12 +146,18 @@ class LLMClient:
             ) from exc
 
         try:
-            return data["choices"][0]["message"]["content"]
+            content: str = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(
                 "Unexpected LLM response shape for "
                 f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`: {data}"
             ) from exc
+
+        # Strip <think>...</think> blocks emitted by reasoning models (qwen3.5, deepseek-r1, etc.)
+        # before any further processing. Without this, _extract_json grabs JSON from the thinking
+        # block instead of the actual response, and plain-text completions include raw reasoning.
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
 
     async def complete(
         self,
