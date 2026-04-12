@@ -874,6 +874,19 @@ async def _llm_models_endpoint(ctx: ReadinessContext, provider_name: str, provid
     )
 
 
+def _json_candidates(text: str) -> list[str]:
+    """Return candidate strings to try parsing as JSON (handles markdown code-block wrappers)."""
+    candidates = [text.strip()]
+    if "```" in text:
+        block = text.split("```")[1]
+        candidates.append(block.replace("json", "", 1).strip())
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        candidates.append(text[brace_start : brace_end + 1])
+    return candidates
+
+
 async def _llm_chat_smoke(ctx: ReadinessContext, provider_name: str, provider: dict[str, Any]) -> dict[str, Any]:
     base_url = str(provider.get("base_url") or "")
     model_name = str(provider.get("model_name") or "")
@@ -902,6 +915,9 @@ async def _llm_chat_smoke(ctx: ReadinessContext, provider_name: str, provider: d
         ],
         "temperature": 0.0,
         "max_tokens": 64,
+        # Force JSON output at inference level (Ollama) and for OpenAI-compatible backends.
+        "format": "json",
+        "response_format": {"type": "json_object"},
     }
 
     started = perf_counter()
@@ -954,11 +970,15 @@ async def _llm_chat_smoke(ctx: ReadinessContext, provider_name: str, provider: d
             target=target,
         )
 
-    try:
-        parsed = json.loads(content)
-        json_valid = isinstance(parsed, dict) and parsed.get("ok") is True
-    except json.JSONDecodeError:
-        json_valid = False
+    json_valid = False
+    for candidate in _json_candidates(content):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and parsed.get("ok") is True:
+                json_valid = True
+                break
+        except json.JSONDecodeError:
+            continue
 
     raw_value = {"response_preview": _trim_text(content, 200), "elapsed_seconds": round(elapsed_seconds, 1)}
     if not json_valid:
