@@ -97,16 +97,22 @@ async def _run_local_patch_backend(
     overview = collect_repo_overview(repo_path)
     guidance_block = worker_governance.guidance_prompt_block(request, "coding")
 
-    candidate_files = [
-        path
-        for path in architecture.get("touched_areas", [])
-        or architecture.get("module_boundaries", [])
-        or research.get("candidate_files", [])
-        if isinstance(path, str) and (repo_path / path).exists() and (repo_path / path).is_file()
-    ][:6]
+    arch_touched = [
+        p for p in architecture.get("touched_areas", []) or architecture.get("module_boundaries", [])
+        if isinstance(p, str)
+    ]
+    candidate_files = [p for p in arch_touched if (repo_path / p).exists() and (repo_path / p).is_file()][:6]
 
-    # Fallback: when architecture/research returned no usable file paths, grep the repo
-    # for Python source files that contain keywords from the goal.
+    # When the architecture hallucinated more than half of its touched_areas (non-existent paths),
+    # supplement with research candidate_files so the coding LLM gets the real relevant source files.
+    if arch_touched and len(candidate_files) < len(arch_touched) / 2:
+        for p in research.get("candidate_files", []):
+            if isinstance(p, str) and (repo_path / p).exists() and (repo_path / p).is_file() and p not in candidate_files:
+                candidate_files.append(p)
+                if len(candidate_files) >= 6:
+                    break
+
+    # Final fallback: when no usable paths came from architecture or research, grep Python sources.
     if not candidate_files:
         candidate_files = _grep_for_candidates(repo_path, request.goal)
 

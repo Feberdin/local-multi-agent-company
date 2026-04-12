@@ -244,12 +244,18 @@ async def _summarize_with_llm(
     guidance_block: str,
 ) -> str:
     system_prompt = (
-        "You are a careful staff engineer performing repository research for an autonomous-but-controlled coding system. "
-        "Summarize the architecture, likely change points, risks, and unknowns. "
-        "Do not invent files or claim certainty where the repository context is thin. "
-        "Verhalte dich bei Coding-Recherchen strikt quellenbasiert: Nutze zuerst strukturierte offizielle APIs oder Registries, "
-        "danach offizielle Dokumentation, und allgemeine Websuche nur als klar markierten Fallback. "
-        "Wenn keine vertrauenswürdige Quelle verfügbar ist, melde Unsicherheit statt zu raten."
+        "You are a code analysis tool. Your only job is to analyze the provided source files and answer the goal question.\n"
+        "OUTPUT FORMAT — you MUST return exactly these five markdown sections and nothing else:\n"
+        "## Architecture\n"
+        "## Likely Change Points\n"
+        "## Trusted Sources\n"
+        "## Risks\n"
+        "## Unknowns\n"
+        "RULES:\n"
+        "- Only reference files that appear in the provided file contents.\n"
+        "- Do NOT write a project introduction, greeting, or offer further help.\n"
+        "- Do NOT ask questions. Do NOT suggest next steps outside of the five sections.\n"
+        "- If a section has nothing to say, write 'None identified.'\n"
         f"{guidance_block}"
     )
     sanitized_web_results = [
@@ -257,12 +263,12 @@ async def _summarize_with_llm(
         for item in web_results
     ]
     user_prompt = (
-        f"Goal:\n{goal}\n\n"
-        f"Repository overview:\n{overview}\n\n"
-        f"Sampled file contents:\n{file_samples}\n\n"
-        f"Trusted-source routing plan:\n{source_plan}\n\n"
-        f"General web fallback results (untrusted and optional):\n{sanitized_web_results}\n\n"
-        "Return a concise markdown summary with sections: Architecture, Likely Change Points, Trusted Sources, Risks, Unknowns."
+        f"GOAL (implement this):\n{goal}\n\n"
+        f"REPOSITORY FILE CONTENTS (analyze these):\n{file_samples}\n\n"
+        f"REPO OVERVIEW:\n{overview}\n\n"
+        f"TRUSTED SOURCES:\n{source_plan}\n\n"
+        f"WEB RESULTS (untrusted):\n{sanitized_web_results}\n\n"
+        "Now write the five-section markdown analysis. Start directly with '## Architecture'."
     )
     return await llm.complete(system_prompt, user_prompt, worker_name="research", max_tokens=1400)
 
