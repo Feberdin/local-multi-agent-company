@@ -11,7 +11,31 @@ from pathlib import Path
 
 import pytest
 
-from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.config import Settings, inspect_secret_file
+
+
+def test_settings_treat_missing_secret_file_env_as_none(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN_FILE", raising=False)
+
+    settings = Settings()
+
+    assert settings.github_token_file is None
+
+
+def test_settings_treat_empty_secret_file_env_as_none(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", "")
+
+    settings = Settings()
+
+    assert settings.github_token_file is None
+
+
+def test_settings_treat_whitespace_secret_file_env_as_none(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", "   ")
+
+    settings = Settings()
+
+    assert settings.github_token_file is None
 
 
 def test_settings_load_secret_value_from_file(monkeypatch, tmp_path: Path) -> None:
@@ -61,6 +85,39 @@ def test_settings_ignore_unreadable_secret_file(monkeypatch, tmp_path: Path, cap
 
     assert settings.github_token == ""
     assert "not readable" in caplog.text
+
+
+def test_settings_ignore_directory_secret_path(monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    secret_dir = tmp_path / "secret-dir"
+    secret_dir.mkdir()
+    caplog.set_level("WARNING")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", str(secret_dir))
+
+    settings = Settings()
+    settings.apply_secret_file_overrides()
+
+    assert settings.github_token == ""
+    assert "points to a directory" in caplog.text
+
+
+def test_settings_ignore_missing_optional_secret_file_without_warning(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    missing_path = tmp_path / "missing-token"
+    caplog.set_level("WARNING")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN_FILE", str(missing_path))
+
+    settings = Settings()
+    settings.apply_secret_file_overrides()
+
+    assert settings.github_token == ""
+    assert caplog.text == ""
 
 
 def test_settings_ignore_permission_error_while_reading_secret(
@@ -131,3 +188,18 @@ def test_settings_load_readiness_timeout_defaults(monkeypatch) -> None:
     assert settings.readiness_worker_smoke_timeout_seconds == 30
     assert settings.readiness_git_timeout_seconds == 40
     assert settings.readiness_slow_warning_seconds == 25
+
+
+def test_inspect_secret_file_distinguishes_empty_directory_and_readable_file(tmp_path: Path) -> None:
+    secret_file = tmp_path / "token"
+    secret_file.write_text("value\n", encoding="utf-8")
+    secret_dir = tmp_path / "secret-dir"
+    secret_dir.mkdir()
+
+    empty_probe = inspect_secret_file(None, raw_env_value="   ").as_dict()
+    directory_probe = inspect_secret_file(secret_dir, raw_env_value=str(secret_dir)).as_dict()
+    file_probe = inspect_secret_file(secret_file, raw_env_value=str(secret_file)).as_dict()
+
+    assert empty_probe["state"] == "empty_ignored"
+    assert directory_probe["state"] == "directory"
+    assert file_probe["state"] == "ok"

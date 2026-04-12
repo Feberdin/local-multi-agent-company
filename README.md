@@ -142,12 +142,14 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    - `http://<unraid-host>:18088/benchmarks`
    - `http://<unraid-host>:18088/debug`
    - `http://<unraid-host>:18088/system-check`
+   - `http://<unraid-host>:18088/self-improvement`
 
    Auf der Task-Detailseite zeigt das `Worker-Theater`, welcher Worker gerade denkt, welcher bereits gesprochen hat und wo der Workflow aktuell haengt.
    Unter `Benchmarks` siehst du pro Worker gut lesbar Laufzeit, sichtbaren Auftrag, sichtbares Ergebnis, Fehlerhaeufung und Modellnutzung.
    Wenn nur ein Teilbereich schiefgelaufen ist, kannst du auf derselben Task-Seite unter `Teilbereich neu starten` ab genau dem betroffenen Schritt erneut ansetzen, ohne einen komplett neuen Task anzulegen.
    Im `Debug-Center` kannst du System-Snapshots, persistierte Runtime-Dateien und Task-Reports einzeln oder als ZIP-Bundle herunterladen.
    Unter `System-Check` findest du jetzt ein kompaktes Diagnose-Dashboard mit Schnellcheck, Tiefencheck, Worker-Zustaenden, Modell-Smoke-Tests, Git-/Workspace-Pruefungen, Secret-Hinweisen und priorisierten Empfehlungen statt einer generischen Alles-oder-nichts-Fehlermeldung.
+   Unter `Self-Improvement` arbeitet das System kontrolliert an seinem eigenen Repository, zeigt Governance, offene Freigaben, Incidents und Rollback-Tasks an und trennt niedrigriskante automatische Zyklen von riskanten Freigabefaellen.
 
 7. Beispiel-Task anlegen:
 
@@ -256,6 +258,29 @@ Wichtig:
 - Die Bundles enthalten absichtlich keine Secret-Werte.
 - Docker-Host-Logs werden nicht direkt mit ausgeliefert, weil die Web-UI keinen Docker-Socket mountet.
 - Ein Textfile mit den passenden Host-Befehlen liegt trotzdem im Bundle, damit du fuer Support-Faelle die fehlenden Logs schnell nachziehen kannst.
+
+## Self-Improvement
+
+Unter [services/web_ui/templates/self_improvement.html](/Users/joachim.stiegler/CodingFamily/services/web_ui/templates/self_improvement.html) gibt es jetzt ein eigenes Operator-Panel fuer die kontrollierte Selbstverbesserung des Systems.
+
+Wichtige Bausteine:
+
+- Governance-Policy in [config/self-improvement.policy.yaml](/Users/joachim.stiegler/CodingFamily/config/self-improvement.policy.yaml)
+- drei Modi:
+  - `manual`: nur Analyse und Vorschlag
+  - `assisted`: niedrige und mittlere Risiken autonom, riskante Veroeffentlichung mit Freigabe
+  - `automatic`: niedrige Risiken vollautonom, hohe Risiken vorbereitet mit Approval-Gate
+- dauerhafte Cycle-Historie in `self_improvement_cycles`
+- Incident-Audit-Tabelle `self_improvement_incidents`
+- Rollback-Vorbereitung ueber einen eigenen Task mit deterministischem `git revert`
+- E-Mail-Outbox unter `DATA_DIR/self-improvement-email-outbox`
+
+Wichtig fuer den Betrieb:
+
+- Self-Improvement arbeitet ausschliesslich auf dem eigenen Repository.
+- Riskante Zyklen duerfen weiter Branches, Tests und Artefakte vorbereiten, blockieren aber die Veroeffentlichung bis zur Freigabe.
+- Ein Fehler beendet nicht die Diagnose: Incidents, letzte Fehler, Gate-Status und Rollback-Hinweise bleiben im UI sichtbar.
+- Wenn SMTP noch nicht vollstaendig konfiguriert ist, werden Approval-Mails trotzdem als JSON im Outbox-Ordner protokolliert.
 
 ## Modellrouting
 

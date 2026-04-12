@@ -1,8 +1,8 @@
 """
 Purpose: Verify that worker-to-model routing stays configurable and resolves stable provider defaults.
 Input/Output: Tests load the routing config with temporary overrides and resolve providers for representative workers.
-Important invariants: Lightweight stages should prefer the faster local model by default.
-Heavy reasoning stages can still opt into the larger backend.
+Important invariants: Strukturierte Worker sollen standardmaessig auf das robustere JSON-Modell gehen.
+Analyse- und Architektur-Worker duerfen weiterhin das staerkere semantische Modell bevorzugen.
 How to debug: If these tests fail, inspect `config/model-routing.example.yaml` and `services/shared/agentic_lab/model_routing.py`.
 """
 
@@ -41,31 +41,44 @@ def test_load_model_routing_applies_worker_override(tmp_path: Path, monkeypatch)
     assert route.temperature == 0.3
     assert route.max_tokens == 777
     assert route.budget_tokens == 3333
-    assert route.request_timeout_seconds == 1200.0
+    assert route.request_timeout_seconds == 900.0
     assert route.reasoning == "medium"
+    assert route.output_contract == "json"
 
 
-def test_resolve_worker_route_keeps_heavy_stage_on_qwen_by_default(monkeypatch) -> None:
+def test_resolve_worker_route_keeps_research_on_qwen_by_default(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_ROUTING_CONFIG", "/tmp/nonexistent-model-routing.yaml")
     settings = Settings()
 
-    provider, route = resolve_worker_route(settings, "security")
+    provider, route = resolve_worker_route(settings, "research")
 
     assert provider.name == "qwen"
     assert route.primary_provider == "qwen"
     assert route.reasoning == "high"
+    assert route.output_contract == "text"
 
 
-def test_resolve_worker_route_prefers_mistral_for_requirements_and_reviewer(monkeypatch) -> None:
+def test_resolve_worker_route_prefers_mistral_for_structured_workers(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_ROUTING_CONFIG", "/tmp/nonexistent-model-routing.yaml")
     settings = Settings()
 
     requirements_provider, requirements_route = resolve_worker_route(settings, "requirements")
     reviewer_provider, reviewer_route = resolve_worker_route(settings, "reviewer")
+    coding_provider, coding_route = resolve_worker_route(settings, "coding")
+    security_provider, security_route = resolve_worker_route(settings, "security")
 
     assert requirements_provider.name == "mistral"
-    assert requirements_route.fallback_provider is None
-    assert requirements_route.request_timeout_seconds == 1200.0
+    assert requirements_route.fallback_provider == "qwen"
+    assert requirements_route.request_timeout_seconds == 900.0
+    assert requirements_route.output_contract == "json"
     assert reviewer_provider.name == "mistral"
-    assert reviewer_route.fallback_provider is None
+    assert reviewer_route.fallback_provider == "qwen"
     assert reviewer_route.request_timeout_seconds == 1200.0
+    assert reviewer_route.output_contract == "json"
+    assert coding_provider.name == "mistral"
+    assert coding_route.fallback_provider == "qwen"
+    assert coding_route.output_contract == "edit_plan"
+    assert "Patch" in coding_route.routing_note or "Dateioperationen" in coding_route.routing_note
+    assert security_provider.name == "mistral"
+    assert security_route.fallback_provider == "qwen"
+    assert security_route.output_contract == "json"

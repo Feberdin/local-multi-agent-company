@@ -3,9 +3,9 @@ Purpose: Autonomous error analysis and targeted self-fix for failed tasks.
 Input/Output: Triggered after a task fails; analyzes the error, creates a focused
               self-improvement task against the system's own codebase, and tracks progress.
 Important invariants:
-  - Never debugs tasks that are themselves debug/improvement tasks (recursion guard).
+  - Failed fix tasks may spawn another focused fix task until AUTO_DEBUG_MAX_ATTEMPTS is reached.
+  - Self-improvement cycles keep their own retry logic and therefore do not start an additional parallel auto-debug chain.
   - Stores all state in task metadata so the UI can display progress without extra DB tables.
-  - At most AUTO_DEBUG_MAX_ATTEMPTS auto-debug cycles per original task.
 How to debug: Check metadata fields auto_debug_status, auto_debug_fix_task_id on the failed task.
 """
 
@@ -61,10 +61,14 @@ class AutoDebugService:
 
         meta = task.metadata or {}
 
-        # Recursion guards: don't debug fix tasks or improvement tasks
-        if meta.get("auto_debug_parent_task_id"):
-            return False
+        # Self-improvement cycles already create fresh retry tasks on failure.
+        # Starting a second parallel auto-debug chain here would duplicate work
+        # and make the operator state much harder to understand.
         if meta.get("self_improvement_cycle_id"):
+            return False
+
+        if meta.get("auto_debug_status") == "fix_in_progress" and meta.get("auto_debug_fix_task_id"):
+            logger.info("auto-debug: task %s already has a running fix task, skipping duplicate trigger.", task_id)
             return False
 
         attempt = int(meta.get("auto_debug_attempt", 0))
@@ -92,12 +96,15 @@ class AutoDebugService:
             # Use a deterministic fallback goal when LLM is unavailable
             fix_goal = f"Fix {failed_worker} worker error: {error_text[:120]}"
 
+        root_task_id = str(meta.get("auto_debug_root_task_id") or task_id)
+
         # Mark original task with auto-debug metadata before creating the fix task
         self.task_service.update_runtime_context(
             task_id,
             metadata_updates={
                 "auto_debug_status": "fix_in_progress",
                 "auto_debug_attempt": attempt + 1,
+                "auto_debug_root_task_id": root_task_id,
                 "auto_debug_failed_worker": failed_worker,
                 "auto_debug_error_summary": error_text[:400],
                 "auto_debug_fix_goal": fix_goal,
@@ -116,6 +123,7 @@ class AutoDebugService:
                 auto_deploy_staging=self.settings.self_improvement_deploy_after_success,
                 metadata={
                     "auto_debug_parent_task_id": task_id,
+                    "auto_debug_root_task_id": root_task_id,
                     "auto_debug_target_worker": failed_worker,
                     "auto_debug_attempt": attempt + 1,
                     "deployment_target": "self",

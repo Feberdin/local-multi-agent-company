@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient
@@ -32,7 +33,7 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         del method, json_payload
-        if path == "/api/tasks":
+        if path == "/api/tasks?include_archived=true":
             return httpx.Response(
                 200,
                 json=[
@@ -228,3 +229,158 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
     research_summary = next(item for item in payload["worker_summaries"] if item["worker_name"] == "research")
     assert coding_summary["run_count"] == 1
     assert research_summary["failed_count"] == 1
+
+
+def test_benchmark_reset_starts_a_new_visible_window(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+    older = (now - timedelta(minutes=2)).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks?include_archived=true":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "task-old",
+                        "goal": "Alte Benchmark-Daten sollen nach dem Reset nicht mehr sichtbar sein.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-old",
+                        "status": "DONE",
+                        "metadata": {},
+                        "created_at": older,
+                        "updated_at": older,
+                    }
+                ],
+            )
+        if path == "/api/tasks/task-old":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-old",
+                    "goal": "Alte Benchmark-Daten sollen nach dem Reset nicht mehr sichtbar sein.",
+                    "repository": "Feberdin/local-multi-agent-company",
+                    "repo_url": None,
+                    "local_repo_path": "/workspace/local-multi-agent-company",
+                    "base_branch": "main",
+                    "branch_name": "feature/task-old",
+                    "status": "DONE",
+                    "resume_target": None,
+                    "current_approval_gate_name": None,
+                    "approval_required": False,
+                    "approval_reason": None,
+                    "allow_repository_modifications": True,
+                    "pull_request_url": None,
+                    "latest_error": None,
+                    "metadata": {},
+                    "created_at": older,
+                    "updated_at": older,
+                    "worker_results": {},
+                    "risk_flags": [],
+                    "events": [],
+                    "approvals": [],
+                    "smoke_checks": [],
+                    "deployment": None,
+                },
+            )
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+    state_path = Path(app_module.settings.data_dir) / "benchmark_state.json"
+
+    with TestClient(app_module.app) as client:
+        reset_response = client.post("/benchmarks/reset")
+        export_response = client.get("/benchmarks/export.json")
+
+    assert reset_response.status_code == 200
+    assert "Benchmarks zurücksetzen" in reset_response.text
+    assert "Die Benchmark-Auswertung wurde zurückgesetzt." in reset_response.text
+    assert state_path.exists() is True
+    assert export_response.status_code == 200
+    payload = export_response.json()
+    assert payload["benchmark_window_active"] is True
+    assert payload["total_tasks"] == 0
+    assert payload["hidden_tasks_before_reset"] == 1
+
+
+def test_benchmarks_exclude_archived_tasks_from_general_metrics(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks?include_archived=true":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "task-live",
+                        "goal": "Sichtbare Benchmarks sollen nur aktive Historie verwenden.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-live",
+                        "status": "DONE",
+                        "metadata": {},
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                    {
+                        "id": "task-archived",
+                        "goal": "Archivierte Altlasten sollen nicht mehr in Benchmarks zaehlen.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-archived",
+                        "status": "DONE",
+                        "archived": True,
+                        "metadata": {"archived": True, "archived_reason": "Altlast"},
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                ],
+            )
+        if path == "/api/tasks/task-live":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-live",
+                    "goal": "Sichtbare Benchmarks sollen nur aktive Historie verwenden.",
+                    "repository": "Feberdin/local-multi-agent-company",
+                    "repo_url": None,
+                    "local_repo_path": "/workspace/local-multi-agent-company",
+                    "base_branch": "main",
+                    "branch_name": "feature/task-live",
+                    "status": "DONE",
+                    "resume_target": None,
+                    "current_approval_gate_name": None,
+                    "approval_required": False,
+                    "approval_reason": None,
+                    "allow_repository_modifications": True,
+                    "pull_request_url": None,
+                    "latest_error": None,
+                    "metadata": {},
+                    "created_at": now,
+                    "updated_at": now,
+                    "worker_results": {},
+                    "risk_flags": [],
+                    "events": [],
+                    "approvals": [],
+                    "smoke_checks": [],
+                    "deployment": None,
+                },
+            )
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/benchmarks/export.json")
+
+    payload = response.json()
+    assert payload["total_tasks"] == 1
+    assert payload["recent_runs"] == []
+    assert payload["worker_summaries"][0]["run_count"] == 0

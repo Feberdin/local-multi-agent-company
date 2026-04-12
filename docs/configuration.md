@@ -36,6 +36,7 @@
 - `ORCHESTRATOR_PORT`
 - `WEB_UI_PORT`
 - `STAGING_*`
+- `SELF_IMPROVEMENT_*`
 
 Wichtige Defaults:
 
@@ -48,6 +49,89 @@ Wichtige Defaults:
 - `STAGE_HEARTBEAT_INTERVAL_SECONDS=30`
 - `RUNTIME_HOME_DIR=/tmp/agent-home`
 - `TASK_WORKSPACE_ROOT=/workspace/.task-workspaces`
+
+## Self-Improvement
+
+Die Self-Improvement-Funktion arbeitet nur am eigenen Repository `Feberdin/local-multi-agent-company` und nutzt dafuer dieselbe Task-, Branch- und Worker-Architektur wie normale Aufgaben.
+
+Wichtige Schalter:
+
+- `SELF_IMPROVEMENT_ENABLED`
+- `SELF_IMPROVEMENT_MODE`
+- `SELF_IMPROVEMENT_POLICY_PATH`
+- `SELF_IMPROVEMENT_MAX_AUTO_FIX_ATTEMPTS`
+- `SELF_IMPROVEMENT_MAX_CYCLES_PER_DAY`
+- `SELF_IMPROVEMENT_DEPLOY_AFTER_SUCCESS`
+- `SELF_IMPROVEMENT_REQUIRE_APPROVAL_FOR_RISKY`
+- `SELF_IMPROVEMENT_PREFLIGHT_REQUIRED`
+- `SELF_IMPROVEMENT_AUTO_ROLLBACK`
+- `SELF_IMPROVEMENT_TARGET_REPO`
+- `SELF_IMPROVEMENT_LOCAL_REPO_PATH`
+
+E-Mail- und Approval-Schalter:
+
+- `SELF_IMPROVEMENT_EMAIL_ENABLED`
+- `SELF_IMPROVEMENT_EMAIL_TO`
+- `SELF_IMPROVEMENT_EMAIL_FROM`
+- `SELF_IMPROVEMENT_EMAIL_REPLY_TO`
+- `SELF_IMPROVEMENT_SMTP_HOST`
+- `SELF_IMPROVEMENT_SMTP_PORT`
+- `SELF_IMPROVEMENT_SMTP_USERNAME`
+- `SELF_IMPROVEMENT_SMTP_PASSWORD`
+- `SELF_IMPROVEMENT_SMTP_PASSWORD_FILE`
+- `SELF_IMPROVEMENT_SMTP_USE_STARTTLS`
+- `SELF_IMPROVEMENT_EMAIL_TIMEOUT_SECONDS`
+
+Empfohlene Startwerte:
+
+```env
+SELF_IMPROVEMENT_ENABLED=false
+SELF_IMPROVEMENT_MODE=assisted
+SELF_IMPROVEMENT_POLICY_PATH=/app/config/self-improvement.policy.yaml
+SELF_IMPROVEMENT_MAX_AUTO_FIX_ATTEMPTS=3
+SELF_IMPROVEMENT_MAX_CYCLES_PER_DAY=5
+SELF_IMPROVEMENT_DEPLOY_AFTER_SUCCESS=false
+SELF_IMPROVEMENT_REQUIRE_APPROVAL_FOR_RISKY=true
+SELF_IMPROVEMENT_PREFLIGHT_REQUIRED=true
+SELF_IMPROVEMENT_AUTO_ROLLBACK=true
+SELF_IMPROVEMENT_TARGET_REPO=Feberdin/local-multi-agent-company
+SELF_IMPROVEMENT_LOCAL_REPO_PATH=/workspace/local-multi-agent-company
+SELF_IMPROVEMENT_EMAIL_ENABLED=false
+SELF_IMPROVEMENT_EMAIL_TO=
+SELF_IMPROVEMENT_EMAIL_FROM=
+```
+
+Policy-Datei:
+
+- Standardpfad: [config/self-improvement.policy.yaml](/Users/joachim.stiegler/CodingFamily/config/self-improvement.policy.yaml)
+- regelt pro Modus und Risikostufe:
+  - Aktion
+  - E-Mail-Intent
+  - Deploy-Erlaubnis
+  - Publish-Approval
+
+Wichtige Semantik:
+
+- `LOW`
+  - darf je nach Modus autonom laufen
+- `MEDIUM`
+  - darf autonom laufen, aber mit zusaetzlicher Information an Operatoren
+- `HIGH`
+  - darf Branch, Tests und Artefakte vorbereiten, pausiert aber vor riskanter Veroeffentlichung
+- `CRITICAL`
+  - bleibt analysebasiert und benoetigt explizite Freigabe
+
+E-Mail-Verhalten:
+
+- Jede Approval-/Info-Mail wird zuerst im Outbox-Ordner `DATA_DIR/self-improvement-email-outbox` gespeichert.
+- Wenn SMTP fehlt oder unvollstaendig ist, wird das nicht als Crash behandelt.
+- Das Dashboard zeigt dann `queued`, `skipped`, `failed` oder `sent`.
+
+Rollback-Verhalten:
+
+- Bei fehlgeschlagenen Self-Improvement-Tasks kann das System einen Incident anlegen und einen Rollback-Task erzeugen.
+- Der Rollback nutzt einen deterministischen `git revert`-Pfad im Coding-Worker.
+- Der Rollback-Task bleibt voll auditierbar und erscheint im Incident-Bereich des Dashboards.
 
 Regel:
 
@@ -191,12 +275,31 @@ Im Dashboard pflegbar:
   - `budget_tokens`
   - `request_timeout_seconds`
   - `reasoning`
+  - `output_contract`
+  - `routing_note`
 
 Empfohlene Standardverteilung:
 
-- `requirements`, `reviewer`, `documentation`, `qa` und sonstige leichte Hilfsstufen bevorzugen `mistral-small3.2:latest`
-- `research`, `architecture`, `coding`, `security` und `validation` duerfen `qwen3.5:35b-a3b` nutzen
+- Strukturierte Worker mit JSON-, Schema-, Patch- oder Dateioperations-Output bevorzugen `mistral-small3.2:latest`
+  - dazu gehoeren standardmaessig `requirements`, `cost`, `human_resources`, `coding`, `reviewer`, `tester`, `qa`, `security`, `validation`, `data`, `memory`, `github` und `deploy`
+- Semantisch tiefere Analyse- und Architektur-Worker bevorzugen `qwen3.5:35b-a3b`
+  - dazu gehoeren standardmaessig `research` und `architecture`
+- `ux` bleibt gemischt, bevorzugt aber standardmaessig `qwen3.5:35b-a3b` mit strukturiertem Fallback
+- `documentation` bleibt auf gut lesbare Textausgabe optimiert und nutzt standardmaessig `mistral-small3.2:latest`
 - Unbekannte oder neue Worker fallen konservativ auf den sicheren Default statt automatisch auf das groessere Modell
+
+Warum diese Verteilung sinnvoll ist:
+
+- `Qwen` ist lokal oft staerker bei Recherche, Einordnung, Architektur und semantisch reicheren Aufgaben.
+- `Mistral` ist im Stack robuster, wenn Worker strikt parsebare JSON-, Schema- oder Patch-Ausgaben liefern muessen.
+- Structured Worker sollen deshalb nicht an freier Prosa, `thinking`-Feldern oder kaputten Dateioperationen scheitern.
+
+Output-Haertung:
+
+- Der LLM-Client liest bei OpenAI-kompatiblen Antworten primaer `choices[0].message.content`.
+- Wenn ein Backend stattdessen Ollama-aehnliche Antworten liefert, werden auch `message.content`, `response` und `content` sauber ausgewertet.
+- Separate `thinking`- oder `reasoning`-Felder werden nur noch als Diagnoseinformation betrachtet und nicht als eigentlicher Nutzoutput.
+- Bei strukturierten Workern erzwingt `output_contract` einen strengeren JSON-Hinweis, einen Reparaturversuch und bei Bedarf einen Fallback auf das andere Modell.
 
 Timeout-Hinweise:
 
@@ -210,8 +313,8 @@ Timeout-Hinweise:
 Empfehlung fuer langsame lokale Hardware:
 
 - starte mit `DEFAULT_MODEL_PROVIDER=mistral`
-- lasse `requirements`, `reviewer`, `documentation` und `qa` auf `mistral-small3.2:latest`
-- nutze `qwen3.5:35b-a3b` nur fuer die schwereren Stufen oder nach bewusstem Override
+- lasse strukturierte Worker wie `coding`, `reviewer`, `validation`, `security`, `requirements` und `qa` auf `mistral-small3.2:latest`
+- nutze `qwen3.5:35b-a3b` gezielt fuer `research`, `architecture` und semantisch reichere UX- oder Analyse-Stufen
 - erhoehe zuerst `LLM_READ_TIMEOUT_SECONDS`, `LLM_REQUEST_DEADLINE_SECONDS` und `WORKER_STAGE_TIMEOUT_SECONDS`, bevor du instabile Workarounds suchst
 
 ## GitHub

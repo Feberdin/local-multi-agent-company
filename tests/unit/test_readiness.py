@@ -16,6 +16,9 @@ from pathlib import Path
 from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.readiness_checks import (
     ReadinessCheckDefinition,
+    ReadinessContext,
+    ReadinessServices,
+    _secrets_files,
     build_catastrophic_readiness_report,
     build_readiness_report,
 )
@@ -145,3 +148,28 @@ def test_catastrophic_report_is_always_renderable(tmp_path) -> None:
     assert report.checks[0].severity is ReadinessSeverity.CRITICAL
     assert "ValueError" in report.checks[0].detail
     assert report.mode is ReadinessMode.DEEP
+
+
+async def test_secrets_files_check_marks_empty_env_values_as_ignored(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_API_KEY_FILE", "   ")
+    settings = _settings(tmp_path)
+    ctx = ReadinessContext(settings=settings, mode=ReadinessMode.QUICK, services=ReadinessServices())
+
+    payload = await _secrets_files(ctx)
+
+    assert payload["status"] is ReadinessCheckStatus.OK
+    assert payload["raw_value"]["default_model_api_key_file"]["state"] == "empty_ignored"
+
+
+async def test_secrets_files_check_reports_directory_path_as_failure(tmp_path, monkeypatch) -> None:
+    secret_dir = tmp_path / "secret-dir"
+    secret_dir.mkdir()
+    monkeypatch.setenv("MISTRAL_API_KEY_FILE", str(secret_dir))
+    settings = _settings(tmp_path)
+    ctx = ReadinessContext(settings=settings, mode=ReadinessMode.QUICK, services=ReadinessServices())
+
+    payload = await _secrets_files(ctx)
+
+    assert payload["status"] is ReadinessCheckStatus.FAIL
+    assert payload["raw_value"]["mistral_api_key_file"]["state"] == "directory"
+    assert "Verzeichnis" in payload["detail"]

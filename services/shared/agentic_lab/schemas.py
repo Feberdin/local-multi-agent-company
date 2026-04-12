@@ -265,6 +265,10 @@ class TaskSummary(BaseModel):
     allow_repository_modifications: bool = False
     pull_request_url: str | None = None
     latest_error: str | None = None
+    archived: bool = False
+    archived_at: datetime | None = None
+    archived_by: str | None = None
+    archived_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -309,6 +313,11 @@ class TaskStageRestartRequest(BaseModel):
     actor: str = "human-operator"
     reason: str | None = None
     run_immediately: bool = True
+
+
+class TaskArchiveRequest(BaseModel):
+    actor: str = "human-operator"
+    reason: str | None = Field(default=None, max_length=400)
 
 
 class RepositoryAccessSettings(BaseModel):

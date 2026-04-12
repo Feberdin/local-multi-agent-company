@@ -1,0 +1,85 @@
+# Purpose: Repository-wide governance defaults for controlled autonomous self-improvement.
+# Input/Output: The self-improvement governance service reads this file to decide which
+#               risk classes may run automatically in which mode and where AI change
+#               documentation should live inside the repository.
+# Invariants:
+#   - The system may only modify its own repository.
+#   - High-risk work may prepare artifacts, but must not silently publish or deploy.
+#   - Critical work must stop at analysis until an operator approves it.
+# How to debug:
+#   - If a cycle unexpectedly stops or runs too far, compare its risk level and mode
+#     against the action configured below.
+
+repository_scope:
+  repository: Feberdin/local-multi-agent-company
+  local_repo_path: /workspace/local-multi-agent-company
+  docs_root: docs/automation
+  ai_change_index: docs/automation/ai-change-index.md
+  approval_gate_name: self-improvement-risk-review
+
+mode_rules:
+  manual:
+    low:
+      action: analyze_only
+      email_intent: info
+      allow_deploy: false
+      require_publish_approval: false
+    medium:
+      action: analyze_only
+      email_intent: info
+      allow_deploy: false
+      require_publish_approval: false
+    high:
+      action: analyze_only
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: false
+    critical:
+      action: analyze_only
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: false
+
+  assisted:
+    low:
+      action: execute_autonomously
+      email_intent: none
+      allow_deploy: false
+      require_publish_approval: false
+    medium:
+      action: execute_and_notify
+      email_intent: info
+      allow_deploy: false
+      require_publish_approval: false
+    high:
+      action: prepare_and_await_approval
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: true
+    critical:
+      action: analyze_only
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: false
+
+  automatic:
+    low:
+      action: execute_autonomously
+      email_intent: none
+      allow_deploy: true
+      require_publish_approval: false
+    medium:
+      action: execute_and_notify
+      email_intent: info
+      allow_deploy: true
+      require_publish_approval: false
+    high:
+      action: prepare_and_await_approval
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: true
+    critical:
+      action: analyze_only
+      email_intent: approval
+      allow_deploy: false
+      require_publish_approval: false

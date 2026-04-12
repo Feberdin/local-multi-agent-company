@@ -46,6 +46,39 @@ def test_create_and_fetch_task(tmp_path) -> None:
         assert restart_response.json()["resume_target"] == "requirements"
         assert restart_response.json()["status"] == "REQUIREMENTS"
 
+        archive_conflict_response = client.post(
+            f"/api/tasks/{task_id}/archive",
+            json={"actor": "test-suite", "reason": "Noch aktiv."},
+        )
+        assert archive_conflict_response.status_code == 409
+
+        client.post(
+            f"/api/tasks/{task_id}/approvals",
+            json={"gate_name": "risk-review", "decision": "REJECT", "actor": "test-suite", "reason": "Archivtest"},
+        )
+
+        archive_response = client.post(
+            f"/api/tasks/{task_id}/archive",
+            json={"actor": "test-suite", "reason": "Alte Aufgabe aufraeumen."},
+        )
+        assert archive_response.status_code == 200
+        assert archive_response.json()["archived"] is True
+
+        visible_tasks_response = client.get("/api/tasks")
+        assert visible_tasks_response.status_code == 200
+        assert visible_tasks_response.json() == []
+
+        archived_tasks_response = client.get("/api/tasks?only_archived=true")
+        assert archived_tasks_response.status_code == 200
+        assert archived_tasks_response.json()[0]["id"] == task_id
+
+        restore_response = client.post(
+            f"/api/tasks/{task_id}/restore",
+            json={"actor": "test-suite", "reason": "Zur Kontrolle wieder sichtbar."},
+        )
+        assert restore_response.status_code == 200
+        assert restore_response.json()["archived"] is False
+
         trusted_sources_response = client.get("/api/settings/trusted-sources")
         assert trusted_sources_response.status_code == 200
         assert trusted_sources_response.json()["active_profile_id"] == "trusted_coding"

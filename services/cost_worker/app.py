@@ -33,7 +33,10 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             "temperature": route.temperature,
             "max_tokens": route.max_tokens,
             "budget_tokens": route.budget_tokens,
+            "request_timeout_seconds": route.request_timeout_seconds,
             "reasoning": route.reasoning,
+            "output_contract": route.output_contract,
+            "routing_note": route.routing_note,
         }
         for worker_name, route in routing.workers.items()
     }
@@ -43,7 +46,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         "route_summary": route_summary,
         "notes": [
             "Routine extraction and summarization can stay on Mistral.",
-            "Architecture, security, review, and complex coding default to Qwen with Mistral fallback.",
+            "Research und Architektur duerfen Qwen bevorzugen, waehrend strukturierte Worker standardmaessig Mistral bevorzugen.",
+            "Fuer JSON-, Schema- und Patch-Worker sollten parsebare Antworten immer wichtiger sein als freie Prosa.",
         ],
     }
     report_path = write_report(settings.task_report_dir(request.task_id), "cost-plan.json", outputs)

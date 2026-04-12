@@ -143,6 +143,34 @@ class SelfImprovementCycleRecord(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class SelfImprovementIncidentRecord(Base):
+    """Persistent incident audit entries for failed cycles and rollback preparation."""
+
+    __tablename__ = "self_improvement_incidents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cycle_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="low")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="open")
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    failure_stage: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    latest_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    rollback_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    rollback_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 _engine = None
 _session_factory = None
 

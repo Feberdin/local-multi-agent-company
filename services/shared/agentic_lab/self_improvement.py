@@ -15,8 +15,9 @@ How to debug: Check `self_improvement_cycles` table and the linked task in `task
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -29,8 +30,29 @@ from sqlalchemy.orm import Session
 from services.shared.agentic_lab.config import Settings, get_settings
 from services.shared.agentic_lab.db import SelfImprovementCycleRecord, get_session_factory
 from services.shared.agentic_lab.llm import LLMClient, LLMError
-from services.shared.agentic_lab.schemas import TaskCreateRequest, TaskStatus
+from services.shared.agentic_lab.schemas import (
+    ApprovalDecision,
+    ApprovalRequest,
+    TaskCreateRequest,
+    TaskStatus,
+)
+from services.shared.agentic_lab.self_improvement_email import SelfImprovementEmailService
+from services.shared.agentic_lab.self_improvement_governance import (
+    ApprovalEmailIntent,
+    GovernanceDecision,
+    GovernanceStatus,
+    SelfImprovementGovernancePolicy,
+    SelfImprovementGovernanceService,
+    normalize_self_improvement_mode,
+)
+from services.shared.agentic_lab.self_improvement_incidents import (
+    IncidentStatus,
+    SelfImprovementIncidentResponse,
+    SelfImprovementIncidentService,
+)
 from services.shared.agentic_lab.task_service import TaskService
+
+TaskRunner = Callable[[str], Coroutine[Any, Any, None]]
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -307,6 +329,16 @@ class SelfImprovementCycleResponse(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     metadata: dict[str, Any]
+    governance_status: str = GovernanceStatus.PENDING.value
+    governance_action: str | None = None
+    approval_email_status: str | None = None
+    approval_email_detail: str | None = None
+    approval_email_outbox_path: str | None = None
+    current_gate_name: str | None = None
+    current_gate_reason: str | None = None
+    incident_id: str | None = None
+    rollback_task_id: str | None = None
+    rollback_status: str | None = None
 
     @classmethod
     def from_record(cls, r: SelfImprovementCycleRecord) -> SelfImprovementCycleResponse:
@@ -314,6 +346,7 @@ class SelfImprovementCycleResponse(BaseModel):
             status = CycleStatus(r.status).value
         except ValueError:
             status = r.status
+        metadata = r.metadata_json or {}
         return cls(
             id=r.id,
             cycle_number=r.cycle_number,
@@ -338,7 +371,17 @@ class SelfImprovementCycleResponse(BaseModel):
             notes=r.notes,
             started_at=r.started_at,
             completed_at=r.completed_at,
-            metadata=r.metadata_json or {},
+            metadata=metadata,
+            governance_status=str(metadata.get("governance_status") or GovernanceStatus.PENDING.value),
+            governance_action=metadata.get("governance_action"),
+            approval_email_status=metadata.get("approval_email_status"),
+            approval_email_detail=metadata.get("approval_email_detail"),
+            approval_email_outbox_path=metadata.get("approval_email_outbox_path"),
+            current_gate_name=metadata.get("current_gate_name"),
+            current_gate_reason=metadata.get("current_gate_reason"),
+            incident_id=metadata.get("incident_id"),
+            rollback_task_id=metadata.get("rollback_task_id"),
+            rollback_status=metadata.get("rollback_status"),
         )
 
 
@@ -346,11 +389,13 @@ class SelfImprovementStatusResponse(BaseModel):
     mode: str
     enabled: bool
     active_cycle: SelfImprovementCycleResponse | None
+    pending_review_cycles: list[SelfImprovementCycleResponse]
     daily_cycle_count: int
     max_cycles_per_day: int
     daily_limit_reached: bool
     can_start: bool
     last_cycle: SelfImprovementCycleResponse | None
+    open_incident_count: int
 
 
 class StartCycleRequest(BaseModel):
@@ -367,6 +412,7 @@ class ApproveCycleRequest(BaseModel):
 class SelfImprovementConfigResponse(BaseModel):
     enabled: bool
     mode: str
+    normalized_mode: str
     max_auto_fix_attempts: int
     max_cycles_per_day: int
     deploy_after_success: bool
@@ -375,6 +421,35 @@ class SelfImprovementConfigResponse(BaseModel):
     auto_rollback: bool
     target_repo: str
     local_repo_path: str
+    policy_path: str
+    approval_email_enabled: bool
+    approval_email_to: str | None = None
+
+
+class SelfImprovementPolicyResponse(BaseModel):
+    repository: str
+    local_repo_path: str
+    docs_root: str
+    ai_change_index: str
+    approval_gate_name: str
+    mode_rules: dict[str, dict[str, dict[str, Any]]]
+
+    @classmethod
+    def from_policy(cls, policy: SelfImprovementGovernancePolicy) -> SelfImprovementPolicyResponse:
+        return cls(
+            repository=policy.repository_scope.repository,
+            local_repo_path=policy.repository_scope.local_repo_path,
+            docs_root=policy.repository_scope.docs_root,
+            ai_change_index=policy.repository_scope.ai_change_index,
+            approval_gate_name=policy.repository_scope.approval_gate_name,
+            mode_rules={
+                mode: {
+                    risk: rule.model_dump(mode="json")
+                    for risk, rule in sorted(rules.items())
+                }
+                for mode, rules in sorted(policy.mode_rules.items())
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +490,6 @@ class SelfImprovementService:
         CycleStatus.VALIDATING,
         CycleStatus.DEPLOYING,
         CycleStatus.POST_DEPLOY_TESTING,
-        CycleStatus.AWAITING_MANUAL_REVIEW,
     }
 
     def __init__(
@@ -430,6 +504,9 @@ class SelfImprovementService:
         self.llm_client = llm_client
         self.settings = settings or get_settings()
         self._session_factory = session_factory or get_session_factory()
+        self.governance_service = SelfImprovementGovernanceService(self.settings)
+        self.email_service = SelfImprovementEmailService(self.settings)
+        self.incident_service = SelfImprovementIncidentService(self._session_factory)
         # Lazy asyncio.Lock — created on first async call (event loop already running then).
         self.__lock: asyncio.Lock | None = None
         # Tracks which cycle_ids have been operator-approved for risky execution.
@@ -493,18 +570,35 @@ class SelfImprovementService:
         active = self.get_active_cycle()
         all_cycles = self.list_cycles(limit=1)
         last_cycle = all_cycles[0] if all_cycles else None
+        pending_review_cycles = [
+            SelfImprovementCycleResponse.from_record(item)
+            for item in self.list_cycles(limit=50)
+            if item.status == CycleStatus.AWAITING_MANUAL_REVIEW.value
+        ]
         daily = self.daily_cycle_count()
         limit_reached = self.is_daily_limit_reached()
         return SelfImprovementStatusResponse(
-            mode=self.settings.self_improvement_mode,
+            mode=normalize_self_improvement_mode(self.settings.self_improvement_mode).value,
             enabled=self.settings.self_improvement_enabled,
             active_cycle=SelfImprovementCycleResponse.from_record(active) if active else None,
+            pending_review_cycles=pending_review_cycles,
             daily_cycle_count=daily,
             max_cycles_per_day=self.settings.self_improvement_max_cycles_per_day,
             daily_limit_reached=limit_reached,
             can_start=not limit_reached and active is None and self.settings.self_improvement_enabled,
             last_cycle=SelfImprovementCycleResponse.from_record(last_cycle) if last_cycle else None,
+            open_incident_count=self.incident_service.open_count(),
         )
+
+    def get_policy(self) -> SelfImprovementPolicyResponse:
+        """Expose the resolved governance policy to API and UI callers."""
+
+        return SelfImprovementPolicyResponse.from_policy(self.governance_service.load_policy())
+
+    def list_incidents(self, limit: int = 20) -> list[SelfImprovementIncidentResponse]:
+        """Return recent incidents for the operator dashboard."""
+
+        return self.incident_service.list_recent(limit=limit)
 
     # ── cycle state mutations ─────────────────────────────────────────────────
 
@@ -546,7 +640,7 @@ class SelfImprovementService:
         trigger: str = "manual",
         problem_hint: str | None = None,
         force: bool = False,
-        run_task_fn: Callable[[str], Awaitable[None]] | None = None,
+        run_task_fn: TaskRunner | None = None,
         running_tasks_set: set[str] | None = None,
     ) -> SelfImprovementCycleResponse:
         """
@@ -595,10 +689,10 @@ class SelfImprovementService:
         *,
         actor: str,
         reason: str | None,
-        run_task_fn: Callable[[str], Awaitable[None]] | None = None,
+        run_task_fn: TaskRunner | None = None,
         running_tasks_set: set[str] | None = None,
     ) -> SelfImprovementCycleResponse:
-        """Operator approves a cycle that was waiting for manual review of a risky goal."""
+        """Approve either a pre-task governance gate or a paused workflow task gate."""
         cycle = self.get_cycle(cycle_id)
         if cycle is None:
             raise KeyError(f"Zyklus {cycle_id} nicht gefunden.")
@@ -607,8 +701,38 @@ class SelfImprovementService:
                 f"Zyklus ist nicht im Status 'awaiting_manual_review' (aktuell: {cycle.status})."
             )
         meta = dict(cycle.metadata_json or {})
-        meta.update({"approved_by": actor, "approved_reason": reason, "approved_at": datetime.now(UTC).isoformat()})
+        meta.update(
+            {
+                "approved_by": actor,
+                "approved_reason": reason,
+                "approved_at": datetime.now(UTC).isoformat(),
+                "governance_status": GovernanceStatus.APPROVED.value,
+            }
+        )
         self._approved_cycle_ids.add(cycle_id)
+
+        if cycle.task_id:
+            task = self.task_service.get_task(cycle.task_id)
+            gate_name = task.current_approval_gate_name or str(meta.get("current_gate_name") or "risk-review")
+            self.task_service.record_approval(
+                cycle.task_id,
+                ApprovalRequest(
+                    gate_name=gate_name,
+                    decision=ApprovalDecision.APPROVE,
+                    actor=actor,
+                    reason=reason,
+                ),
+            )
+            self._update(
+                cycle_id,
+                status=CycleStatus.IMPLEMENTING.value,
+                metadata_json=meta,
+            )
+            if run_task_fn is not None:
+                asyncio.create_task(run_task_fn(cycle.task_id))
+            refreshed = self.get_cycle(cycle_id)
+            return SelfImprovementCycleResponse.from_record(refreshed) if refreshed else SelfImprovementCycleResponse.from_record(cycle)
+
         self._update(
             cycle_id,
             status=CycleStatus.IMPLEMENTING.value,
@@ -619,13 +743,15 @@ class SelfImprovementService:
                 cycle_id=cycle_id,
                 goal=cycle.goal or "",
                 run_task_fn=run_task_fn,
+                approved_override=True,
             )
         )
-        return SelfImprovementCycleResponse.from_record(self.get_cycle(cycle_id))
+        refreshed = self.get_cycle(cycle_id)
+        return SelfImprovementCycleResponse.from_record(refreshed) if refreshed else SelfImprovementCycleResponse.from_record(cycle)
 
     def resume_orphaned_cycles(
         self,
-        run_task_fn: Callable[[str], Awaitable[None]] | None = None,
+        run_task_fn: TaskRunner | None = None,
         running_tasks_set: set[str] | None = None,
     ) -> None:
         """
@@ -647,13 +773,168 @@ class SelfImprovementService:
                 ),
             )
 
+    async def _send_cycle_email(
+        self,
+        *,
+        cycle_id: str,
+        kind: str,
+        subject: str,
+        body: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Send or queue one operator mail and mirror the delivery result into cycle metadata."""
+
+        result = await self.email_service.send_cycle_email(
+            subject=subject,
+            body=body,
+            kind=kind,
+            metadata=metadata,
+        )
+        cycle = self.get_cycle(cycle_id)
+        if cycle is None:
+            return
+        meta = dict(cycle.metadata_json or {})
+        meta.update(
+            {
+                "approval_email_status": result.status,
+                "approval_email_detail": result.detail,
+                "approval_email_outbox_path": result.outbox_path,
+                "approval_email_message_id": result.message_id,
+            }
+        )
+        self._update(cycle_id, metadata_json=meta)
+
+    def _build_cycle_email(
+        self,
+        *,
+        cycle_id: str,
+        goal: str,
+        risk_level: str,
+        governance_decision: GovernanceDecision,
+        problem_hypothesis: str,
+        task_id: str | None = None,
+        branch_name: str | None = None,
+        changed_files: list[str] | None = None,
+        latest_error: str | None = None,
+        test_results: dict[str, Any] | None = None,
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Create a concise mail payload without leaking secrets or raw prompts."""
+
+        subject = (
+            f"[Feberdin Self-Improvement] {governance_decision.email_intent.value.upper()} · "
+            f"{risk_level.upper()} · Zyklus {cycle_id[:8]}"
+        )
+        changed_files_text = ", ".join(changed_files or []) or "Noch keine Dateiliste vorhanden."
+        tests_summary = "Keine Testergebnisse vorhanden."
+        if test_results:
+            tests_summary = json.dumps(test_results, ensure_ascii=False, default=str)[:600]
+        body = (
+            "Feberdin/local-multi-agent-company hat eine neue Selbstverbesserungs-Entscheidung vorbereitet.\n\n"
+            f"Zyklus: {cycle_id}\n"
+            f"Modus: {governance_decision.mode}\n"
+            f"Risiko: {risk_level.upper()}\n"
+            f"Aktion: {governance_decision.action.value}\n"
+            f"Governance-Status: {governance_decision.governance_status.value}\n"
+            f"Ziel: {goal}\n"
+            f"Analyse: {problem_hypothesis or 'keine Hypothese vorhanden'}\n"
+            f"Task: {task_id or 'noch keiner'}\n"
+            f"Branch: {branch_name or 'noch keiner'}\n"
+            f"Betroffene Dateien: {changed_files_text}\n"
+            f"Tests: {tests_summary}\n"
+            f"Letzter Fehler: {latest_error or 'kein Fehler gemeldet'}\n\n"
+            "Freigabe erfolgt im Dashboard unter /self-improvement. "
+            "Die Nachricht wurde zusaetzlich im lokalen Outbox-Ordner protokolliert.\n"
+        )
+        metadata = {
+            "cycle_id": cycle_id,
+            "task_id": task_id,
+            "risk_level": risk_level,
+            "governance_action": governance_decision.action.value,
+            "branch_name": branch_name,
+            "changed_files": changed_files or [],
+        }
+        return subject, body, metadata
+
+    @staticmethod
+    def _extract_commit_context(task) -> tuple[str | None, str | None, list[str]]:
+        """Read commit/branch/file context from task outputs without assuming every stage ran."""
+
+        worker_results = task.worker_results or {}
+        github_outputs = (worker_results.get("github") or {}).get("outputs", {})
+        coding_outputs = (worker_results.get("coding") or {}).get("outputs", {})
+        commit_sha = github_outputs.get("commit_sha")
+        branch_name = coding_outputs.get("branch_name") or task.branch_name
+        changed_files = coding_outputs.get("changed_files", [])
+        return commit_sha, branch_name, changed_files
+
+    @staticmethod
+    def _extract_failure_context(task) -> tuple[str | None, str | None]:
+        """Identify the first failed worker and the most useful error summary."""
+
+        worker_results = task.worker_results or {}
+        ordered_workers = [
+            "requirements",
+            "cost",
+            "human_resources",
+            "research",
+            "architecture",
+            "data",
+            "ux",
+            "coding",
+            "reviewer",
+            "tester",
+            "security",
+            "validation",
+            "documentation",
+            "github",
+            "deploy",
+            "qa",
+            "memory",
+        ]
+        for worker_name in ordered_workers:
+            result = worker_results.get(worker_name)
+            if not result or result.get("success", True):
+                continue
+            errors = result.get("errors") or []
+            if errors:
+                return worker_name, "; ".join(str(item) for item in errors)
+            if result.get("summary"):
+                return worker_name, str(result["summary"])
+        return None, task.latest_error
+
+    def _governance_metadata_update(
+        self,
+        decision: GovernanceDecision,
+        *,
+        goal: str,
+        problem_class: ProblemClass,
+        hypothesis: str,
+    ) -> dict[str, Any]:
+        """Store governance-relevant state in one stable metadata block for API/UI reuse."""
+
+        return {
+            "governance_status": decision.governance_status.value,
+            "governance_action": decision.action.value,
+            "governance_note": decision.note,
+            "approval_email_status": "pending" if decision.email_intent != ApprovalEmailIntent.NONE else "not_needed",
+            "approval_email_detail": None,
+            "current_gate_name": decision.approval_gate_name if decision.governance_status == GovernanceStatus.AWAITING_APPROVAL else None,
+            "current_gate_reason": decision.note if decision.governance_status == GovernanceStatus.AWAITING_APPROVAL else None,
+            "problem_class": problem_class.value,
+            "problem_hypothesis": hypothesis,
+            "goal": goal,
+            "risk_level": decision.risk_level,
+            "force_publish_approval": decision.require_publish_approval,
+            "allow_deploy_after_success": decision.allow_deploy,
+        }
+
     # ── internal pipeline ─────────────────────────────────────────────────────
 
     async def _run_pipeline(
         self,
         cycle_id: str,
         problem_hint: str | None,
-        run_task_fn: Callable[[str], Awaitable[None]] | None,
+        run_task_fn: TaskRunner | None,
     ) -> None:
         """Async pipeline: analyze → plan → (gate?) → implement → monitor."""
         try:
@@ -666,6 +947,16 @@ class SelfImprovementService:
             )
             risk_level, risk_reason = classify_risk(goal)
             is_risky = risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
+            governance_decision = self.governance_service.decide(
+                risk_level=risk_level.value,
+                mode=self.settings.self_improvement_mode,
+            )
+            cycle_metadata = self._governance_metadata_update(
+                governance_decision,
+                goal=goal,
+                problem_class=problem_class,
+                hypothesis=hypothesis,
+            )
 
             # Phase 2: plan
             self._update(
@@ -677,11 +968,39 @@ class SelfImprovementService:
                 risk_level=risk_level.value,
                 is_risky=is_risky,
                 risk_reason=risk_reason,
+                metadata_json=cycle_metadata,
             )
 
-            # Gate: risky changes need approval
-            if is_risky and self.settings.self_improvement_require_approval_for_risky:
-                self._update(cycle_id, status=CycleStatus.AWAITING_MANUAL_REVIEW.value)
+            if governance_decision.email_intent != ApprovalEmailIntent.NONE:
+                subject, body, email_metadata = self._build_cycle_email(
+                    cycle_id=cycle_id,
+                    goal=goal,
+                    risk_level=risk_level.value,
+                    governance_decision=governance_decision,
+                    problem_hypothesis=hypothesis,
+                )
+                asyncio.create_task(
+                    self._send_cycle_email(
+                        cycle_id=cycle_id,
+                        kind=governance_decision.email_intent.value,
+                        subject=subject,
+                        body=body,
+                        metadata=email_metadata,
+                    )
+                )
+
+            if not governance_decision.allow_task_execution:
+                terminal_status = (
+                    CycleStatus.AWAITING_MANUAL_REVIEW.value
+                    if governance_decision.governance_status == GovernanceStatus.AWAITING_APPROVAL
+                    else CycleStatus.COMPLETED.value
+                )
+                self._update(
+                    cycle_id,
+                    status=terminal_status,
+                    completed_at=None if terminal_status == CycleStatus.AWAITING_MANUAL_REVIEW.value else datetime.now(UTC),
+                    notes=governance_decision.note,
+                )
                 return  # pipeline resumes via approve_risky_cycle()
 
             # Phase 3: implement
@@ -690,6 +1009,7 @@ class SelfImprovementService:
                 cycle_id=cycle_id,
                 goal=goal,
                 run_task_fn=run_task_fn,
+                governance_decision=governance_decision,
             )
 
         except SelfImprovementError as exc:
@@ -711,28 +1031,55 @@ class SelfImprovementService:
         self,
         cycle_id: str,
         goal: str,
-        run_task_fn: Callable[[str], Awaitable[None]] | None,
+        run_task_fn: TaskRunner | None,
+        governance_decision: GovernanceDecision | None = None,
+        approved_override: bool = False,
     ) -> None:
         """Create a workflow task for this improvement and start monitoring it."""
         try:
+            cycle = self.get_cycle(cycle_id)
+            cycle_metadata = dict(cycle.metadata_json or {}) if cycle else {}
+            decision = governance_decision
+            if decision is None:
+                decision = self.governance_service.decide(
+                    risk_level=str(cycle.risk_level if cycle else "low"),
+                    mode=self.settings.self_improvement_mode,
+                )
+            force_publish_approval = bool(cycle_metadata.get("force_publish_approval")) and not approved_override
+            auto_deploy = (
+                bool(cycle_metadata.get("allow_deploy_after_success", decision.allow_deploy))
+                and not approved_override
+            )
             request = TaskCreateRequest(
                 goal=goal,
                 repository=self.settings.self_improvement_target_repo,
                 local_repo_path=self.settings.self_improvement_local_repo_path,
                 base_branch=self.settings.default_base_branch,
                 allow_repository_modifications=True,
-                auto_deploy_staging=self.settings.self_improvement_deploy_after_success,
+                auto_deploy_staging=auto_deploy,
                 metadata={
+                    **cycle_metadata,
                     "self_improvement_cycle_id": cycle_id,
                     "worker_project_label": "Self-Improvement-Zyklus",
                     "allow_repository_modifications": True,
-                    "deployment_target": "self",
+                    "deployment_target": "self" if auto_deploy else "staging",
+                    "self_improvement_mode": decision.mode,
+                    "self_improvement_governance_action": decision.action.value,
+                    "force_publish_approval": force_publish_approval,
                 },
             )
             summary = self.task_service.create_task(request)
             task_id = summary.id
 
-            self._update(cycle_id, task_id=task_id)
+            cycle_metadata.update(
+                {
+                    "governance_status": GovernanceStatus.PENDING.value,
+                    "governance_action": decision.action.value,
+                    "force_publish_approval": force_publish_approval,
+                    "allow_deploy_after_success": auto_deploy,
+                }
+            )
+            self._update(cycle_id, task_id=task_id, metadata_json=cycle_metadata)
 
             # run_task_fn handles adding task_id to running_tasks and starting the workflow.
             # Do NOT pre-add here — the idempotency guard in run_task_fn would block the start.
@@ -753,13 +1100,140 @@ class SelfImprovementService:
                 latest_error=f"Task-Erstellung fehlgeschlagen: {type(exc).__name__}: {exc}",
             )
 
+    async def _handle_failed_task(
+        self,
+        *,
+        cycle_id: str,
+        task,
+        run_task_fn: TaskRunner | None,
+    ) -> str | None:
+        """Handle failed self-improvement tasks via incident creation, rollback prep, or retry."""
+
+        cycle = self.get_cycle(cycle_id)
+        if cycle is None:
+            return None
+
+        failure_stage, failure_text = self._extract_failure_context(task)
+        commit_sha, branch_name, changed_files = self._extract_commit_context(task)
+        incident = self.incident_service.create_incident(
+            cycle_id=cycle_id,
+            task_id=task.id,
+            severity=cycle.risk_level or RiskLevel.LOW.value,
+            summary=f"Self-Improvement-Zyklus {cycle.cycle_number} ist fehlgeschlagen.",
+            failure_stage=failure_stage,
+            latest_error=failure_text or task.latest_error,
+            root_cause=cycle.problem_hypothesis,
+            commit_sha=commit_sha,
+            branch_name=branch_name,
+            metadata={"changed_files": changed_files},
+        )
+        cycle_metadata = dict(cycle.metadata_json or {})
+        cycle_metadata["incident_id"] = incident.id
+
+        if self.settings.self_improvement_auto_rollback and commit_sha:
+            rollback_request = TaskCreateRequest(
+                goal=f"Revertiere Commit {commit_sha} und stelle den letzten stabilen Zustand wieder her.",
+                repository=self.settings.self_improvement_target_repo,
+                local_repo_path=self.settings.self_improvement_local_repo_path,
+                base_branch=self.settings.default_base_branch,
+                allow_repository_modifications=True,
+                auto_deploy_staging=False,
+                metadata={
+                    "self_improvement_cycle_id": cycle_id,
+                    "worker_project_label": "Self-Improvement-Rollback",
+                    "allow_repository_modifications": True,
+                    "rollback_commit_sha": commit_sha,
+                    "rollback_incident_id": incident.id,
+                    "deployment_target": "self",
+                },
+            )
+            rollback_summary = self.task_service.create_task(rollback_request)
+            self.incident_service.attach_rollback_task(
+                incident.id,
+                rollback_task_id=rollback_summary.id,
+                rollback_status=IncidentStatus.ROLLBACK_RUNNING.value,
+            )
+            cycle_metadata.update(
+                {
+                    "rollback_task_id": rollback_summary.id,
+                    "rollback_status": IncidentStatus.ROLLBACK_RUNNING.value,
+                }
+            )
+            self._update(
+                cycle_id,
+                status=CycleStatus.FAILED.value,
+                completed_at=datetime.now(UTC),
+                latest_error=failure_text or task.latest_error,
+                metadata_json=cycle_metadata,
+            )
+            if run_task_fn is not None:
+                asyncio.create_task(run_task_fn(rollback_summary.id))
+            return None
+
+        new_retry = cycle.retry_count + 1
+        if new_retry >= cycle.max_retries:
+            cycle_metadata["governance_status"] = GovernanceStatus.FAILED.value
+            self._update(
+                cycle_id,
+                status=CycleStatus.FAILED.value,
+                completed_at=datetime.now(UTC),
+                retry_count=new_retry,
+                latest_error=(
+                    f"Task fehlgeschlagen nach {new_retry} Versuch(en). "
+                    f"Letzter Fehler: {task.latest_error or 'unbekannt'}"
+                ),
+                metadata_json=cycle_metadata,
+            )
+            return None
+
+        try:
+            goal = cycle.goal or ""
+            retry_request = TaskCreateRequest(
+                goal=goal,
+                repository=self.settings.self_improvement_target_repo,
+                local_repo_path=self.settings.self_improvement_local_repo_path,
+                base_branch=self.settings.default_base_branch,
+                allow_repository_modifications=True,
+                auto_deploy_staging=bool(cycle_metadata.get("allow_deploy_after_success")),
+                metadata={
+                    **cycle_metadata,
+                    "self_improvement_cycle_id": cycle_id,
+                    "worker_project_label": "Self-Improvement-Zyklus",
+                    "allow_repository_modifications": True,
+                    "retry_attempt": new_retry,
+                    "deployment_target": "self" if cycle_metadata.get("allow_deploy_after_success") else "staging",
+                },
+            )
+            retry_summary = self.task_service.create_task(retry_request)
+            self._update(
+                cycle_id,
+                retry_count=new_retry,
+                status=CycleStatus.IMPLEMENTING.value,
+                task_id=retry_summary.id,
+                latest_error=task.latest_error,
+                metadata_json=cycle_metadata,
+            )
+            if run_task_fn is not None:
+                asyncio.create_task(run_task_fn(retry_summary.id))
+            return retry_summary.id
+        except Exception as retry_exc:
+            cycle_metadata["governance_status"] = GovernanceStatus.FAILED.value
+            self._update(
+                cycle_id,
+                status=CycleStatus.FAILED.value,
+                completed_at=datetime.now(UTC),
+                latest_error=f"Retry-Task-Erstellung fehlgeschlagen: {retry_exc}",
+                metadata_json=cycle_metadata,
+            )
+            return None
+
     async def _monitor_task(
         self,
         cycle_id: str,
         task_id: str,
         poll_interval: float = 30.0,
         max_wait_hours: float = 4.0,
-        run_task_fn: Callable[[str], Awaitable[None]] | None = None,
+        run_task_fn: TaskRunner | None = None,
     ) -> None:
         """
         Poll the linked task every poll_interval seconds.
@@ -781,90 +1255,92 @@ class SelfImprovementService:
 
             # Mirror branch and error into cycle record for UI visibility
             update_kwargs: dict[str, Any] = {}
-            if task.branch_name:
-                update_kwargs["branch_name"] = task.branch_name
+            commit_sha, branch_name, changed_files = self._extract_commit_context(task)
+            if branch_name:
+                update_kwargs["branch_name"] = branch_name
+            if commit_sha:
+                update_kwargs["commit_sha"] = commit_sha
             if task.latest_error:
                 update_kwargs["latest_error"] = task.latest_error
             if update_kwargs:
                 self._update(cycle_id, **update_kwargs)
 
             if task.status == TaskStatus.FAILED:
-                cycle = self.get_cycle(cycle_id)
-                if cycle is None:
+                handled_task_id = await self._handle_failed_task(
+                    cycle_id=cycle_id,
+                    task=task,
+                    run_task_fn=run_task_fn,
+                )
+                if handled_task_id is None:
                     return
-
-                new_retry = cycle.retry_count + 1
-                if new_retry >= cycle.max_retries:
-                    self._update(
-                        cycle_id,
-                        status=CycleStatus.FAILED.value,
-                        completed_at=datetime.now(UTC),
-                        retry_count=new_retry,
-                        latest_error=(
-                            f"Task fehlgeschlagen nach {new_retry} Versuch(en). "
-                            f"Letzter Fehler: {task.latest_error or 'unbekannt'}"
-                        ),
-                    )
-                    return
-
-                # Create a fresh task for the retry (the old failed task cannot be restarted).
-                try:
-                    goal = cycle.goal or ""
-                    retry_request = TaskCreateRequest(
-                        goal=goal,
-                        repository=self.settings.self_improvement_target_repo,
-                        local_repo_path=self.settings.self_improvement_local_repo_path,
-                        base_branch=self.settings.default_base_branch,
-                        allow_repository_modifications=True,
-                        auto_deploy_staging=self.settings.self_improvement_deploy_after_success,
-                        metadata={
-                            "self_improvement_cycle_id": cycle_id,
-                            "worker_project_label": "Self-Improvement-Zyklus",
-                            "allow_repository_modifications": True,
-                            "retry_attempt": new_retry,
-                            "deployment_target": "self",
-                        },
-                    )
-                    retry_summary = self.task_service.create_task(retry_request)
-                    current_task_id = retry_summary.id
-                    self._update(
-                        cycle_id,
-                        retry_count=new_retry,
-                        status=CycleStatus.IMPLEMENTING.value,
-                        task_id=current_task_id,
-                        latest_error=task.latest_error,
-                    )
-                    if run_task_fn is not None:
-                        asyncio.create_task(run_task_fn(current_task_id))
-                except Exception as retry_exc:
-                    self._update(
-                        cycle_id,
-                        status=CycleStatus.FAILED.value,
-                        completed_at=datetime.now(UTC),
-                        latest_error=f"Retry-Task-Erstellung fehlgeschlagen: {retry_exc}",
-                    )
-                    return
+                current_task_id = handled_task_id
                 continue
 
             if task.status in {TaskStatus.APPROVAL_REQUIRED}:
-                self._update(cycle_id, status=CycleStatus.AWAITING_MANUAL_REVIEW.value)
+                cycle = self.get_cycle(cycle_id)
+                if cycle is None:
+                    return
+                meta = dict(cycle.metadata_json or {})
+                meta.update(
+                    {
+                        "governance_status": GovernanceStatus.AWAITING_APPROVAL.value,
+                        "current_gate_name": task.current_approval_gate_name,
+                        "current_gate_reason": task.approval_reason,
+                    }
+                )
+                self._update(cycle_id, status=CycleStatus.AWAITING_MANUAL_REVIEW.value, metadata_json=meta)
+                subject, body, email_metadata = self._build_cycle_email(
+                    cycle_id=cycle_id,
+                    goal=cycle.goal or "",
+                    risk_level=cycle.risk_level or RiskLevel.LOW.value,
+                    governance_decision=self.governance_service.decide(
+                        risk_level=cycle.risk_level or RiskLevel.LOW.value,
+                        mode=self.settings.self_improvement_mode,
+                    ),
+                    problem_hypothesis=cycle.problem_hypothesis or "",
+                    task_id=task.id,
+                    branch_name=branch_name,
+                    changed_files=changed_files,
+                    latest_error=task.approval_reason,
+                    test_results=(task.worker_results or {}).get("tester", {}).get("outputs", {}),
+                )
+                asyncio.create_task(
+                    self._send_cycle_email(
+                        cycle_id=cycle_id,
+                        kind="approval",
+                        subject=subject,
+                        body=body,
+                        metadata=email_metadata,
+                    )
+                )
                 continue
 
             if task.status == TaskStatus.DONE or task.status == TaskStatus.PR_CREATED:
                 outputs = task.worker_results
                 coding_out = outputs.get("coding", {}).get("outputs", {})
+                github_out = outputs.get("github", {}).get("outputs", {})
                 testing_out = outputs.get("tester", {}).get("outputs", {})
                 deploy_out = outputs.get("deploy", {}).get("outputs", {})
                 qa_out = outputs.get("qa", {}).get("outputs", {})
+                cycle = self.get_cycle(cycle_id)
+                metadata = dict(cycle.metadata_json or {}) if cycle else {}
+                metadata.update(
+                    {
+                        "governance_status": GovernanceStatus.IMPLEMENTED.value,
+                        "rollback_status": metadata.get("rollback_status"),
+                    }
+                )
                 self._update(
                     cycle_id,
                     status=CycleStatus.COMPLETED.value,
                     completed_at=datetime.now(UTC),
                     branch_name=coding_out.get("branch_name") or task.branch_name,
+                    commit_sha=github_out.get("commit_sha"),
                     changed_files_json=coding_out.get("changed_files", []),
                     test_results_json=testing_out or {},
                     deploy_result_json=deploy_out or {},
                     healthcheck_result_json=qa_out or {},
+                    metadata_json=metadata,
                 )
                 return
 

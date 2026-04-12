@@ -157,6 +157,68 @@ async def test_complete_json_falls_back_when_primary_provider_returns_non_json_t
 
 
 @pytest.mark.asyncio
+async def test_complete_json_accepts_ollama_generate_style_response_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: mistral\n"
+            "    fallback_provider: qwen\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"response": '{"summary":"Recovered from response field","operations":[]}'},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json("system", "user", worker_name="coding")
+
+    assert response == {"summary": "Recovered from response field", "operations": []}
+
+
+@pytest.mark.asyncio
+async def test_complete_accepts_message_content_without_choices_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  research:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"content": "Antwort aus message.content"}},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete("system", "user", worker_name="research")
+
+    assert response == "Antwort aus message.content"
+
+
+@pytest.mark.asyncio
 async def test_thinking_blocks_are_stripped_before_returning_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -194,6 +256,51 @@ async def test_thinking_blocks_are_stripped_before_returning_content(
     response = await client.complete("system", "user", worker_name="research")
     assert response == "Actual answer here."
     assert "<think>" not in response
+
+
+@pytest.mark.asyncio
+async def test_reasoning_list_parts_do_not_override_visible_answer_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: mistral\n"
+            "    fallback_provider: qwen\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "reasoning", "text": "Internal chain of thought"},
+                                {
+                                    "type": "output_text",
+                                    "text": '{"summary":"Visible JSON only","operations":[]}',
+                                },
+                            ]
+                        }
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    result = await client.complete_json("system", "user", worker_name="coding")
+
+    assert result == {"summary": "Visible JSON only", "operations": []}
 
 
 @pytest.mark.asyncio

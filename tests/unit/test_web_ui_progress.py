@@ -104,6 +104,33 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
     assert decorated["restartable_stage_options"][0]["worker_name"] == "requirements"
 
 
+def test_dashboard_shows_version_badge_in_top_navigation(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    app_module.templates.env.globals["ui_build"] = {
+        "app_version": "9.9.9",
+        "git_sha": "deadbeefcafe",
+        "git_branch": "main",
+        "repo_path": "/app",
+        "display": "Version 9.9.9 · deadbeefcafe",
+        "full_label": "Version 9.9.9 · Branch main · Commit deadbeefcafe · Repo /app",
+    }
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if path in {"/api/tasks", "/api/tasks?only_archived=true", "/api/suggestions"}:
+            return httpx.Response(200, json=[])
+        if path == "/api/settings/repository-access":
+            return httpx.Response(200, json={"allowed_repositories": []})
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Version 9.9.9 · deadbeefcafe" in response.text
+
+
 def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     now = datetime.now(UTC).isoformat()
@@ -238,6 +265,8 @@ def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) 
             raise TypeError("simulated detail payload bug")
         if path == "/api/tasks":
             return httpx.Response(200, json=[])
+        if path == "/api/tasks?only_archived=true":
+            return httpx.Response(200, json=[])
         if path == "/api/settings/repository-access":
             return httpx.Response(200, json={"allowed_repositories": []})
         if path == "/api/suggestions":
@@ -282,6 +311,130 @@ def test_restart_stage_form_posts_selected_worker_name(tmp_path, monkeypatch) ->
         "actor": "dashboard",
         "reason": "Git-Fehler wurde behoben.",
         "run_immediately": True,
+    }
+
+
+def test_dashboard_hides_archived_tasks_by_default_and_can_show_restore_section(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "task-visible",
+                        "goal": "Aktive Aufgabe bleibt im Dashboard sichtbar.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-visible",
+                        "status": "DONE",
+                        "metadata": {},
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                ],
+            )
+        if path == "/api/tasks?only_archived=true":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "task-archived",
+                        "goal": "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-archived",
+                        "status": "DONE",
+                        "archived": True,
+                        "archived_at": now,
+                        "archived_reason": "Altlast",
+                        "metadata": {"archived": True, "archived_at": now, "archived_reason": "Altlast"},
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                ],
+            )
+        if path == "/api/settings/repository-access":
+            return httpx.Response(200, json={"allowed_repositories": []})
+        if path == "/api/suggestions":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        default_response = client.get("/")
+        archived_response = client.get("/?show_archived=true")
+
+    assert default_response.status_code == 200
+    assert "Aktive Aufgabe bleibt im Dashboard sichtbar." in default_response.text
+    assert "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein." not in default_response.text
+    assert archived_response.status_code == 200
+    assert "Archivierte Aufgaben" in archived_response.text
+    assert "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein." in archived_response.text
+    assert "Wiederherstellen" in archived_response.text
+
+
+def test_task_archive_form_posts_dashboard_payload(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_payload"] = json_payload
+        return httpx.Response(200, json={"ok": True})
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/tasks/task-1/archive",
+            data={"reason": "Alte Aufgabe aufraeumen."},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/tasks/task-1"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/tasks/task-1/archive"
+    assert captured["json_payload"] == {
+        "actor": "dashboard",
+        "reason": "Alte Aufgabe aufraeumen.",
+    }
+
+
+def test_task_restore_form_posts_dashboard_payload(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_payload"] = json_payload
+        return httpx.Response(200, json={"ok": True})
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/tasks/task-1/restore",
+            data={"reason": "Bitte wieder sichtbar machen."},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?show_archived=true"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/tasks/task-1/restore"
+    assert captured["json_payload"] == {
+        "actor": "dashboard",
+        "reason": "Bitte wieder sichtbar machen.",
     }
 
 

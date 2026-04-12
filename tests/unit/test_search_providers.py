@@ -7,6 +7,8 @@ How to debug: If a provider test fails, inspect the normalized provider settings
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -200,3 +202,33 @@ async def test_searxng_health_check_flags_html_only_instance_as_degraded() -> No
     assert result.health_checks[0].ok is True
     assert result.health_checks[1].ok is False
     assert "search.formats" in result.message
+
+
+def test_provider_secret_ignores_empty_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider_service, _trusted_source_service = _configure_enabled_providers()
+    provider_settings = provider_service.load_settings()
+    brave_provider = next(provider for provider in provider_settings.providers if provider.provider_type is SearchProviderType.BRAVE)
+
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY_FILE", "   ")
+
+    assert provider_service._provider_secret(brave_provider) == ""  # pyright: ignore[reportPrivateUsage]
+
+
+def test_provider_secret_warns_when_directory_is_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider_service, _trusted_source_service = _configure_enabled_providers()
+    provider_settings = provider_service.load_settings()
+    brave_provider = next(provider for provider in provider_settings.providers if provider.provider_type is SearchProviderType.BRAVE)
+    secret_dir = tmp_path / "brave-secret-dir"
+    secret_dir.mkdir()
+    caplog.set_level("WARNING")
+
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY_FILE", str(secret_dir))
+
+    assert provider_service._provider_secret(brave_provider) == ""  # pyright: ignore[reportPrivateUsage]
+    assert "points to a directory" in caplog.text

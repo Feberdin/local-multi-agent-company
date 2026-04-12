@@ -27,6 +27,7 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
         <a href="/debug">Debug-Center</a>
         <a href="/system-check">System-Check</a>
         <a href="/self-improvement">Self-Improvement</a>
+        <span class="topnav-version" title="{{ ui_build.full_label }}">{{ ui_build.display }}</span>
       </nav>
 
       <section class="hero">
@@ -59,7 +60,10 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
           <h2>Gesamtbild</h2>
           <div class="stats-grid">
             <p><strong>Generiert:</strong> {{ overview.generated_at_display }}</p>
+            <p><strong>Benchmark-Startpunkt:</strong> {{ overview.reset_at_display }}</p>
             <p><strong>Aufgaben in der Auswertung:</strong> {{ overview.total_tasks }}</p>
+            <p><strong>Archiviert ausgeblendet:</strong> {{ overview.archived_hidden_count }}</p>
+            <p><strong>Vor dem Reset ausgeblendet:</strong> {{ overview.hidden_tasks_before_reset }}</p>
             <p><strong>Einbezogene Worker-Laeufe:</strong> {{ overview.total_runs }}</p>
             <p><strong>Laufend oder wartend:</strong> {{ overview.active_runs }}</p>
             <p><strong>Fehlgeschlagen:</strong> {{ overview.failed_runs }}</p>
@@ -73,7 +77,15 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
           <h2>Exports</h2>
           <div class="stack">
             <a class="button-link" href="/benchmarks/export.json">Benchmark-JSON herunterladen</a>
+            <form method="post" action="/benchmarks/reset">
+              <button type="submit" class="danger">Benchmarks zurücksetzen</button>
+            </form>
             <p class="muted">Das JSON ist die strukturierte Grundlage für Folgeaufträge an HR, QA oder Worker-Guidance.</p>
+            {% if overview.benchmark_window_active %}
+            <p class="muted">Seit dem Reset werden ältere Aufgaben nicht mehr in die sichtbare Benchmark-Auswertung aufgenommen.</p>
+            {% else %}
+            <p class="muted">Noch kein Reset aktiv. Aktuell fließen alle bekannten Aufgaben in die Benchmark-Auswertung ein.</p>
+            {% endif %}
             <p class="muted">Übersprungene Aufgaben in dieser Auswertung: {{ overview.skipped_task_count }}</p>
           </div>
         </article>

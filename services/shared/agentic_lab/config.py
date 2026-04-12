@@ -8,15 +8,142 @@ How to debug: If services point at the wrong URLs, repos, or volumes, inspect th
 from __future__ import annotations
 
 import logging
+import os
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretFileProbe:
+    """Small operator-facing state snapshot for one configured secret file path."""
+
+    env_state: str
+    state: str
+    path: str | None
+    configured: bool
+    exists: bool
+    readable: bool
+    is_directory: bool
+    detail: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation for readiness reports and tests."""
+
+        return asdict(self)
+
+
+def normalize_optional_path_value(value: Any) -> Path | None:
+    """Treat unset, empty, or whitespace-only path values as absent instead of `Path('.')`."""
+
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, os.PathLike):
+        return Path(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return Path(stripped)
+    return Path(str(value))
+
+
+def inspect_secret_file(secret_file: Path | None, *, raw_env_value: str | None = None) -> SecretFileProbe:
+    """Classify one secret-file path without exposing any secret contents."""
+
+    env_state = "not_set"
+    if raw_env_value is not None:
+        env_state = "configured" if raw_env_value.strip() else "empty_ignored"
+
+    if secret_file is None:
+        return SecretFileProbe(
+            env_state=env_state,
+            state=env_state,
+            path=None,
+            configured=False,
+            exists=False,
+            readable=False,
+            is_directory=False,
+            detail="Kein Secret-Dateipfad gesetzt." if env_state == "not_set" else "Leerer Secret-Dateipfad wird ignoriert.",
+        )
+
+    try:
+        if not secret_file.exists():
+            return SecretFileProbe(
+                env_state=env_state,
+                state="missing",
+                path=str(secret_file),
+                configured=True,
+                exists=False,
+                readable=False,
+                is_directory=False,
+                detail="Datei wurde konfiguriert, existiert aber nicht.",
+            )
+        if secret_file.is_dir():
+            return SecretFileProbe(
+                env_state=env_state,
+                state="directory",
+                path=str(secret_file),
+                configured=True,
+                exists=True,
+                readable=False,
+                is_directory=True,
+                detail="Pfad zeigt auf ein Verzeichnis statt auf eine Datei.",
+            )
+        if not secret_file.is_file():
+            return SecretFileProbe(
+                env_state=env_state,
+                state="invalid_path",
+                path=str(secret_file),
+                configured=True,
+                exists=True,
+                readable=False,
+                is_directory=False,
+                detail="Pfad ist kein regulaerer Dateipfad.",
+            )
+        with secret_file.open("r", encoding="utf-8") as handle:
+            handle.read(0)
+        return SecretFileProbe(
+            env_state=env_state,
+            state="ok",
+            path=str(secret_file),
+            configured=True,
+            exists=True,
+            readable=True,
+            is_directory=False,
+            detail="Datei ist vorhanden und lesbar.",
+        )
+    except PermissionError:
+        return SecretFileProbe(
+            env_state=env_state,
+            state="not_readable",
+            path=str(secret_file),
+            configured=True,
+            exists=True,
+            readable=False,
+            is_directory=False,
+            detail="Datei ist fuer den aktuellen Service-User nicht lesbar.",
+        )
+    except OSError as exc:
+        return SecretFileProbe(
+            env_state=env_state,
+            state="invalid_path",
+            path=str(secret_file),
+            configured=True,
+            exists=True,
+            readable=False,
+            is_directory=False,
+            detail=f"Pfad konnte nicht geprueft werden: {exc}",
+        )
 
 
 def validate_runtime_env_file(env_file: Path = Path(".env")) -> None:
@@ -50,6 +177,21 @@ class Settings(BaseSettings):
     """Typed environment-backed settings with safe defaults for local staging."""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator(
+        "default_model_api_key_file",
+        "mistral_api_key_file",
+        "qwen_api_key_file",
+        "web_search_api_key_file",
+        "github_token_file",
+        "self_improvement_smtp_password_file",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_optional_secret_file_paths(cls, value: Any) -> Path | None:
+        """Normalize optional secret-file env values so empty strings become `None` instead of `Path('.')`."""
+
+        return normalize_optional_path_value(value)
 
     app_env: str = Field(default="development", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -217,6 +359,10 @@ class Settings(BaseSettings):
     # ── Self-Improvement ──────────────────────────────────────────────────────
     self_improvement_enabled: bool = Field(default=False, alias="SELF_IMPROVEMENT_ENABLED")
     self_improvement_mode: str = Field(default="manual", alias="SELF_IMPROVEMENT_MODE")
+    self_improvement_policy_path: Path = Field(
+        default=Path("/app/config/self-improvement.policy.yaml"),
+        alias="SELF_IMPROVEMENT_POLICY_PATH",
+    )
     self_improvement_max_auto_fix_attempts: int = Field(
         default=3, alias="SELF_IMPROVEMENT_MAX_AUTO_FIX_ATTEMPTS"
     )
@@ -242,6 +388,26 @@ class Settings(BaseSettings):
     self_improvement_local_repo_path: str = Field(
         default="/workspace/local-multi-agent-company",
         alias="SELF_IMPROVEMENT_LOCAL_REPO_PATH",
+    )
+    self_improvement_email_enabled: bool = Field(default=False, alias="SELF_IMPROVEMENT_EMAIL_ENABLED")
+    self_improvement_email_to: str = Field(default="", alias="SELF_IMPROVEMENT_EMAIL_TO")
+    self_improvement_email_from: str = Field(default="", alias="SELF_IMPROVEMENT_EMAIL_FROM")
+    self_improvement_email_reply_to: str = Field(default="", alias="SELF_IMPROVEMENT_EMAIL_REPLY_TO")
+    self_improvement_smtp_host: str = Field(default="", alias="SELF_IMPROVEMENT_SMTP_HOST")
+    self_improvement_smtp_port: int = Field(default=587, alias="SELF_IMPROVEMENT_SMTP_PORT")
+    self_improvement_smtp_username: str = Field(default="", alias="SELF_IMPROVEMENT_SMTP_USERNAME")
+    self_improvement_smtp_password: str = Field(default="", alias="SELF_IMPROVEMENT_SMTP_PASSWORD")
+    self_improvement_smtp_password_file: Path | None = Field(
+        default=None,
+        alias="SELF_IMPROVEMENT_SMTP_PASSWORD_FILE",
+    )
+    self_improvement_smtp_use_starttls: bool = Field(
+        default=True,
+        alias="SELF_IMPROVEMENT_SMTP_USE_STARTTLS",
+    )
+    self_improvement_email_timeout_seconds: float = Field(
+        default=20.0,
+        alias="SELF_IMPROVEMENT_EMAIL_TIMEOUT_SECONDS",
     )
 
     # ── Self-Host (autonomous self-update of the agent stack itself) ─────────
@@ -295,6 +461,10 @@ class Settings(BaseSettings):
         self.qwen_api_key = self._resolve_secret_value(self.qwen_api_key, self.qwen_api_key_file)
         self.web_search_api_key = self._resolve_secret_value(self.web_search_api_key, self.web_search_api_key_file)
         self.github_token = self._resolve_secret_value(self.github_token, self.github_token_file)
+        self.self_improvement_smtp_password = self._resolve_secret_value(
+            self.self_improvement_smtp_password,
+            self.self_improvement_smtp_password_file,
+        )
 
     def _resolve_secret_value(self, current_value: str, secret_file: Path | None) -> str:
         """Prefer the explicit env value and otherwise read the first-line-like content from a mounted secret file."""
@@ -305,9 +475,35 @@ class Settings(BaseSettings):
             return effective_value
         if secret_file is None:
             return effective_value
+
+        probe = inspect_secret_file(secret_file)
+        if probe.state in {"not_set", "empty_ignored", "missing"}:
+            return effective_value
+        if probe.state == "directory":
+            LOGGER.warning(
+                "Secret path '%s' points to a directory, not to a readable file. "
+                "The service will continue without this optional secret until the path is corrected.",
+                secret_file,
+            )
+            return effective_value
+        if probe.state == "not_readable":
+            LOGGER.warning(
+                "Secret file '%s' is not readable for the current service user. "
+                "The service will continue without this secret. "
+                "Fix the host-side permissions or adjust PUID/PGID if the secret is required.",
+                secret_file,
+            )
+            return effective_value
+        if probe.state == "invalid_path":
+            LOGGER.warning(
+                "Secret path '%s' is not a valid readable file (%s). "
+                "The service will continue without this optional secret.",
+                secret_file,
+                probe.detail,
+            )
+            return effective_value
+
         try:
-            if not secret_file.exists():
-                return effective_value
             return secret_file.read_text(encoding="utf-8").rstrip("\r\n")
         except PermissionError:
             LOGGER.warning(

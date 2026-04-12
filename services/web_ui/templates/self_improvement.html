@@ -104,6 +104,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
         <a href="/debug">Debug-Center</a>
         <a href="/system-check">System-Check</a>
         <a href="/self-improvement" class="active">Self-Improvement</a>
+        <span class="topnav-version" title="{{ ui_build.full_label }}">{{ ui_build.display }}</span>
       </nav>
 
       <section class="hero">
@@ -126,6 +127,36 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
       <section class="panel panel-success">
         <h2>Erfolg</h2>
         <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if si_pending_review_cycles %}
+      <section class="panel panel-alert">
+        <div class="panel-header">
+          <h2>Offene Freigaben</h2>
+          <span class="muted">{{ si_pending_review_cycles | length }} warten auf Entscheidung</span>
+        </div>
+        <div class="stack">
+          {% for cycle in si_pending_review_cycles %}
+          <div class="config-item">
+            <p><strong>Zyklus #{{ cycle.cycle_number }}</strong> · {{ cycle.risk_level | upper }} · {{ cycle.governance_action or cycle.status }}</p>
+            <p><strong>Ziel:</strong> {{ cycle.goal or "noch kein Ziel gespeichert" }}</p>
+            <p><strong>Gate:</strong> {{ cycle.current_gate_name or "self-improvement-risk-review" }}</p>
+            <p><strong>Grund:</strong> {{ cycle.current_gate_reason or cycle.risk_reason or "Freigabe erforderlich." }}</p>
+            <p><strong>E-Mail:</strong> {{ cycle.approval_email_status or "noch nicht protokolliert" }}</p>
+            {% if cycle.task_id %}
+            <p><strong>Task:</strong> <a href="/tasks/{{ cycle.task_id }}">{{ cycle.task_id[:8] }}…</a></p>
+            {% endif %}
+            <form method="post" action="/self-improvement/cycles/{{ cycle.id }}/approve" class="stack">
+              <label>
+                Freigabe-Begruendung (optional)
+                <input type="text" name="reason" placeholder="Warum darf dieser Schritt weiterlaufen?">
+              </label>
+              <button type="submit" class="btn btn-primary">Freigeben</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
       </section>
       {% endif %}
 
@@ -192,6 +223,13 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
           {% if si_active_cycle.risk_reason %} ({{ si_active_cycle.risk_reason }}){% endif %}
           {% endif %}
         </div>
+
+        <p class="muted" style="font-size:0.85rem; margin-top:0.4rem;">
+          Governance: <strong>{{ si_active_cycle.governance_status }}</strong>
+          {% if si_active_cycle.governance_action %} · Aktion: {{ si_active_cycle.governance_action }}{% endif %}
+          {% if si_active_cycle.approval_email_status %} · E-Mail: {{ si_active_cycle.approval_email_status }}{% endif %}
+          {% if si_active_cycle.rollback_status %} · Rollback: {{ si_active_cycle.rollback_status }}{% endif %}
+        </p>
 
         {% if si_active_cycle.latest_error %}
         <div class="panel-alert" style="margin-top:0.75rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
@@ -358,7 +396,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
       <section class="panel">
         <div class="panel-header">
           <h2>Konfiguration</h2>
-          <span class="muted">Nur lesbar — via Umgebungsvariablen steuerbar</span>
+          <span class="muted">Nur lesbar — Policy und Umgebungsvariablen steuern das Verhalten</span>
         </div>
 
         {% if si_config %}
@@ -371,7 +409,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
           </div>
           <div class="config-item">
             <div class="label">Modus</div>
-            <div class="value">{{ si_config.mode }}</div>
+            <div class="value">{{ si_config.normalized_mode or si_config.mode }}</div>
           </div>
           <div class="config-item">
             <div class="label">Max. Zyklen / Tag</div>
@@ -394,6 +432,12 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
             </div>
           </div>
           <div class="config-item">
+            <div class="label">Approval-Mail aktiv</div>
+            <div class="value {% if si_config.approval_email_enabled %}value-on{% else %}value-off{% endif %}">
+              {{ "Ja" if si_config.approval_email_enabled else "Nein" }}
+            </div>
+          </div>
+          <div class="config-item">
             <div class="label">Auto-Rollback</div>
             <div class="value {% if si_config.auto_rollback %}value-on{% else %}value-off{% endif %}">
               {{ "Ja" if si_config.auto_rollback else "Nein" }}
@@ -413,9 +457,114 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
             <div class="label">Lokaler Repo-Pfad</div>
             <div class="value" style="font-family: monospace;">{{ si_config.local_repo_path }}</div>
           </div>
+          <div class="config-item" style="grid-column: 1 / -1;">
+            <div class="label">Policy-Datei</div>
+            <div class="value" style="font-family: monospace;">{{ si_config.policy_path }}</div>
+          </div>
+          {% if si_config.approval_email_to %}
+          <div class="config-item" style="grid-column: 1 / -1;">
+            <div class="label">Approval-Empfaenger</div>
+            <div class="value" style="font-family: monospace;">{{ si_config.approval_email_to }}</div>
+          </div>
+          {% endif %}
         </div>
         {% else %}
         <p class="muted">Konfiguration konnte nicht geladen werden.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Governance</h2>
+          <span class="muted">Open Incidents: {{ si_open_incident_count }}</span>
+        </div>
+        {% if si_policy %}
+        <p class="muted">
+          Repo: <strong>{{ si_policy.repository }}</strong> · Approval-Gate:
+          <strong>{{ si_policy.approval_gate_name }}</strong> · Journal:
+          <code>{{ si_policy.ai_change_index }}</code>
+        </p>
+        <div class="table-wrapper" style="overflow-x:auto;">
+          <table class="cycle-table">
+            <thead>
+              <tr>
+                <th>Modus</th>
+                <th>Risiko</th>
+                <th>Aktion</th>
+                <th>E-Mail</th>
+                <th>Deploy</th>
+                <th>Publish-Gate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for mode, rules in si_policy.mode_rules.items() %}
+                {% for risk, rule in rules.items() %}
+                <tr>
+                  <td>{{ mode }}</td>
+                  <td>{{ risk }}</td>
+                  <td>{{ rule.action }}</td>
+                  <td>{{ rule.email_intent }}</td>
+                  <td>{{ "Ja" if rule.allow_deploy else "Nein" }}</td>
+                  <td>{{ "Ja" if rule.require_publish_approval else "Nein" }}</td>
+                </tr>
+                {% endfor %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">Policy konnte nicht geladen werden.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Incidents & Rollbacks</h2>
+          <span class="muted">Persistente Fehler- und Rollback-Spur</span>
+        </div>
+        {% if si_incidents %}
+        <div class="table-wrapper" style="overflow-x:auto;">
+          <table class="cycle-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Schwere</th>
+                <th>Zusammenfassung</th>
+                <th>Stage</th>
+                <th>Rollback</th>
+                <th>Zuletzt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for incident in si_incidents %}
+              <tr>
+                <td>{{ incident.status }}</td>
+                <td>{{ incident.severity }}</td>
+                <td>
+                  {{ incident.summary }}
+                  {% if incident.task_id %}<br><a href="/tasks/{{ incident.task_id }}">{{ incident.task_id[:8] }}…</a>{% endif %}
+                </td>
+                <td>{{ incident.failure_stage or "—" }}</td>
+                <td>
+                  {{ incident.rollback_status or "—" }}
+                  {% if incident.rollback_task_id %}<br><a href="/tasks/{{ incident.rollback_task_id }}">{{ incident.rollback_task_id[:8] }}…</a>{% endif %}
+                </td>
+                <td>{{ incident.updated_at_display }}</td>
+              </tr>
+              {% if incident.latest_error %}
+              <tr>
+                <td></td>
+                <td colspan="5" style="font-size:0.82rem; color:#b91c1c; padding-top:0; padding-bottom:0.6rem;">
+                  <em>Fehler:</em> {{ incident.latest_error[:260] }}{% if incident.latest_error | length > 260 %}…{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">Noch keine Incidents protokolliert.</p>
         {% endif %}
       </section>
 

@@ -35,6 +35,19 @@ def _run_git(repo_path: Path, *args: str) -> None:
     )
 
 
+def _git_output(repo_path: Path, *args: str) -> str:
+    """Return stdout from one git command inside the temporary test repository."""
+
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return completed.stdout.strip()
+
+
 def _coding_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Build a local test Settings object with deterministic model routing and writable runtime paths."""
 
@@ -93,6 +106,55 @@ def _load_coding_module() -> object:
     if module_name in sys.modules:
         return importlib.reload(sys.modules[module_name])
     return importlib.import_module(module_name)
+
+
+def test_git_revert_backend_prepares_a_deterministic_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    target_file = repo_path / "worker_target.py"
+    target_file.write_text(
+        "def target_function():\n"
+        "    return 'newer-value'\n",
+        encoding="utf-8",
+    )
+    _run_git(repo_path, "add", "worker_target.py")
+    _run_git(repo_path, "commit", "-m", "introduce regression")
+    reverted_commit = _git_output(repo_path, "rev-parse", "HEAD")
+    _run_git(repo_path, "checkout", "-b", "feature/test-rollback")
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+
+    request = WorkerRequest(
+        task_id="task-rollback",
+        goal="Revertiere den fehlerhaften Commit.",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-rollback",
+        metadata={"rollback_commit_sha": reverted_commit},
+        prior_results={},
+    )
+
+    response = coding_app._run_git_revert_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-rollback",
+        reverted_commit,
+    )
+
+    assert response.success is True
+    assert response.outputs["backend"] == "git_revert"
+    assert response.outputs["rollback_commit_sha"] == reverted_commit
+    assert response.outputs["changed_files"] == ["worker_target.py"]
+    assert target_file.read_text(encoding="utf-8") == (
+        "def target_function():\n"
+        "    return 'old-value'\n"
+    )
+    assert Path(response.artifacts[0].path).exists() is True
 
 
 @pytest.mark.asyncio
@@ -162,3 +224,255 @@ async def test_local_patch_backend_recovers_when_primary_model_returns_prose(
     assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith('return "new-value"\n')
     assert call_counter["qwen"] == 2
     assert call_counter["mistral"] == 1
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = (
+            '{"summary":"Tighten one return line only.",'
+            '"operations":['
+            '{"action":"replace_lines",'
+            '"file_path":"worker_target.py",'
+            '"start_line":2,'
+            '"end_line":2,'
+            '"reason":"Only the return line should change.",'
+            '"new_content":"    return \\"line-edited\\""}'
+            "]}"
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-lines",
+        goal="Change only the return line in worker_target.py.",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-replace-lines",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Change only one return line."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-replace-lines",
+    )
+
+    changed_text = (repo_path / "worker_target.py").read_text(encoding="utf-8")
+    assert response.success is True
+    assert response.outputs["operation_results"][0]["strategy"] == "replace_lines"
+    assert changed_text == 'def target_function():\n    return "line-edited"\n'
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_accepts_short_json_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A very short valid JSON response must be enough for the worker to perform one targeted edit."""
+
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = (
+            '{"summary":"Kurz.",'
+            '"operations":['
+            '{"action":"replace_lines","file_path":"worker_target.py","start_line":2,"end_line":2,'
+            '"reason":"Kurz.","new_content":"    return \\"json-kurz\\""}'
+            "]}"
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-short-json",
+        goal="Aendere genau eine Rueckgabezeile.",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-short-json",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Nur eine Rueckgabezeile anpassen."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-short-json",
+    )
+
+    assert response.success is True
+    assert response.summary == "Kurz."
+    assert response.outputs["changed_files"] == ["worker_target.py"]
+    assert response.outputs["operation_results"][0]["strategy"] == "replace_lines"
+    assert (repo_path / "worker_target.py").read_text(encoding="utf-8") == (
+        'def target_function():\n    return "json-kurz"\n'
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_retries_after_empty_operation_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    call_counter = {"qwen": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        call_counter["qwen"] += 1
+        if call_counter["qwen"] == 1:
+            content = '{"summary":"No code changes needed after review.","operations":[]}'
+        else:
+            content = (
+                '{"summary":"Add the requested clone error handling.",'
+                '"operations":['
+                '{"action":"replace_symbol_body",'
+                '"file_path":"worker_target.py",'
+                '"symbol_name":"target_function",'
+                '"reason":"The retry must produce a concrete targeted operation.",'
+                '"new_content":"def target_function():\\n    return \\"retried-value\\"\\n"}'
+                "]}"
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-retry",
+        goal="Add error handling to the git clone command in the local patch backend",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-noop-retry",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Implement clone error handling."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-noop-retry",
+    )
+
+    assert response.success is True
+    assert call_counter["qwen"] == 2
+    assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith('return "retried-value"\n')
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_persists_failure_diagnostics_when_operations_stay_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = '{"summary":"No code changes needed after review.","operations":[],"blocking_reason":"Model found no safe patch."}'
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-noops",
+        goal="Add error handling to the git clone command in the local patch backend",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-noop-failure",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Implement clone error handling."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-noop-failure",
+    )
+
+    assert response.success is False
+    assert response.summary == "Coding backend returned no file operations."
+    assert response.outputs["candidate_files"] == ["worker_target.py"]
+    assert response.outputs["patch_plan_summary"] == "No code changes needed after review."
+    assert response.outputs["blocking_reason"] == "Model found no safe patch."
+    assert len(response.outputs["plan_attempts"]) == 2
+    assert response.outputs["plan_attempts"][0]["operation_count"] == 0
+    assert response.warnings == [
+        "Das Modell hat zwar ein JSON-Objekt geliefert, aber keine konkreten Datei-Operationen vorgeschlagen."
+    ]
+    assert response.artifacts[0].name == "coding-failure"
+    failure_report = Path(response.artifacts[0].path)
+    assert failure_report.exists() is True
+    assert "worker_target.py" in failure_report.read_text(encoding="utf-8")

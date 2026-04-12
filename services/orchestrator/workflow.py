@@ -391,10 +391,14 @@ class WorkflowOrchestrator:
             return {"route_error": str(exc)}
         return {
             "provider": provider.name,
+            "fallback_provider": route.fallback_provider,
             "model_name": provider.model_name,
             "base_url": provider.base_url,
             "request_timeout_seconds": route.request_timeout_seconds,
             "reasoning": route.reasoning,
+            "output_contract": route.output_contract,
+            "routing_note": route.routing_note,
+            "purpose": route.purpose,
         }
 
     def _truncate_text(self, value: str, max_length: int = 220) -> str:
@@ -754,9 +758,11 @@ class WorkflowOrchestrator:
     def _approval_needed_before_github(self, state: WorkflowState) -> bool:
         review_result = state.get("worker_results", {}).get("reviewer", {})
         security_result = state.get("worker_results", {}).get("security", {})
+        metadata = state.get("metadata", {})
         review_requires = review_result.get("requires_human_approval", False)
         security_requires = security_result.get("requires_human_approval", False)
-        return bool(state.get("risk_flags") or review_requires or security_requires)
+        force_publish_approval = bool(metadata.get("force_publish_approval"))
+        return bool(state.get("risk_flags") or review_requires or security_requires or force_publish_approval)
 
     def _modification_approval_required(self, state: WorkflowState) -> bool:
         metadata = state.get("metadata", {})
@@ -771,6 +777,12 @@ class WorkflowOrchestrator:
         )
 
     def _approval_reason(self, state: WorkflowState) -> str:
+        metadata = state.get("metadata", {})
+        if metadata.get("force_publish_approval"):
+            return (
+                "Diese Self-Improvement-Aenderung ist als riskant eingestuft. "
+                "Branch, Diffs und Testergebnisse sind vorbereitet, aber GitHub/Deploy bleiben bis zur Freigabe gesperrt."
+            )
         review_reason = state.get("worker_results", {}).get("reviewer", {}).get("approval_reason")
         security_reason = state.get("worker_results", {}).get("security", {}).get("approval_reason")
         return review_reason or security_reason or "Risky changes detected before GitHub publication."

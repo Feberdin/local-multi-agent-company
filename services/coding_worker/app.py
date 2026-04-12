@@ -8,6 +8,7 @@ How to debug: If generated changes look wrong, inspect the plan, sampled files, 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI
@@ -25,6 +26,7 @@ from services.shared.agentic_lab.repo_tools import (
     current_diff,
     ensure_branch,
     ensure_repository_checkout,
+    git,
     read_text_file,
     write_report,
 )
@@ -61,6 +63,11 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         branch_name = request.branch_name or create_branch_name(request.goal, request.task_id)
         ensure_branch(repo_path, branch_name, request.base_branch)
 
+        rollback_commit_sha = str(request.metadata.get("rollback_commit_sha") or "").strip()
+        if rollback_commit_sha:
+            task_logger.info("Using deterministic git-revert backend for rollback commit %s.", rollback_commit_sha)
+            return _run_git_revert_backend(request, repo_path, branch_name, rollback_commit_sha)
+
         if settings.coding_provider == "openhands":
             task_logger.info("Using OpenHands adapter backend for coding.")
             return await _run_openhands_adapter(request, repo_path, branch_name)
@@ -76,6 +83,75 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             errors=[f"{exc.__class__.__name__}: {exc}"],
             outputs={"local_repo_path": str(repo_path)},
         )
+
+
+def _run_git_revert_backend(
+    request: WorkerRequest,
+    repo_path: Path,
+    branch_name: str,
+    rollback_commit_sha: str,
+) -> WorkerResponse:
+    """Apply one deterministic git revert when a rollback task is scheduled."""
+
+    try:
+        git(["revert", "--no-edit", rollback_commit_sha], repo_path=repo_path, timeout=600)
+    except Exception as exc:  # noqa: BLE001 - operator-facing rollback errors must stay explicit
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Git-Revert fuer den vorbereiteten Rollback ist fehlgeschlagen.",
+            errors=[f"{type(exc).__name__}: {exc}"],
+            outputs={
+                "branch_name": branch_name,
+                "rollback_commit_sha": rollback_commit_sha,
+                "local_repo_path": str(repo_path),
+                "backend": "git_revert",
+            },
+        )
+
+    diff = current_diff(repo_path, request.base_branch)
+    risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
+    report = {
+        "summary": f"Git-Revert fuer Commit {rollback_commit_sha} wurde vorbereitet.",
+        "branch_name": branch_name,
+        "changed_files": diff["changed_files"],
+        "diff_stat": diff["diff_stat"],
+        "rollback_commit_sha": rollback_commit_sha,
+        "backend": "git_revert",
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "coding-revert-report.json", report)
+
+    if not diff["changed_files"]:
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Der Git-Revert hat keine sichtbaren Aenderungen erzeugt.",
+            errors=[
+                "Der angeforderte Commit ist moeglicherweise bereits revertiert oder fuehrt im aktuellen Branch zu keinem Diff."
+            ],
+            outputs=report,
+            artifacts=[
+                Artifact(
+                    name="coding-revert-report",
+                    path=str(report_path),
+                    description="Deterministischer Git-Revert ohne resultierenden Diff.",
+                )
+            ],
+        )
+
+    return WorkerResponse(
+        worker="coding",
+        summary=f"Rollback-Aenderung fuer Commit {rollback_commit_sha} wurde vorbereitet.",
+        outputs=report,
+        risk_flags=risk_flags,
+        artifacts=[
+            Artifact(
+                name="coding-revert-report",
+                path=str(report_path),
+                description="Deterministischer Git-Revert fuer den angeforderten Commit.",
+            )
+        ],
+    )
 
 
 async def _run_local_patch_backend(
@@ -122,6 +198,7 @@ async def _run_local_patch_backend(
     # use targeted replace_symbol_body operations instead of full file rewrites.
     code_index = build_index(repo_path, candidate_files)
     symbol_index_block = code_index.format_for_prompt()
+    plan_attempts: list[dict[str, Any]] = []
 
     try:
         patch_plan = await llm.complete_json(
@@ -137,31 +214,92 @@ async def _run_local_patch_backend(
             ),
             worker_name="coding",
         )
+        plan_attempts.append(_patch_plan_attempt_snapshot("initial", patch_plan))
     except LLMError as exc:
-        return WorkerResponse(
-            worker="coding",
-            success=False,
+        return _coding_failure_response(
+            request=request,
+            repo_path=repo_path,
             summary="Coding plan generation failed.",
             errors=[str(exc)],
+            candidate_files=candidate_files,
+            arch_touched=arch_touched,
+            research=research,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            plan_attempts=plan_attempts,
         )
 
-    raw_operations = patch_plan.get("operations", [])
+    raw_operations = _raw_operations_from_plan(patch_plan)
     if not raw_operations:
-        return WorkerResponse(
-            worker="coding",
-            success=False,
+        try:
+            patch_plan = await llm.complete_json(
+                system_prompt=_coding_system_prompt(guidance_block),
+                user_prompt=_coding_noop_retry_user_prompt(
+                    goal=request.goal,
+                    requirements=requirements,
+                    architecture=architecture,
+                    research=research,
+                    overview=overview,
+                    file_context=file_context,
+                    symbol_index_block=symbol_index_block,
+                    candidate_files=candidate_files,
+                    previous_plan=patch_plan,
+                ),
+                worker_name="coding",
+            )
+            plan_attempts.append(_patch_plan_attempt_snapshot("retry_after_no_operations", patch_plan))
+        except LLMError as exc:
+            return _coding_failure_response(
+                request=request,
+                repo_path=repo_path,
+                summary="Coding plan retry failed after an empty first plan.",
+                errors=[str(exc)],
+                candidate_files=candidate_files,
+                arch_touched=arch_touched,
+                research=research,
+                file_context=file_context,
+                symbol_index_block=symbol_index_block,
+                plan_attempts=plan_attempts,
+            )
+        raw_operations = _raw_operations_from_plan(patch_plan)
+
+    if not raw_operations:
+        blocking_reason = str(patch_plan.get("blocking_reason") or "").strip()
+        errors = ["The local patch backend did not generate any file operations."]
+        if blocking_reason:
+            errors.append(f"Blocking reason: {blocking_reason}")
+        return _coding_failure_response(
+            request=request,
+            repo_path=repo_path,
             summary="Coding backend returned no file operations.",
-            errors=["The local patch backend did not generate any file operations."],
+            errors=errors,
+            candidate_files=candidate_files,
+            arch_touched=arch_touched,
+            research=research,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            plan_attempts=plan_attempts,
+            patch_plan=patch_plan,
+            warnings=[
+                "Das Modell hat zwar ein JSON-Objekt geliefert, aber keine konkreten Datei-Operationen vorgeschlagen."
+            ],
         )
 
     # Parse and normalize operations (supports both new structured edits and legacy create_or_update)
     edit_ops, parse_errors = _parse_operations(raw_operations)
     if not edit_ops:
-        return WorkerResponse(
-            worker="coding",
-            success=False,
+        return _coding_failure_response(
+            request=request,
+            repo_path=repo_path,
             summary="Could not parse any valid edit operations from the model response.",
             errors=parse_errors or ["All operations failed to parse."],
+            candidate_files=candidate_files,
+            arch_touched=arch_touched,
+            research=research,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            plan_attempts=plan_attempts,
+            patch_plan=patch_plan,
         )
 
     # Apply via patch engine (symbol → anchor → line → full-file, with rollback on failure)
@@ -171,11 +309,20 @@ async def _run_local_patch_backend(
             f"Operation {r.operation_index} ({r.action} on {r.file_path}): {r.error}"
             for r in patch_result.failed_operations
         ]
-        return WorkerResponse(
-            worker="coding",
-            success=False,
+        return _coding_failure_response(
+            request=request,
+            repo_path=repo_path,
             summary="Patch engine could not apply the generated edit operations.",
             errors=op_errors or patch_result.errors,
+            candidate_files=candidate_files,
+            arch_touched=arch_touched,
+            research=research,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            plan_attempts=plan_attempts,
+            patch_plan=patch_plan,
+            parse_errors=parse_errors,
+            patch_result=patch_result,
         )
 
     diff = current_diff(repo_path, request.base_branch)
@@ -198,11 +345,21 @@ async def _run_local_patch_backend(
     report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
 
     if not diff["changed_files"]:
-        return WorkerResponse(
-            worker="coding",
-            success=False,
+        return _coding_failure_response(
+            request=request,
+            repo_path=repo_path,
             summary="No working tree changes were detected after applying the patch.",
             errors=["Generated operations did not result in any diff against the base branch."],
+            candidate_files=candidate_files,
+            arch_touched=arch_touched,
+            research=research,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            plan_attempts=plan_attempts,
+            patch_plan=patch_plan,
+            parse_errors=parse_errors,
+            patch_result=patch_result,
+            diff=diff,
         )
 
     return WorkerResponse(
@@ -293,6 +450,40 @@ def _coding_system_prompt(guidance_block: str) -> str:
     )
 
 
+def _coding_noop_retry_user_prompt(
+    *,
+    goal: str,
+    requirements: object,
+    architecture: object,
+    research: object,
+    overview: dict[str, Any],
+    file_context: dict[str, str],
+    symbol_index_block: str,
+    candidate_files: list[str],
+    previous_plan: dict[str, Any],
+) -> str:
+    """Ask for one stricter second attempt when the first JSON plan returned no operations."""
+
+    base_prompt = _coding_user_prompt(
+        goal,
+        requirements,
+        architecture,
+        research,
+        overview,
+        file_context,
+        symbol_index_block,
+    )
+    retry_block = [
+        "Previous coding attempt returned zero file operations even though this task asked for code changes.",
+        f"Previous summary: {previous_plan.get('summary', 'keine Zusammenfassung')}",
+        f"Candidate files you may change: {candidate_files or ['keine konkreten Kandidaten sichtbar']}",
+        "Return at least one concrete file operation when a safe change is possible.",
+        "If no safe code change is possible, keep operations empty and add a short blocking_reason field.",
+        "Do not answer with prose outside the JSON object.",
+    ]
+    return base_prompt + "\n\n" + "\n".join(retry_block)
+
+
 def _coding_user_prompt(
     goal: str,
     requirements: object,
@@ -319,6 +510,103 @@ def _coding_user_prompt(
         "Use create_or_update only if a new file is needed or >50% of the file changes."
     )
     return "\n\n".join(parts)
+
+
+def _raw_operations_from_plan(patch_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only dict-based operations so diagnostics can distinguish empty from malformed plans."""
+
+    raw_operations = patch_plan.get("operations", [])
+    if not isinstance(raw_operations, list):
+        return []
+    return [item for item in raw_operations if isinstance(item, dict)]
+
+
+def _patch_plan_attempt_snapshot(attempt: str, patch_plan: dict[str, Any]) -> dict[str, Any]:
+    """Capture one compact snapshot of the model plan for later debugging and UI inspection."""
+
+    raw_operations = _raw_operations_from_plan(patch_plan)
+    return {
+        "attempt": attempt,
+        "summary": str(patch_plan.get("summary") or "").strip(),
+        "operation_count": len(raw_operations),
+        "operation_actions": [str(item.get("action") or "unknown") for item in raw_operations[:12]],
+        "blocking_reason": str(patch_plan.get("blocking_reason") or "").strip(),
+        "response_keys": sorted(str(key) for key in patch_plan.keys()),
+    }
+
+
+def _coding_failure_response(
+    *,
+    request: WorkerRequest,
+    repo_path: Path,
+    summary: str,
+    errors: list[str],
+    candidate_files: list[str],
+    arch_touched: list[str],
+    research: object,
+    file_context: dict[str, str],
+    symbol_index_block: str,
+    plan_attempts: list[dict[str, Any]],
+    patch_plan: dict[str, Any] | None = None,
+    parse_errors: list[str] | None = None,
+    patch_result: PatchResult | None = None,
+    diff: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> WorkerResponse:
+    """Return one operator-friendly failure response plus a persisted JSON report for later diagnosis."""
+
+    research_outputs = research if isinstance(research, dict) else {}
+    output_payload: dict[str, Any] = {
+        "local_repo_path": str(repo_path),
+        "candidate_files": candidate_files,
+        "architecture_touched_areas": arch_touched,
+        "research_candidate_files": [
+            item for item in research_outputs.get("candidate_files", []) if isinstance(item, str)
+        ],
+        "file_context_paths": sorted(file_context.keys()),
+        "symbol_index_available": bool(symbol_index_block),
+        "plan_attempts": plan_attempts,
+        "parse_errors": parse_errors or [],
+    }
+    if patch_plan is not None:
+        output_payload["patch_plan_summary"] = str(patch_plan.get("summary") or "").strip()
+        output_payload["raw_operation_count"] = len(_raw_operations_from_plan(patch_plan))
+        if patch_plan.get("blocking_reason"):
+            output_payload["blocking_reason"] = str(patch_plan.get("blocking_reason"))
+    if patch_result is not None:
+        output_payload["patch_summary"] = patch_result.summary_text()
+    if diff is not None:
+        output_payload["changed_files"] = diff.get("changed_files", [])
+        output_payload["diff_stat"] = diff.get("diff_stat", "")
+
+    report_path = write_report(
+        settings.task_report_dir(request.task_id),
+        "coding-failure.json",
+        {
+            "summary": summary,
+            "goal": request.goal,
+            "repository": request.repository,
+            "outputs": output_payload,
+            "errors": errors,
+            "warnings": warnings or [],
+        },
+    )
+
+    return WorkerResponse(
+        worker="coding",
+        success=False,
+        summary=summary,
+        errors=errors,
+        warnings=warnings or [],
+        outputs=output_payload,
+        artifacts=[
+            Artifact(
+                name="coding-failure",
+                path=str(report_path),
+                description="Diagnosebericht zum fehlgeschlagenen Coding-Plan oder Patch-Lauf.",
+            )
+        ],
+    )
 
 
 def _parse_operations(raw_ops: list) -> tuple[list[EditOperation], list[str]]:

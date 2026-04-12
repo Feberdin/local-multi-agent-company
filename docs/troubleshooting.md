@@ -259,6 +259,88 @@ Interpretation:
 
 Aktuelles Verhalten:
 
+## Self-Improvement wartet auf Freigabe
+
+Typisches Symptom:
+
+- im Dashboard steht der Zyklus auf `awaiting_manual_review`
+- es gibt keinen neuen Commit oder PR
+- unter `Offene Freigaben` erscheint der Zyklus weiter
+
+Erwartetes Verhalten:
+
+- das System blockiert nicht blind, sondern wartet bewusst an einem Governance-Gate
+- andere sichere Aufgaben koennen weiterlaufen
+
+Pruefen:
+
+- `http://<host>:18088/self-improvement`
+- `curl http://localhost:18080/api/self-improvement/status`
+- `curl http://localhost:18080/api/settings/self-improvement/policy`
+
+Wichtige Felder:
+
+- `governance_status`
+- `governance_action`
+- `current_gate_name`
+- `current_gate_reason`
+- `approval_email_status`
+
+## Self-Improvement-Mail wurde nicht versendet
+
+Typisches Symptom:
+
+- im Dashboard steht `approval_email_status=queued`, `skipped` oder `failed`
+
+Bedeutung:
+
+- `skipped`
+  - E-Mail-Versand ist deaktiviert
+- `queued`
+  - Outbox-Datei wurde geschrieben, aber SMTP ist noch nicht voll konfiguriert
+- `failed`
+  - SMTP wurde versucht, ist aber technisch fehlgeschlagen
+- `sent`
+  - Nachricht wurde versendet und zusaetzlich protokolliert
+
+Pruefen:
+
+- Outbox-Ordner:
+  - `ls -lah <DATA_DIR>/self-improvement-email-outbox`
+- SMTP-Konfiguration in `.env`
+- Secret-Datei fuer `SELF_IMPROVEMENT_SMTP_PASSWORD_FILE`, falls genutzt
+
+Wichtig:
+
+- fehlende SMTP-Konfiguration ist absichtlich kein harter Runtime-Fehler
+- die Nachricht bleibt trotzdem als JSON im Outbox-Ordner verfuegbar
+
+## Self-Improvement hat einen Incident oder Rollback erzeugt
+
+Typisches Symptom:
+
+- ein Zyklus ist fehlgeschlagen
+- im Dashboard erscheint ein Incident mit `rollback_running`
+- ein weiterer Task mit Rollback-Ziel wurde angelegt
+
+Bedeutung:
+
+- das System hat den fehlerhaften Self-Improvement-Lauf erkannt
+- der Vorfall wurde dauerhaft protokolliert
+- falls moeglich wurde automatisch ein Rollback-Task vorbereitet
+
+Pruefen:
+
+- `http://<host>:18088/self-improvement`
+- `curl http://localhost:18080/api/self-improvement/incidents`
+- `docker compose logs --tail=200 coding-worker`
+- `docker compose logs --tail=200 orchestrator`
+
+Technischer Hinweis:
+
+- der Rollback-Task nutzt einen deterministischen `git revert`-Pfad im Coding-Worker
+- wenn kein Commit-SHA vorliegt, kann nur ein Incident erzeugt werden, aber kein automatischer Revert
+
 - die Task-Ansicht aktualisiert sich waehrend aktiver Stages automatisch
 - die aktuelle Stage zeigt Worker, Startzeit, Laufzeit und letzte Aktivitaet
 - Heartbeat-Ereignisse machen sichtbar, dass ein langsamer lokaler Modellaufruf noch lebt

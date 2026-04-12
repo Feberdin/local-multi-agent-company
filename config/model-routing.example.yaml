@@ -1,134 +1,208 @@
 # Purpose: Example worker-to-model routing for the Feberdin multi-agent team.
-# Input/Output: The shared LLM client reads this file to map worker roles to primary and fallback local models.
-# Invariants: Lightweight stages default to Mistral for lower latency; Qwen is reserved for clearly heavier reasoning stages unless operators override the file explicitly.
-# Debugging: If a worker uses the wrong model, inspect its entry here and the provider environment variables in `.env`.
+# Input/Output: The shared LLM client reads this file to map worker roles to concrete local models, timeouts, and output contracts.
+# Invariants:
+#   - Strukturierte Worker bevorzugen standardmaessig Mistral fuer robustere parsebare Antworten.
+#   - Analyse- und Architektur-Worker duerfen bevorzugt Qwen nutzen.
+#   - Fallbacks bleiben explizit und nachvollziehbar statt still implizit.
+# Debugging:
+#   - Wenn ein Worker das falsche Modell nutzt, pruefe zuerst diesen Eintrag und danach die gesetzten Provider-ENV-Werte.
+#   - Wenn ein Worker an freier Prosa statt JSON scheitert, achte auf `output_contract` und `routing_note`.
 
 workers:
   requirements:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.1
     max_tokens: 1400
     budget_tokens: 5000
-    request_timeout_seconds: 1200
+    request_timeout_seconds: 900
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt robusten, strikt parsebaren JSON-Output fuer Anforderungen.
+
   cost:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 900
     budget_tokens: 2500
     request_timeout_seconds: 600
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt konservative, gut parsebare Budget- und Routing-Schaetzungen.
+
   human_resources:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
-    max_tokens: 900
+    max_tokens: 1000
     budget_tokens: 2500
     request_timeout_seconds: 600
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt klare Worker-Empfehlungen und Rollenlisten im sauberen Format.
+
   research:
     primary_provider: qwen
     fallback_provider: mistral
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
-    request_timeout_seconds: 1500
+    request_timeout_seconds: 1800
     reasoning: high
+    output_contract: text
+    routing_note: Bevorzugt staerkere semantische Analyse fuer Repo-Kontext und Quellen.
+
   architecture:
     primary_provider: qwen
     fallback_provider: mistral
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
-    request_timeout_seconds: 1500
+    request_timeout_seconds: 1800
     reasoning: high
+    output_contract: json
+    routing_note: Bevorzugt tieferes Architekturdenken, toleriert aber strukturierten Fallback.
+
   data:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
-    max_tokens: 1200
-    budget_tokens: 4000
-    request_timeout_seconds: 900
-    reasoning: medium
-  ux:
-    primary_provider: mistral
-    fallback_provider:
-    temperature: 0.2
     max_tokens: 1400
-    budget_tokens: 4500
+    budget_tokens: 5000
     request_timeout_seconds: 900
     reasoning: medium
-  coding:
+    output_contract: json
+    routing_note: Bevorzugt konsistente Feld- und Statusstrukturen fuer Datenhygiene.
+
+  ux:
     primary_provider: qwen
     fallback_provider: mistral
+    temperature: 0.2
+    max_tokens: 1600
+    budget_tokens: 5000
+    request_timeout_seconds: 1200
+    reasoning: medium
+    output_contract: json
+    routing_note: Bevorzugt staerkere semantische UX-Bewertung, behaelt aber einen strukturierten Fallback.
+
+  coding:
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.05
     max_tokens: 2600
     budget_tokens: 12000
     request_timeout_seconds: 1800
-    reasoning: high
+    reasoning: medium
+    output_contract: edit_plan
+    routing_note: Bevorzugt das lokal robustere Modell fuer parsebare Patch- und Dateioperationen.
+
   reviewer:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1800
     budget_tokens: 8000
     request_timeout_seconds: 1200
     reasoning: medium
+    output_contract: json
+    routing_note: Bevorzugt strukturierte Findings und Warnungen statt freier Review-Prosa.
+
   tester:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 4000
     request_timeout_seconds: 900
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt parsebare Test- und Check-Zusammenfassungen.
+
   qa:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 4000
     request_timeout_seconds: 900
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt robuste, knappe QA-Summaries mit sauberem Format.
+
   security:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1800
     budget_tokens: 7000
-    request_timeout_seconds: 1500
-    reasoning: high
+    request_timeout_seconds: 1200
+    reasoning: medium
+    output_contract: json
+    routing_note: Konservativ auf robusten strukturierten Output ausgerichtet, damit Security-Funde klar parsebar bleiben.
+
   validation:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1600
     budget_tokens: 6000
-    request_timeout_seconds: 1500
-    reasoning: high
+    request_timeout_seconds: 1200
+    reasoning: medium
+    output_contract: json
+    routing_note: Bevorzugt strikte, evidenzbasierte Validierungsfelder statt freier Abschlussprosa.
+
   documentation:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.1
     max_tokens: 1800
     budget_tokens: 6000
     request_timeout_seconds: 1200
     reasoning: medium
+    output_contract: text
+    routing_note: Bevorzugt kompakte, gut lesbare Betriebs- und Handover-Texte.
+
+  github:
+    primary_provider: mistral
+    fallback_provider: qwen
+    temperature: 0.0
+    max_tokens: 1400
+    budget_tokens: 5000
+    request_timeout_seconds: 900
+    reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt kleine, klar strukturierte GitHub-Artefakte mit niedrigem Halluzinationsrisiko.
+
+  deploy:
+    primary_provider: mistral
+    fallback_provider: qwen
+    temperature: 0.0
+    max_tokens: 1200
+    budget_tokens: 4000
+    request_timeout_seconds: 900
+    reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt strikte, reproduzierbare Deploy- und Rollback-Summaries.
+
   memory:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.0
     max_tokens: 1200
     budget_tokens: 3000
     request_timeout_seconds: 600
     reasoning: low
+    output_contract: json
+    routing_note: Bevorzugt knappe, sauber strukturierte Langzeitnotizen.
+
   default:
     primary_provider: mistral
-    fallback_provider:
+    fallback_provider: qwen
     temperature: 0.1
     max_tokens: 1800
     budget_tokens: 6000
     request_timeout_seconds: 1200
     reasoning: medium
+    output_contract: text
+    routing_note: Faellt konservativ auf den sichersten lokal verfuegbaren Standard zurueck.

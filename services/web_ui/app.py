@@ -11,9 +11,12 @@ import asyncio
 import io
 import json
 import os
+import subprocess
 import zipfile
 from collections import Counter
 from datetime import UTC, datetime
+from functools import lru_cache
+from importlib import metadata
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
@@ -31,7 +34,6 @@ from services.shared.agentic_lab.schemas import HealthResponse, TaskStatus
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
-app = FastAPI(title="Feberdin Agent Team Dashboard", version="0.1.0")
 READINESS_MODE_QUERY = Query(default=ReadinessMode.QUICK)
 READINESS_MODE_FORM = Form(default=ReadinessMode.QUICK)
 
@@ -39,6 +41,20 @@ READINESS_MODE_FORM = Form(default=ReadinessMode.QUICK)
 # The UI should import both inside the container (`/app/...`) and in local tests where the
 # repository lives in a normal workspace path. Resolving from this file keeps the setup portable.
 WEB_UI_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = WEB_UI_DIR.parent.parent
+
+
+def _resolve_package_version() -> str:
+    """Return the installed package version and fall back to the checked-in default during local tests."""
+
+    try:
+        return metadata.version("feberdin-agent-team")
+    except metadata.PackageNotFoundError:
+        return "0.1.0"
+
+
+APP_VERSION = _resolve_package_version()
+app = FastAPI(title="Feberdin Agent Team Dashboard", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=str(WEB_UI_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(WEB_UI_DIR / "templates"))
 
@@ -50,6 +66,73 @@ def _safe_json(value: Any) -> str:
 
 
 templates.env.filters["safe_json"] = _safe_json
+
+
+def _run_git_metadata_command(repo_path: Path, *args: str) -> str | None:
+    """Read small Git facts for the operator header without crashing the UI if Git is unavailable."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+@lru_cache(maxsize=1)
+def _ui_build_info() -> dict[str, str]:
+    """Return one stable, human-readable build label for the whole Web-UI session."""
+
+    candidate_paths: list[Path] = [PROJECT_ROOT]
+    if settings.self_improvement_local_repo_path.strip():
+        candidate_paths.append(Path(settings.self_improvement_local_repo_path))
+
+    seen_paths: set[Path] = set()
+    git_sha: str | None = None
+    git_branch: str | None = None
+    repo_path_display: str | None = None
+
+    for candidate in candidate_paths:
+        if candidate in seen_paths:
+            continue
+        seen_paths.add(candidate)
+        if not candidate.exists():
+            continue
+        if not (candidate / ".git").exists():
+            continue
+        sha = _run_git_metadata_command(candidate, "rev-parse", "--short=12", "HEAD")
+        if not sha:
+            continue
+        git_sha = sha
+        git_branch = _run_git_metadata_command(candidate, "rev-parse", "--abbrev-ref", "HEAD") or "unbekannt"
+        repo_path_display = str(candidate)
+        break
+
+    display = f"Version {APP_VERSION}"
+    full_label = f"Version {APP_VERSION}"
+    if git_sha:
+        display = f"{display} · {git_sha}"
+        full_label = f"{full_label} · Branch {git_branch or 'unbekannt'} · Commit {git_sha}"
+    if repo_path_display:
+        full_label = f"{full_label} · Repo {repo_path_display}"
+
+    return {
+        "app_version": APP_VERSION,
+        "git_sha": git_sha or "",
+        "git_branch": git_branch or "",
+        "repo_path": repo_path_display or "",
+        "display": display,
+        "full_label": full_label,
+    }
+
+
+templates.env.globals["ui_build"] = _ui_build_info()
 
 WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     {
@@ -347,7 +430,9 @@ DATA_STORE_FILE_DESCRIPTIONS: dict[str, str] = {
     "web_search_providers.json": "Persistierte Web-Search-Provider aus DATA_DIR.",
     "worker_guidance.json": "Persistierte Worker-Guidance aus DATA_DIR.",
     "improvement_suggestions.json": "Persistierte Suggestions-Registry aus DATA_DIR.",
+    "benchmark_state.json": "Persistierter Benchmark-Startpunkt nach einem manuellen Reset.",
 }
+BENCHMARK_STATE_FILENAME = "benchmark_state.json"
 HOST_LOG_COMMANDS = """\
 Diese Befehle laufen auf dem Unraid-Host und koennen nicht direkt aus der Web-UI geladen werden.
 
@@ -492,6 +577,50 @@ def _normalize_suggestions(value: Any) -> list[dict[str, Any]]:
         suggestion["is_repository_wide"] = suggestion["scope"] == "repository_wide"
         normalized.append(suggestion)
     return normalized
+
+
+def _benchmark_state_path() -> Path:
+    """Return the persistent benchmark state path so operators can reset the visible history window."""
+
+    return settings.data_dir / BENCHMARK_STATE_FILENAME
+
+
+def _load_benchmark_state() -> dict[str, Any]:
+    """Load the benchmark reset state defensively so a malformed file never breaks the page."""
+
+    state_path = _benchmark_state_path()
+    if not state_path.exists():
+        return {}
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_benchmark_state(state: dict[str, Any]) -> None:
+    """Persist the benchmark reset state in DATA_DIR so the filtered window survives restarts."""
+
+    state_path = _benchmark_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def _benchmark_reset_at() -> datetime | None:
+    """Return the persisted benchmark reset timestamp if one is active."""
+
+    return _parse_timestamp(_load_benchmark_state().get("reset_at"))
+
+
+def _task_matches_benchmark_window(task: dict[str, Any], reset_at: datetime | None) -> bool:
+    """Decide whether one task should contribute to the current benchmark window."""
+
+    if reset_at is None:
+        return True
+    updated_at = _parse_timestamp(task.get("updated_at"))
+    if updated_at is None:
+        return False
+    return updated_at >= reset_at
 
 
 def _next_worker_name(worker_name: str) -> str | None:
@@ -891,6 +1020,15 @@ def _running_since(task: dict[str, Any], worker_name: str | None) -> datetime | 
     return started_at
 
 
+def _is_task_archived(task: dict[str, Any]) -> bool:
+    """Treat archive state defensively so old payloads and new metadata remain compatible."""
+
+    if bool(task.get("archived")):
+        return True
+    metadata = _as_mapping(task.get("metadata"))
+    return bool(metadata.get("archived"))
+
+
 def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a deterministic per-worker timeline so slow stages remain readable and explainable."""
 
@@ -1128,6 +1266,15 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     decorated["worker_progress"] = _normalize_worker_progress(decorated["metadata"].get("worker_progress"))
     decorated["events"] = _normalize_events(decorated.get("events"))
     decorated["risk_flags"] = [str(item) for item in _as_list(decorated.get("risk_flags"))]
+    decorated["archived"] = _is_task_archived(decorated)
+    decorated["archived_at"] = _parse_timestamp(decorated.get("archived_at") or decorated["metadata"].get("archived_at"))
+    decorated["archived_by"] = str(decorated.get("archived_by") or decorated["metadata"].get("archived_by") or "")
+    decorated["archived_reason"] = str(
+        decorated.get("archived_reason") or decorated["metadata"].get("archived_reason") or ""
+    )
+    decorated["archived_at_display"] = (
+        _format_timestamp(decorated["archived_at"]) if decorated["archived_at"] else "noch nicht archiviert"
+    )
     current_worker = _current_worker_name(decorated)
     current_progress = decorated["worker_progress"].get(current_worker or "", {})
     last_event = decorated["events"][-1] if decorated.get("events") else None
@@ -1199,7 +1346,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         else "noch kein Teil-Neustart"
     )
     decorated["events_latest_first"] = list(reversed(decorated["events"]))
-    decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES
+    decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES and not decorated["archived"]
     decorated["auto_refresh_seconds"] = AUTO_REFRESH_SECONDS if decorated["is_active"] else 0
     return decorated
 
@@ -1347,7 +1494,13 @@ def _worker_run_records(task: dict[str, Any]) -> list[dict[str, Any]]:
     return runs
 
 
-def _build_worker_benchmark_report(tasks: list[dict[str, Any]], skipped_tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _build_worker_benchmark_report(
+    tasks: list[dict[str, Any]],
+    skipped_tasks: list[dict[str, Any]] | None = None,
+    *,
+    reset_at: datetime | None = None,
+    hidden_tasks_before_reset: int = 0,
+) -> dict[str, Any]:
     """Aggregate readable worker benchmarks from persisted task details and progress events."""
 
     skipped = skipped_tasks or []
@@ -1437,6 +1590,9 @@ def _build_worker_benchmark_report(tasks: list[dict[str, Any]], skipped_tasks: l
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        "reset_at": reset_at.isoformat() if reset_at else None,
+        "benchmark_window_active": reset_at is not None,
+        "hidden_tasks_before_reset": hidden_tasks_before_reset,
         "total_tasks": len(tasks),
         "skipped_task_count": len(skipped),
         "skipped_tasks": skipped,
@@ -1900,15 +2056,32 @@ async def _load_debug_center_context(
     }
 
 
-async def _load_dashboard_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
+async def _load_dashboard_context(
+    error_message: str | None = None,
+    success_message: str | None = None,
+    *,
+    show_archived: bool = False,
+) -> dict[str, Any]:
     messages = [error_message] if error_message else []
     tasks_response = await _api_request("GET", "/api/tasks")
+    archived_tasks_response = await _api_request("GET", "/api/tasks?only_archived=true")
     repo_settings_response = await _api_request("GET", "/api/settings/repository-access")
     suggestions_response = await _api_request("GET", "/api/suggestions")
 
-    tasks = [_decorate_task(task) for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
+    tasks = [
+        _decorate_task(task)
+        for task in _as_list(_response_json(tasks_response, []))
+        if isinstance(task, dict) and not _is_task_archived(task)
+    ]
     if tasks_response.status_code >= 400:
         messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht geladen werden."))
+    archived_tasks = [
+        _decorate_task(task)
+        for task in _as_list(_response_json(archived_tasks_response, []))
+        if isinstance(task, dict) and _is_task_archived(task)
+    ]
+    if archived_tasks_response.status_code >= 400:
+        messages.append(_response_detail(archived_tasks_response, "Die Archivliste konnte nicht geladen werden."))
 
     repo_settings = _as_mapping(_response_json(repo_settings_response, {"allowed_repositories": []}))
     if repo_settings_response.status_code >= 400:
@@ -1924,6 +2097,9 @@ async def _load_dashboard_context(error_message: str | None = None, success_mess
 
     return {
         "tasks": tasks,
+        "archived_tasks": archived_tasks,
+        "archived_task_count": len(archived_tasks),
+        "show_archived": show_archived,
         "repository_access_settings": repo_settings,
         "allowed_repositories_text": "\n".join(repo_settings.get("allowed_repositories", [])),
         "pending_suggestions_count": len(pending_suggestions),
@@ -1936,10 +2112,17 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
     """Collect a readable worker benchmark view from persisted task details without crashing on partial backend issues."""
 
     messages = [error_message] if error_message else []
-    tasks_response = await _api_request("GET", "/api/tasks")
-    raw_tasks = [task for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
+    reset_at = _benchmark_reset_at()
+    tasks_response = await _api_request("GET", "/api/tasks?include_archived=true")
+    all_tasks = [task for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
+    archived_hidden_count = sum(1 for task in all_tasks if _is_task_archived(task))
+    raw_tasks = [task for task in all_tasks if not _is_task_archived(task)]
     if tasks_response.status_code >= 400:
         messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht für Benchmarks geladen werden."))
+    hidden_tasks_before_reset = 0
+    if reset_at is not None and raw_tasks:
+        hidden_tasks_before_reset = sum(1 for task in raw_tasks if not _task_matches_benchmark_window(task, reset_at))
+        raw_tasks = [task for task in raw_tasks if _task_matches_benchmark_window(task, reset_at)]
 
     detailed_tasks: list[dict[str, Any]] = []
     skipped_tasks: list[dict[str, Any]] = []
@@ -1963,7 +2146,12 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
                 continue
             detailed_tasks.append(_decorate_task(_as_mapping(_response_json(response, {}))))
 
-    benchmark_report = _build_worker_benchmark_report(detailed_tasks, skipped_tasks)
+    benchmark_report = _build_worker_benchmark_report(
+        detailed_tasks,
+        skipped_tasks,
+        reset_at=reset_at,
+        hidden_tasks_before_reset=hidden_tasks_before_reset,
+    )
     if skipped_tasks:
         messages.append(
             f"{len(skipped_tasks)} Aufgaben konnten nicht vollständig in die Benchmark-Auswertung aufgenommen werden."
@@ -1975,6 +2163,10 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
         "recent_runs": benchmark_report["recent_runs"],
         "overview": {
             "generated_at_display": _format_timestamp(benchmark_report["generated_at"]),
+            "reset_at_display": _format_timestamp(benchmark_report["reset_at"]) if benchmark_report["reset_at"] else "noch nie",
+            "benchmark_window_active": benchmark_report["benchmark_window_active"],
+            "archived_hidden_count": archived_hidden_count,
+            "hidden_tasks_before_reset": benchmark_report["hidden_tasks_before_reset"],
             "total_tasks": benchmark_report["total_tasks"],
             "skipped_task_count": benchmark_report["skipped_task_count"],
             "total_runs": benchmark_report["total_runs"],
@@ -2187,8 +2379,8 @@ async def _load_suggestions_context(
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    context = await _load_dashboard_context()
+async def index(request: Request, show_archived: bool = Query(default=False)) -> HTMLResponse:
+    context = await _load_dashboard_context(show_archived=show_archived)
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request, **context})
 
 
@@ -2391,7 +2583,7 @@ async def system_check_report_json(mode: ReadinessMode = READINESS_MODE_QUERY) -
 
 
 @app.post("/system-check", response_class=HTMLResponse)
-async def run_system_check(mode: ReadinessMode = READINESS_MODE_FORM) -> HTMLResponse:
+async def run_system_check(mode: ReadinessMode = READINESS_MODE_FORM) -> Response:
     return RedirectResponse(url=f"/system-check?mode={mode.value}", status_code=303)
 
 
@@ -2409,6 +2601,28 @@ async def benchmarks_page(request: Request) -> HTMLResponse:
 async def download_benchmarks_export() -> Response:
     context = await _load_benchmarks_context()
     return _download_json_response("worker-benchmarks.json", context["benchmark_report"])
+
+
+@app.post("/benchmarks/reset", response_class=HTMLResponse)
+async def reset_benchmarks(request: Request) -> HTMLResponse:
+    reset_at = datetime.now(UTC).replace(microsecond=0)
+    _save_benchmark_state(
+        {
+            "reset_at": reset_at.isoformat(),
+            "reset_reason": "operator_reset",
+        }
+    )
+    context = await _load_benchmarks_context(
+        success_message=(
+            "Die Benchmark-Auswertung wurde zurückgesetzt. Ab jetzt werden nur noch neue oder seit dem Reset "
+            "aktualisierte Läufe berücksichtigt."
+        )
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="benchmarks.html",
+        context={"request": request, **context},
+    )
 
 
 @app.get("/trusted-sources", response_class=HTMLResponse)
@@ -2965,6 +3179,58 @@ async def run_task(request: Request, task_id: str) -> Response:
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
+@app.post("/tasks/{task_id}/archive")
+async def archive_task(
+    request: Request,
+    task_id: str,
+    reason: str = Form(""),
+) -> Response:
+    response = await _api_request(
+        "POST",
+        f"/api/tasks/{task_id}/archive",
+        json_payload={"actor": "dashboard", "reason": reason.strip() or None},
+    )
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Aufgabe konnte nicht archiviert werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail, show_archived=True)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
+    return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
+
+
+@app.post("/tasks/{task_id}/restore")
+async def restore_task(
+    request: Request,
+    task_id: str,
+    reason: str = Form(""),
+) -> Response:
+    response = await _api_request(
+        "POST",
+        f"/api/tasks/{task_id}/restore",
+        json_payload={"actor": "dashboard", "reason": reason.strip() or None},
+    )
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Aufgabe konnte nicht wiederhergestellt werden.")
+        try:
+            context = await _load_task_detail_context(task_id, error_message=detail)
+            return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
+        except RuntimeError:
+            dashboard_context = await _load_dashboard_context(error_message=detail, show_archived=True)
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context={"request": request, **dashboard_context},
+            )
+    return RedirectResponse(url="/?show_archived=true", status_code=303)
+
+
 @app.post("/tasks/{task_id}/restart-stage")
 async def restart_task_stage(
     request: Request,
@@ -3092,10 +3358,12 @@ async def _load_self_improvement_context(
 ) -> dict[str, Any]:
     """Load self-improvement status, cycles history, and config from the orchestrator."""
 
-    status_response, cycles_response, config_response = await asyncio.gather(
+    status_response, cycles_response, config_response, policy_response, incidents_response = await asyncio.gather(
         _api_request("GET", "/api/self-improvement/status"),
         _api_request("GET", "/api/self-improvement/cycles"),
         _api_request("GET", "/api/settings/self-improvement"),
+        _api_request("GET", "/api/settings/self-improvement/policy"),
+        _api_request("GET", "/api/self-improvement/incidents"),
         return_exceptions=False,
     )
     messages = [error_message] if error_message else []
@@ -3118,12 +3386,35 @@ async def _load_self_improvement_context(
             _response_detail(config_response, "Self-Improvement-Konfiguration konnte nicht geladen werden.")
         )
 
+    policy = _as_mapping(_response_json(policy_response, {}))
+    if policy_response.status_code >= 400:
+        messages.append(
+            _response_detail(policy_response, "Governance-Policy konnte nicht geladen werden.")
+        )
+
+    incidents = [item for item in _as_list(_response_json(incidents_response, [])) if isinstance(item, dict)]
+    if incidents_response.status_code >= 400:
+        messages.append(
+            _response_detail(incidents_response, "Incident-Liste konnte nicht geladen werden.")
+        )
+
     active_cycle = _as_mapping(status.get("active_cycle")) if status.get("active_cycle") else None
     last_cycle = _as_mapping(status.get("last_cycle")) if status.get("last_cycle") else None
+    pending_review_cycles = [
+        _as_mapping(item) for item in _as_list(status.get("pending_review_cycles", [])) if isinstance(item, dict)
+    ]
 
     for cycle in cycles:
         cycle["started_at_display"] = _format_timestamp(cycle.get("started_at"))
         cycle["completed_at_display"] = _format_timestamp(cycle.get("completed_at")) if cycle.get("completed_at") else "—"
+    for cycle in pending_review_cycles:
+        cycle["started_at_display"] = _format_timestamp(cycle.get("started_at"))
+        cycle["completed_at_display"] = (
+            _format_timestamp(cycle.get("completed_at")) if cycle.get("completed_at") else "—"
+        )
+    for incident in incidents:
+        incident["created_at_display"] = _format_timestamp(incident.get("created_at"))
+        incident["updated_at_display"] = _format_timestamp(incident.get("updated_at"))
 
     if active_cycle:
         active_cycle["started_at_display"] = _format_timestamp(active_cycle.get("started_at"))
@@ -3137,13 +3428,17 @@ async def _load_self_improvement_context(
         "si_status": status,
         "si_cycles": cycles,
         "si_config": config,
+        "si_policy": policy,
         "si_active_cycle": active_cycle,
         "si_last_cycle": last_cycle,
+        "si_pending_review_cycles": pending_review_cycles,
+        "si_incidents": incidents,
         "si_enabled": bool(status.get("enabled")),
         "si_can_start": bool(status.get("can_start")),
         "si_daily_count": int(status.get("daily_cycle_count") or 0),
         "si_max_per_day": int(status.get("max_cycles_per_day") or 0),
         "si_mode": str(status.get("mode") or config.get("mode") or "manual"),
+        "si_open_incident_count": int(status.get("open_incident_count") or 0),
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }

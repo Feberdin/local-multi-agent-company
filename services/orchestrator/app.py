@@ -43,6 +43,7 @@ from services.shared.agentic_lab.schemas import (
     SourceRoutingRequest,
     SourceTestRequest,
     SourceTestResult,
+    TaskArchiveRequest,
     TaskCreateRequest,
     TaskDetail,
     TaskStageRestartRequest,
@@ -60,10 +61,13 @@ from services.shared.agentic_lab.self_improvement import (
     SelfImprovementConfigResponse,
     SelfImprovementCycleResponse,
     SelfImprovementError,
+    SelfImprovementIncidentResponse,
+    SelfImprovementPolicyResponse,
     SelfImprovementService,
     SelfImprovementStatusResponse,
     StartCycleRequest,
 )
+from services.shared.agentic_lab.self_improvement_governance import normalize_self_improvement_mode
 from services.shared.agentic_lab.source_router import SourceRouter
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.trusted_sources import TrustedSourceError, TrustedSourceService
@@ -93,7 +97,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
     self_improvement_service.resume_orphaned_cycles()
-    if settings.self_improvement_enabled and settings.self_improvement_mode == "auto":
+    if settings.self_improvement_enabled and normalize_self_improvement_mode(settings.self_improvement_mode).value == "automatic":
         asyncio.create_task(_auto_start_self_improvement())
     logger.info("Orchestrator startup completed.")
     yield
@@ -122,8 +126,11 @@ async def health() -> HealthResponse:
 
 
 @app.get("/api/tasks", response_model=list[TaskSummary])
-async def list_tasks() -> list[TaskSummary]:
-    return task_service.list_tasks()
+async def list_tasks(
+    include_archived: bool = Query(default=False),
+    only_archived: bool = Query(default=False),
+) -> list[TaskSummary]:
+    return task_service.list_tasks(include_archived=include_archived, only_archived=only_archived)
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskDetail)
@@ -157,6 +164,12 @@ async def run_task(task_id: str) -> TaskDetail:
     except RepositoryPolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    if task.archived:
+        raise HTTPException(
+            status_code=409,
+            detail="Diese Aufgabe ist archiviert. Stelle sie zuerst wieder her, bevor du den Workflow erneut startest.",
+        )
+
     if task_id not in app.state.running_tasks:
         app.state.running_tasks.add(task_id)
         asyncio.create_task(_run_in_background(task_id))
@@ -175,6 +188,12 @@ async def restart_task_stage(task_id: str, request: TaskStageRestartRequest) -> 
     except RepositoryPolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    if task.archived:
+        raise HTTPException(
+            status_code=409,
+            detail="Diese Aufgabe ist archiviert. Stelle sie zuerst wieder her, bevor du nur einen Teilbereich neu startest.",
+        )
+
     if task_id in app.state.running_tasks:
         raise HTTPException(
             status_code=409,
@@ -191,12 +210,43 @@ async def restart_task_stage(task_id: str, request: TaskStageRestartRequest) -> 
     return updated
 
 
+@app.post("/api/tasks/{task_id}/archive", response_model=TaskDetail)
+async def archive_task(task_id: str, request: TaskArchiveRequest) -> TaskDetail:
+    try:
+        if task_id in app.state.running_tasks:
+            raise HTTPException(
+                status_code=409,
+                detail="Diese Aufgabe laeuft noch im Hintergrund und kann derzeit nicht archiviert werden.",
+            )
+        return task_service.archive_task(task_id, request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/tasks/{task_id}/restore", response_model=TaskDetail)
+async def restore_task(task_id: str, request: TaskArchiveRequest) -> TaskDetail:
+    try:
+        return task_service.restore_task(task_id, request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/tasks/{task_id}/approvals", response_model=TaskDetail)
 async def record_approval(task_id: str, request: ApprovalRequest) -> TaskDetail:
     try:
-        updated = task_service.record_approval(task_id, request)
+        task = task_service.get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if task.archived:
+        raise HTTPException(
+            status_code=409,
+            detail="Diese Aufgabe ist archiviert. Stelle sie zuerst wieder her, bevor du Entscheidungen speicherst.",
+        )
+
+    updated = task_service.record_approval(task_id, request)
 
     if request.decision.value == "APPROVE" and task_id not in app.state.running_tasks:
         app.state.running_tasks.add(task_id)
@@ -525,6 +575,7 @@ async def get_self_improvement_config() -> SelfImprovementConfigResponse:
     return SelfImprovementConfigResponse(
         enabled=settings.self_improvement_enabled,
         mode=settings.self_improvement_mode,
+        normalized_mode=normalize_self_improvement_mode(settings.self_improvement_mode).value,
         max_auto_fix_attempts=settings.self_improvement_max_auto_fix_attempts,
         max_cycles_per_day=settings.self_improvement_max_cycles_per_day,
         deploy_after_success=settings.self_improvement_deploy_after_success,
@@ -533,4 +584,17 @@ async def get_self_improvement_config() -> SelfImprovementConfigResponse:
         auto_rollback=settings.self_improvement_auto_rollback,
         target_repo=settings.self_improvement_target_repo,
         local_repo_path=settings.self_improvement_local_repo_path,
+        policy_path=str(settings.self_improvement_policy_path),
+        approval_email_enabled=settings.self_improvement_email_enabled,
+        approval_email_to=settings.self_improvement_email_to or None,
     )
+
+
+@app.get("/api/settings/self-improvement/policy", response_model=SelfImprovementPolicyResponse)
+async def get_self_improvement_policy() -> SelfImprovementPolicyResponse:
+    return self_improvement_service.get_policy()
+
+
+@app.get("/api/self-improvement/incidents", response_model=list[SelfImprovementIncidentResponse])
+async def list_self_improvement_incidents(limit: int = 20) -> list[SelfImprovementIncidentResponse]:
+    return self_improvement_service.list_incidents(limit=limit)

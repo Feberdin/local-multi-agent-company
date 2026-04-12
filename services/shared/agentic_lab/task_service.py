@@ -30,6 +30,7 @@ from services.shared.agentic_lab.schemas import (
     ApprovalRequest,
     ApprovalResponse,
     DeploymentConfig,
+    TaskArchiveRequest,
     TaskCreateRequest,
     TaskDetail,
     TaskEventResponse,
@@ -60,6 +61,12 @@ WORKFLOW_WORKER_LABELS = {
     WorkflowWorkerName.DEPLOY.value: "Staging",
     WorkflowWorkerName.QA.value: "QA",
     WorkflowWorkerName.MEMORY.value: "Wissen",
+}
+ARCHIVE_METADATA_KEYS = ("archived", "archived_at", "archived_by", "archived_reason")
+ARCHIVABLE_TASK_STATUSES = {
+    TaskStatus.NEW.value,
+    TaskStatus.DONE.value,
+    TaskStatus.FAILED.value,
 }
 
 
@@ -143,12 +150,22 @@ class TaskService:
             session.commit()
             return self._to_summary(record)
 
-    def list_tasks(self) -> list[TaskSummary]:
-        """Return newest tasks first for the dashboard."""
+    def list_tasks(
+        self,
+        *,
+        include_archived: bool = False,
+        only_archived: bool = False,
+    ) -> list[TaskSummary]:
+        """Return newest tasks first and hide archived tasks by default for a cleaner operator view."""
 
         with self.session() as session:
             records = session.query(TaskRecord).order_by(TaskRecord.created_at.desc()).all()
-            return [self._to_summary(record) for record in records]
+            summaries = [self._to_summary(record) for record in records]
+            if only_archived:
+                return [item for item in summaries if item.archived]
+            if include_archived:
+                return summaries
+            return [item for item in summaries if not item.archived]
 
     def get_task(self, task_id: str) -> TaskDetail:
         """Return a full task detail view with events and approvals."""
@@ -192,6 +209,100 @@ class TaskService:
                     else None
                 ),
             )
+
+    def archive_task(self, task_id: str, request: TaskArchiveRequest) -> TaskDetail:
+        """Hide one finished task from default listings and benchmarks without deleting any audit data."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            if self._is_archived(record):
+                return self.get_task(task_id)
+            if record.status not in ARCHIVABLE_TASK_STATUSES or record.approval_required:
+                raise ValueError(
+                    "Nur abgeschlossene, fehlgeschlagene oder noch nicht gestartete Aufgaben koennen archiviert werden."
+                )
+
+            archived_at = datetime.now(UTC)
+            metadata = dict(record.metadata_json or {})
+            metadata.update(
+                {
+                    "archived": True,
+                    "archived_at": archived_at.isoformat(),
+                    "archived_by": request.actor,
+                    "archived_reason": request.reason,
+                }
+            )
+            record.metadata_json = metadata
+            record.updated_at = archived_at
+            self._add_event(
+                session,
+                task_id,
+                "ARCHIVE",
+                "Aufgabe wurde archiviert und aus den Standardansichten ausgeblendet.",
+                {
+                    "event_kind": "task_archived",
+                    "actor": request.actor,
+                    "reason": request.reason,
+                },
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                record.status,
+                {
+                    "archive": {
+                        "archived": True,
+                        "actor": request.actor,
+                        "reason": request.reason,
+                        "archived_at": archived_at.isoformat(),
+                    }
+                },
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
+
+    def restore_task(self, task_id: str, request: TaskArchiveRequest) -> TaskDetail:
+        """Bring one archived task back into default lists without changing its workflow result."""
+
+        with self.session() as session:
+            record = self._require_task(session, task_id)
+            if not self._is_archived(record):
+                return self.get_task(task_id)
+
+            restored_at = datetime.now(UTC)
+            metadata = dict(record.metadata_json or {})
+            for key in ARCHIVE_METADATA_KEYS:
+                metadata.pop(key, None)
+            record.metadata_json = metadata
+            record.updated_at = restored_at
+            self._add_event(
+                session,
+                task_id,
+                "ARCHIVE",
+                "Aufgabe wurde aus dem Archiv wiederhergestellt.",
+                {
+                    "event_kind": "task_restored",
+                    "actor": request.actor,
+                    "reason": request.reason,
+                },
+            )
+            self._add_snapshot(
+                session,
+                task_id,
+                record.status,
+                {
+                    "archive": {
+                        "archived": False,
+                        "actor": request.actor,
+                        "reason": request.reason,
+                        "restored_at": restored_at.isoformat(),
+                    }
+                },
+            )
+            session.commit()
+            session.refresh(record)
+            return self.get_task(task_id)
 
     def update_status(
         self,
@@ -588,7 +699,13 @@ class TaskService:
         metadata["worker_progress"] = worker_progress
         record.metadata_json = metadata
 
+    def _is_archived(self, record: TaskRecord) -> bool:
+        """Read the durable archive flag from metadata without assuming fresh schema migrations."""
+
+        return bool((record.metadata_json or {}).get("archived"))
+
     def _to_summary(self, record: TaskRecord) -> TaskSummary:
+        metadata = record.metadata_json or {}
         return TaskSummary(
             id=record.id,
             goal=record.goal,
@@ -602,10 +719,28 @@ class TaskService:
             current_approval_gate_name=(record.metadata_json or {}).get("current_approval_gate_name"),
             approval_required=record.approval_required,
             approval_reason=record.approval_reason,
-            allow_repository_modifications=(record.metadata_json or {}).get("allow_repository_modifications", False),
+            allow_repository_modifications=metadata.get("allow_repository_modifications", False),
             pull_request_url=record.pull_request_url,
             latest_error=record.latest_error,
-            metadata=record.metadata_json or {},
+            archived=bool(metadata.get("archived")),
+            archived_at=self._parse_metadata_timestamp(metadata.get("archived_at")),
+            archived_by=metadata.get("archived_by"),
+            archived_reason=metadata.get("archived_reason"),
+            metadata=metadata,
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
+
+    @staticmethod
+    def _parse_metadata_timestamp(value: Any) -> datetime | None:
+        """Normalize archived timestamps from JSON metadata into timezone-aware UTC datetimes."""
+
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed

@@ -32,12 +32,27 @@ smoke_checks:
     expected_substring: ok
 
 model_preferences:
+  requirements:
+    primary_provider: mistral
+    fallback_provider: qwen
   coding:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
   reviewer:
+    primary_provider: mistral
+    fallback_provider: qwen
+  architecture:
     primary_provider: qwen
     fallback_provider: mistral
+  research:
+    primary_provider: qwen
+    fallback_provider: mistral
+  validation:
+    primary_provider: mistral
+    fallback_provider: qwen
+  security:
+    primary_provider: mistral
+    fallback_provider: qwen
   documentation:
     primary_provider: mistral
     fallback_provider: qwen

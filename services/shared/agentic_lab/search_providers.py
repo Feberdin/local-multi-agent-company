@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from slugify import slugify
 
-from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.config import Settings, inspect_secret_file, normalize_optional_path_value
 from services.shared.agentic_lab.schemas import (
     SearchProvider,
     SearchProviderHealthStatus,
@@ -486,26 +486,48 @@ class SearchProviderService:
         if direct_value:
             return direct_value
 
-        secret_file = os.getenv(f"{provider.auth_env_var}_FILE", "").strip()
-        if secret_file:
-            path = Path(secret_file)
-            try:
-                if path.exists():
-                    return path.read_text(encoding="utf-8").rstrip("\r\n")
-            except PermissionError:
-                LOGGER.warning(
-                    "Search provider secret file '%s' is not readable. "
-                    "The provider will continue without this optional secret until you fix the file permissions.",
-                    path,
-                )
-                return ""
-            except OSError as exc:
-                LOGGER.warning(
-                    "Search provider secret file '%s' could not be read (%s). Continuing without that secret.",
-                    path,
-                    exc,
-                )
-                return ""
+        raw_secret_file = os.getenv(f"{provider.auth_env_var}_FILE")
+        path = normalize_optional_path_value(raw_secret_file)
+        probe = inspect_secret_file(path, raw_env_value=raw_secret_file)
+        if probe.state in {"not_set", "empty_ignored", "missing"}:
+            return ""
+        if probe.state == "directory":
+            LOGGER.warning(
+                "Search provider secret path '%s' points to a directory, not to a readable file. "
+                "Continuing without that optional secret.",
+                probe.path,
+            )
+            return ""
+        if probe.state == "not_readable":
+            LOGGER.warning(
+                "Search provider secret file '%s' is not readable. "
+                "The provider will continue without this optional secret until you fix the file permissions.",
+                probe.path,
+            )
+            return ""
+        if probe.state == "invalid_path":
+            LOGGER.warning(
+                "Search provider secret path '%s' is invalid (%s). Continuing without that optional secret.",
+                probe.path,
+                probe.detail,
+            )
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").rstrip("\r\n") if path is not None else ""
+        except PermissionError:
+            LOGGER.warning(
+                "Search provider secret file '%s' is not readable. "
+                "The provider will continue without this optional secret until you fix the file permissions.",
+                path,
+            )
+            return ""
+        except OSError as exc:
+            LOGGER.warning(
+                "Search provider secret file '%s' could not be read (%s). Continuing without that secret.",
+                path,
+                exc,
+            )
+            return ""
         return ""
 
     def _provider_error_message(

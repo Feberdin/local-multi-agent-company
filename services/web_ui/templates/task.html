@@ -24,6 +24,7 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <a href="/debug?task_id={{ task.id }}">Debug-Center</a>
         <a href="/system-check">System-Check</a>
         <a href="/self-improvement">Self-Improvement</a>
+        <span class="topnav-version" title="{{ ui_build.full_label }}">{{ ui_build.display }}</span>
       </nav>
 
       <section class="hero">
@@ -33,6 +34,19 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <span class="status status-{{ task.status|lower }}">{{ task.status }}</span>
         <p class="muted">Aktueller Schritt: <strong>{{ task.current_stage_label }}</strong> · Letzte Aktivitaet {{ task.last_activity_at_display }}</p>
       </section>
+
+      {% if task.archived %}
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Archivstatus</h2>
+          <span class="status status-idle">archiviert</span>
+        </div>
+        <p><strong>Archiviert am:</strong> {{ task.archived_at_display }}</p>
+        <p><strong>Archiviert durch:</strong> {{ task.archived_by or "unbekannt" }}</p>
+        <p><strong>Grund:</strong> {{ task.archived_reason or "kein Grund hinterlegt" }}</p>
+        <p class="muted">Archivierte Aufgaben verschwinden aus den normalen Task-Listen und aus den allgemeinen Benchmarks, bleiben aber vollständig prüf- und wiederherstellbar.</p>
+      </section>
+      {% endif %}
 
       {% if error_message %}
       <section class="panel panel-alert">
@@ -90,10 +104,12 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
       </section>
 
       <section class="panel actions">
+        {% if not task.archived %}
         <form method="post" action="/tasks/{{ task.id }}/run">
           <button type="submit">Workflow starten / fortsetzen</button>
         </form>
-        {% if task.approval_required %}
+        {% endif %}
+        {% if task.approval_required and not task.archived %}
         <form method="post" action="/tasks/{{ task.id }}/approve">
           <input type="hidden" name="gate_name" value="{{ task.current_approval_gate_name or 'risk-review' }}">
           <button type="submit">Freigeben</button>
@@ -108,9 +124,20 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
         <a class="button-link" href="{{ task.pull_request_url }}" target="_blank" rel="noreferrer">Pull Request öffnen</a>
         {% endif %}
         <a class="button-link secondary" href="/debug?task_id={{ task.id }}">Debug-Daten</a>
+        {% if task.archived %}
+        <form method="post" action="/tasks/{{ task.id }}/restore">
+          <input type="hidden" name="reason" value="Aus der Task-Detailansicht wiederhergestellt.">
+          <button type="submit">Task wiederherstellen</button>
+        </form>
+        {% else %}
+        <form method="post" action="/tasks/{{ task.id }}/archive">
+          <input type="hidden" name="reason" value="Aus der Task-Detailansicht archiviert.">
+          <button type="submit" class="secondary-button">Task archivieren</button>
+        </form>
+        {% endif %}
       </section>
 
-      {% if task.can_restart_partially %}
+      {% if task.can_restart_partially and not task.archived %}
       <section class="panel panel-note">
         <div class="panel-header">
           <h2>Teilbereich neu starten</h2>

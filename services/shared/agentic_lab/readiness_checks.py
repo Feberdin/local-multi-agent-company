@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.config import Settings, inspect_secret_file
 from services.shared.agentic_lab.db import TaskRecord
 from services.shared.agentic_lab.readiness_models import (
     ReadinessCategorySummary,
@@ -295,17 +295,10 @@ def _build_recommendations(checks: list[ReadinessCheckResult]) -> list[Readiness
     return recommendations[:8]
 
 
-def _read_secret_file_state(path: Path | None) -> dict[str, Any]:
+def _read_secret_file_state(path: Path | None, *, raw_env_value: str | None = None) -> dict[str, Any]:
     """Return a small secret-file probe without reading secret contents into the report."""
 
-    if path is None:
-        return {"configured": False, "exists": False, "readable": False}
-    return {
-        "configured": True,
-        "exists": path.exists(),
-        "readable": os.access(path, os.R_OK),
-        "path": str(path),
-    }
+    return inspect_secret_file(path, raw_env_value=raw_env_value).as_dict()
 
 
 def _recent_task_records(task_service: Any | None) -> list[TaskRecord]:
@@ -1308,21 +1301,43 @@ async def _secrets_required_keys(ctx: ReadinessContext) -> dict[str, Any]:
 
 async def _secrets_files(ctx: ReadinessContext) -> dict[str, Any]:
     states = {
-        "default_model_api_key_file": _read_secret_file_state(ctx.settings.default_model_api_key_file),
-        "mistral_api_key_file": _read_secret_file_state(ctx.settings.mistral_api_key_file),
-        "qwen_api_key_file": _read_secret_file_state(ctx.settings.qwen_api_key_file),
-        "web_search_api_key_file": _read_secret_file_state(ctx.settings.web_search_api_key_file),
-        "github_token_file": _read_secret_file_state(ctx.settings.github_token_file),
+        "default_model_api_key_file": _read_secret_file_state(
+            ctx.settings.default_model_api_key_file,
+            raw_env_value=os.getenv("MODEL_API_KEY_FILE"),
+        ),
+        "mistral_api_key_file": _read_secret_file_state(
+            ctx.settings.mistral_api_key_file,
+            raw_env_value=os.getenv("MISTRAL_API_KEY_FILE"),
+        ),
+        "qwen_api_key_file": _read_secret_file_state(
+            ctx.settings.qwen_api_key_file,
+            raw_env_value=os.getenv("QWEN_API_KEY_FILE"),
+        ),
+        "web_search_api_key_file": _read_secret_file_state(
+            ctx.settings.web_search_api_key_file,
+            raw_env_value=os.getenv("WEB_SEARCH_API_KEY_FILE"),
+        ),
+        "github_token_file": _read_secret_file_state(
+            ctx.settings.github_token_file,
+            raw_env_value=os.getenv("GITHUB_TOKEN_FILE"),
+        ),
     }
-    failures = [name for name, state in states.items() if state["configured"] and state["exists"] and not state["readable"]]
-    warnings = [name for name, state in states.items() if state["configured"] and not state["exists"]]
+    failures = [
+        name
+        for name, state in states.items()
+        if state["state"] in {"directory", "invalid_path", "not_readable"}
+    ]
+    warnings = [name for name, state in states.items() if state["state"] == "missing"]
     if failures:
         return _payload(
             ReadinessCheckStatus.FAIL,
             ReadinessSeverity.HIGH,
-            "Mindestens eine konfigurierte Secret-Datei ist nicht lesbar.",
-            detail=", ".join(failures),
-            hint="Setze auf dem Host `chmod 644 <HOST_SECRETS_DIR>/*`, damit PUID=99 die Dateien lesen kann.",
+            "Mindestens ein Secret-Dateipfad ist ungueltig oder nicht lesbar.",
+            detail=", ".join(f"{name}: {states[name]['detail']}" for name in failures),
+            hint=(
+                "Pruefe, ob der Pfad auf eine echte Datei zeigt und der Service-User sie lesen darf. "
+                "Leere optionale *_FILE-Werte koennen leer bleiben und werden ignoriert."
+            ),
             raw_value=states,
         )
     if warnings:
@@ -1330,7 +1345,7 @@ async def _secrets_files(ctx: ReadinessContext) -> dict[str, Any]:
             ReadinessCheckStatus.WARNING,
             ReadinessSeverity.LOW,
             "Einige optionale Secret-Dateien fehlen.",
-            detail=", ".join(warnings),
+            detail=", ".join(f"{name}: {states[name]['detail']}" for name in warnings),
             hint="Das ist nur kritisch, wenn der zugehoerige Dienst wirklich aktiviert genutzt werden soll.",
             raw_value=states,
         )

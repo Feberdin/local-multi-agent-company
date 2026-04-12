@@ -10,6 +10,7 @@ from __future__ import annotations
 from services.shared.agentic_lab.schemas import (
     ApprovalDecision,
     ApprovalRequest,
+    TaskArchiveRequest,
     TaskCreateRequest,
     TaskStageRestartRequest,
     TaskStatus,
@@ -212,3 +213,67 @@ def test_task_service_can_restart_one_worker_segment_without_creating_a_new_task
     assert restarted.metadata["last_restart_request"]["worker_name"] == "research"
     assert restarted.metadata["last_restart_request"]["actor"] == "dashboard"
     assert restarted.events[-1].details["event_kind"] == "stage_restart_requested"
+
+
+def test_task_service_archives_tasks_and_hides_them_from_default_list(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Archivieren soll alte Aufgaben aus dem Standard-Dashboard entfernen.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+    service.update_status(summary.id, TaskStatus.DONE, message="Aufgabe abgeschlossen.")
+
+    archived = service.archive_task(
+        summary.id,
+        TaskArchiveRequest(actor="dashboard", reason="Bereits sauber abgeschlossen."),
+    )
+
+    assert archived.archived is True
+    assert archived.archived_by == "dashboard"
+    assert archived.archived_reason == "Bereits sauber abgeschlossen."
+    assert service.list_tasks() == []
+    assert service.list_tasks(only_archived=True)[0].id == summary.id
+
+
+def test_task_service_restores_archived_tasks_back_into_default_list(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Wiederherstellung soll archivierte Aufgaben erneut sichtbar machen.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+    service.update_status(summary.id, TaskStatus.FAILED, message="Aufgabe fehlgeschlagen.", latest_error="Testfehler.")
+    service.archive_task(summary.id, TaskArchiveRequest(actor="dashboard", reason="Altlast."))
+
+    restored = service.restore_task(
+        summary.id,
+        TaskArchiveRequest(actor="dashboard", reason="Zur Nachpruefung wieder sichtbar machen."),
+    )
+
+    assert restored.archived is False
+    assert service.list_tasks()[0].id == summary.id
+    assert service.list_tasks(only_archived=True) == []
+
+
+def test_task_service_rejects_archiving_running_tasks(isolated_session_factory) -> None:
+    service = TaskService(session_factory=isolated_session_factory)
+    summary = service.create_task(
+        TaskCreateRequest(
+            goal="Laufende Aufgaben duerfen nicht still archiviert werden.",
+            repository="Feberdin/example-repo",
+            local_repo_path="/workspace/example-repo",
+        )
+    )
+    service.update_status(summary.id, TaskStatus.CODING, message="Coding laeuft noch.")
+
+    try:
+        service.archive_task(summary.id, TaskArchiveRequest(actor="dashboard", reason="Zu frueh."))
+    except ValueError as exc:
+        assert "abgeschlossene" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Running tasks must not be archivable.")
