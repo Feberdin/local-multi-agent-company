@@ -260,6 +260,21 @@ async def update_single_worker_guidance(worker_name: str, payload: WorkerGuidanc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/settings/worker-guidance/{worker_name}/reset", response_model=WorkerGuidanceRegistry)
+async def reset_worker_guidance_to_defaults(worker_name: str) -> WorkerGuidanceRegistry:
+    try:
+        seed = worker_governance_service._load_seed_guidance_registry()
+    except WorkerGovernanceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    seed_policy = next((p for p in seed.workers if p.worker_name == worker_name), None)
+    if seed_policy is None:
+        raise HTTPException(status_code=404, detail=f"No default found for worker '{worker_name}'.")
+    try:
+        return worker_governance_service.upsert_guidance(seed_policy)
+    except WorkerGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/settings/trusted-sources", response_model=TrustedSourceRegistry)
 async def get_trusted_sources_settings() -> TrustedSourceRegistry:
     return trusted_source_service.load_registry()

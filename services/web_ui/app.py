@@ -2629,6 +2629,16 @@ async def update_worker_guidance(
     return RedirectResponse(url="/worker-guidance", status_code=303)
 
 
+@app.post("/settings/worker-guidance/{worker_name}/reset", response_class=HTMLResponse, response_model=None)
+async def reset_worker_guidance(request: Request, worker_name: str) -> Response:
+    response = await _api_request("POST", f"/api/settings/worker-guidance/{worker_name}/reset")
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Worker-Guidance konnte nicht auf Standard zurückgesetzt werden.")
+        context = await _load_worker_guidance_context(edit_worker_name=worker_name, error_message=detail)
+        return templates.TemplateResponse(request=request, name="worker_guidance.html", context={"request": request, **context})
+    return RedirectResponse(url=f"/worker-guidance?edit={worker_name}", status_code=303)
+
+
 @app.post("/settings/trusted-sources/profile", response_class=HTMLResponse, response_model=None)
 async def update_trusted_source_profile(
     request: Request,

@@ -86,7 +86,11 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 raise
 
         overview = collect_repo_overview(repo_path)
-        sampled_files = overview["important_files"] or overview["sample_files"][:8]
+        sampled_files = list(overview["important_files"] or overview["sample_files"][:8])
+        # Augment with keyword-matched Python source files so the LLM sees actual code, not just config files.
+        for p in _grep_for_source_candidates(repo_path, request.goal):
+            if p not in sampled_files:
+                sampled_files.append(p)
         file_samples = {
             path: read_text_file(repo_path, path)
             for path in sampled_files
@@ -200,6 +204,35 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             errors=[f"{exc.__class__.__name__}: {exc}"],
             outputs={"local_repo_path": str(repo_path)},
         )
+
+
+def _grep_for_source_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list[str]:
+    """Keyword-grep Python sources for goal tokens so the research LLM sees relevant code, not just config files."""
+    import re
+    import subprocess
+
+    stopwords = {"add", "the", "to", "in", "for", "a", "an", "and", "or", "with", "of", "from", "on", "by"}
+    tokens = [t for t in re.split(r"\W+", goal.lower()) if len(t) > 3 and t not in stopwords]
+    if not tokens:
+        return []
+
+    hits: dict[str, int] = {}
+    for token in tokens[:4]:
+        try:
+            result = subprocess.run(
+                ["grep", "-rl", "--include=*.py", token, str(repo_path)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                rel = str(Path(line).relative_to(repo_path))
+                hits[rel] = hits.get(rel, 0) + 1
+        except Exception:
+            continue
+
+    ranked = sorted(hits.items(), key=lambda x: (x[0].startswith("tests/"), -x[1]))
+    return [path for path, _ in ranked[:max_files]]
 
 
 async def _summarize_with_llm(

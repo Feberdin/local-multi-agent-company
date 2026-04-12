@@ -119,6 +119,9 @@ How to debug: If a worker policy does not save, inspect the returned validation 
           </label>
           <button type="submit">Worker-Guidance speichern</button>
         </form>
+        <form method="post" action="/settings/worker-guidance/{{ worker_guidance_form_values.worker_name }}/reset" style="margin-top:0.5rem">
+          <button type="submit" class="button-link secondary">Standard wiederherstellen</button>
+        </form>
       </section>
     </main>
   </body>
