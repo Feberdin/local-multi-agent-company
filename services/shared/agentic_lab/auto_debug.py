@@ -112,10 +112,15 @@ class AutoDebugService:
                 repository=self.settings.self_improvement_target_repo,
                 local_repo_path=self.settings.self_improvement_local_repo_path,
                 base_branch="main",
+                allow_repository_modifications=True,
+                auto_deploy_staging=self.settings.self_improvement_deploy_after_success,
                 metadata={
                     "auto_debug_parent_task_id": task_id,
                     "auto_debug_target_worker": failed_worker,
                     "auto_debug_attempt": attempt + 1,
+                    "deployment_target": "self",
+                    "worker_project_label": "Auto-Debug-Fix",
+                    "allow_repository_modifications": True,
                 },
             )
         )

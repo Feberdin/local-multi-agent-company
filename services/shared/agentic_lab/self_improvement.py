@@ -726,6 +726,7 @@ class SelfImprovementService:
                     "self_improvement_cycle_id": cycle_id,
                     "worker_project_label": "Self-Improvement-Zyklus",
                     "allow_repository_modifications": True,
+                    "deployment_target": "self",
                 },
             )
             summary = self.task_service.create_task(request)
@@ -821,6 +822,7 @@ class SelfImprovementService:
                             "worker_project_label": "Self-Improvement-Zyklus",
                             "allow_repository_modifications": True,
                             "retry_attempt": new_retry,
+                            "deployment_target": "self",
                         },
                     )
                     retry_summary = self.task_service.create_task(retry_request)

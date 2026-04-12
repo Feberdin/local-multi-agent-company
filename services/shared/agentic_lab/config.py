@@ -244,6 +244,14 @@ class Settings(BaseSettings):
         alias="SELF_IMPROVEMENT_LOCAL_REPO_PATH",
     )
 
+    # ── Self-Host (autonomous self-update of the agent stack itself) ─────────
+    self_host_ssh_user: str = Field(default="root", alias="SELF_HOST_SSH_USER")
+    self_host_ssh_host: str = Field(default="", alias="SELF_HOST_SSH_HOST")
+    self_host_ssh_port: int = Field(default=22, alias="SELF_HOST_SSH_PORT")
+    self_host_project_dir: str = Field(default="", alias="SELF_HOST_PROJECT_DIR")
+    self_host_compose_file: str = Field(default="docker-compose.yml", alias="SELF_HOST_COMPOSE_FILE")
+    self_host_health_url: str = Field(default="", alias="SELF_HOST_HEALTH_URL")
+
     # ── Auto-Debug ────────────────────────────────────────────────────────────
     auto_debug_enabled: bool = Field(default=False, alias="AUTO_DEBUG_ENABLED")
     auto_debug_max_attempts: int = Field(default=2, alias="AUTO_DEBUG_MAX_ATTEMPTS")

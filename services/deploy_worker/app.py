@@ -45,6 +45,10 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             approval_reason="Production deployment requires a separate approved workflow.",
         )
 
+    # Self-update mode: deploy the agent stack itself on the Unraid host.
+    if request.metadata.get("deployment_target") == "self":
+        return await _run_self_update(request, task_logger, branch_name)
+
     script_path = Path("/app/scripts/unraid/deploy-staging.sh")
     try:
         completed = run_command(
@@ -86,6 +90,78 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 name="deploy-report",
                 path=str(report_path),
                 description="Staging deployment stdout, stderr, and healthcheck target.",
+            )
+        ],
+    )
+
+
+async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResponse:
+    """Deploy the agent stack itself on the Unraid host via self-update.sh."""
+    if not settings.self_host_ssh_host:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update not configured.",
+            errors=["SELF_HOST_SSH_HOST is not set. Configure the self-host settings in .env to enable autonomous self-update."],
+        )
+    if not settings.self_host_project_dir:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update not configured.",
+            errors=["SELF_HOST_PROJECT_DIR is not set. Set it to the feberdin repo path on the Unraid host."],
+        )
+
+    script_path = Path("/app/scripts/unraid/self-update.sh")
+    task_logger.info("Self-update: deploying branch %s to %s", branch_name, settings.self_host_ssh_host)
+
+    try:
+        completed = run_command(
+            [
+                "/bin/sh",
+                str(script_path),
+                settings.self_host_project_dir,
+                settings.self_host_compose_file,
+                branch_name,
+                settings.self_host_ssh_user,
+                settings.self_host_ssh_host,
+                str(settings.self_host_ssh_port),
+                settings.self_host_health_url,
+            ],
+            timeout=300,
+        )
+    except CommandError as exc:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update deployment failed.",
+            errors=[str(exc)],
+        )
+
+    report = {
+        "stdout": completed.stdout[-6000:],
+        "stderr": completed.stderr[-6000:],
+        "branch": branch_name,
+        "host": settings.self_host_ssh_host,
+        "project_dir": settings.self_host_project_dir,
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "deploy-report.json", report)
+    task_logger.info("Self-update deployment completed on %s.", settings.self_host_ssh_host)
+
+    return WorkerResponse(
+        worker="deploy",
+        summary=f"Agent-Stack auf {settings.self_host_ssh_host} aktualisiert (Branch: {branch_name}).",
+        outputs={
+            "branch_name": branch_name,
+            "host": settings.self_host_ssh_host,
+            "project_dir": settings.self_host_project_dir,
+            "health_url": settings.self_host_health_url,
+        },
+        artifacts=[
+            Artifact(
+                name="deploy-report",
+                path=str(report_path),
+                description="Self-update stdout, stderr, and host details.",
             )
         ],
     )
