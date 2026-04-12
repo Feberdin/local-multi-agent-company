@@ -251,6 +251,7 @@ class Settings(BaseSettings):
     self_host_project_dir: str = Field(default="", alias="SELF_HOST_PROJECT_DIR")
     self_host_compose_file: str = Field(default="docker-compose.yml", alias="SELF_HOST_COMPOSE_FILE")
     self_host_health_url: str = Field(default="", alias="SELF_HOST_HEALTH_URL")
+    self_host_ssh_key_file: str = Field(default="", alias="SELF_HOST_SSH_KEY_FILE")
 
     # ── Auto-Debug ────────────────────────────────────────────────────────────
     auto_debug_enabled: bool = Field(default=False, alias="AUTO_DEBUG_ENABLED")

@@ -15,12 +15,20 @@ SSH_USER="${4:?missing ssh user}"
 SSH_HOST="${5:?missing ssh host}"
 SSH_PORT="${6:?missing ssh port}"
 HEALTH_URL="${7:-}"
+SSH_KEY="${8:-}"
 
 REMOTE="${SSH_USER}@${SSH_HOST}"
 
+# Build SSH options — use explicit key if provided, otherwise fall back to default agent/key
+SSH_OPTS="-o StrictHostKeyChecking=no -o BatchMode=yes -p ${SSH_PORT}"
+if [ -n "${SSH_KEY}" ] && [ -f "${SSH_KEY}" ]; then
+  SSH_OPTS="${SSH_OPTS} -i ${SSH_KEY}"
+fi
+
 echo "self-update: connecting to ${REMOTE}:${SSH_PORT} to deploy branch ${BRANCH_NAME}"
 
-ssh -o StrictHostKeyChecking=no -p "${SSH_PORT}" "${REMOTE}" /bin/sh <<EOF
+# shellcheck disable=SC2086
+ssh ${SSH_OPTS} "${REMOTE}" /bin/sh <<EOF
 set -eu
 
 if [ ! -d "${PROJECT_DIR}/.git" ]; then

@@ -127,6 +127,7 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
                 settings.self_host_ssh_host,
                 str(settings.self_host_ssh_port),
                 settings.self_host_health_url,
+                settings.self_host_ssh_key_file,
             ],
             timeout=300,
         )
