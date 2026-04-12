@@ -7,7 +7,10 @@ How to debug: If a worker seems to ignore guidance, inspect the request metadata
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +20,7 @@ from services.shared.agentic_lab.schemas import (
     ImprovementSuggestion,
     ImprovementSuggestionDecisionRequest,
     ImprovementSuggestionRegistry,
+    ImprovementSuggestionScope,
     ImprovementSuggestionStatus,
     WorkerDecisionNode,
     WorkerDecisionTree,
@@ -28,6 +32,25 @@ from services.shared.agentic_lab.schemas import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GUIDANCE_SEED_PATH = PROJECT_ROOT / "config/worker_guidance.defaults.json"
+REPOSITORY_WIDE_SUGGESTION_STATUSES = {
+    ImprovementSuggestionStatus.IMPLEMENTED,
+    ImprovementSuggestionStatus.DISMISSED,
+    ImprovementSuggestionStatus.SUPPRESSED_FOR_REPOSITORY,
+}
+LEGACY_DISMISSED_STATUSES = {ImprovementSuggestionStatus.REJECTED}
+TASK_LOCAL_SUGGESTION_STATUSES = {
+    ImprovementSuggestionStatus.PENDING,
+    ImprovementSuggestionStatus.APPROVED,
+}
+GLOBAL_WORKER_MINIMUM_RULES: tuple[str, ...] = (
+    "Unterscheide immer zwischen Fakt, Annahme, Empfehlung und Blocker.",
+    "Liefere immer einen sichtbaren aktuellen Auftrag.",
+    "Verwende klare Statuswerte: running, waiting, blocked, complete, failed, idle.",
+    "Befuelle waiting_for, blocked_by, next_worker, elapsed_seconds und last_result_summary so konsistent wie moeglich.",
+    "Erzeuge standardmaessig deutsche UI-Texte.",
+    "Gib Vorschlaege ausserhalb des Scopes als Suggestion zurueck statt sie still umzusetzen.",
+    "Strukturierte Output-Vertraege haben Vorrang vor freier Prosa.",
+)
 
 
 class WorkerGovernanceError(ValueError):
@@ -53,19 +76,26 @@ class WorkerGovernanceService:
     def load_guidance_registry(self) -> WorkerGuidanceRegistry:
         """Load operator guidance from runtime storage or seed defaults."""
 
+        seed_registry = self._load_seed_guidance_registry()
         if self.guidance_path.exists():
-            return self._normalize_guidance_registry(
-                WorkerGuidanceRegistry.model_validate_json(self.guidance_path.read_text("utf-8"))
+            normalized = self._normalize_guidance_registry(
+                WorkerGuidanceRegistry.model_validate_json(self.guidance_path.read_text("utf-8")),
+                seed_registry=seed_registry,
             )
+            self._write_guidance_registry(normalized)
+            return normalized
 
-        registry = self._load_seed_guidance_registry()
-        self._write_guidance_registry(registry)
-        return registry
+        self._write_guidance_registry(seed_registry)
+        return seed_registry
 
     def save_guidance_registry(self, registry: WorkerGuidanceRegistry) -> WorkerGuidanceRegistry:
         """Persist a complete guidance registry after normalization."""
 
-        normalized = self._normalize_guidance_registry(registry)
+        normalized = self._normalize_guidance_registry(
+            registry,
+            seed_registry=self._load_seed_guidance_registry(),
+            touch_updated_at=True,
+        )
         self._write_guidance_registry(normalized)
         return normalized
 
@@ -73,7 +103,11 @@ class WorkerGovernanceService:
         """Update one worker policy without forcing the caller to rewrite the full registry."""
 
         registry = self.load_guidance_registry()
-        normalized_policy = self._normalize_guidance_policy(policy, previous_policy=self.policy_for_worker(policy.worker_name))
+        normalized_policy = self._normalize_guidance_policy(
+            policy,
+            previous_policy=self.policy_for_worker(policy.worker_name),
+            touch_updated_at=True,
+        )
         existing_index = next((index for index, item in enumerate(registry.workers) if item.worker_name == policy.worker_name), None)
         if existing_index is None:
             registry.workers.append(normalized_policy)
@@ -100,18 +134,23 @@ class WorkerGovernanceService:
         if policy is None or not policy.enabled:
             return ""
 
-        operator_recommendations = "\n".join(f"- {item}" for item in policy.operator_recommendations) or "- Follow the explicit task scope."
-        decision_preferences = "\n".join(f"- {item}" for item in policy.decision_preferences) or "- Make decisions explicit and auditable."
+        operator_recommendations = "\n".join(f"- {item}" for item in policy.operator_recommendations)
+        decision_preferences = "\n".join(f"- {item}" for item in policy.decision_preferences)
+        minimum_rules = "\n".join(f"- {item}" for item in GLOBAL_WORKER_MINIMUM_RULES)
         return (
-            "\n\nOperator guidance for this worker:\n"
-            f"Role summary: {policy.role_summary}\n"
-            "Operator recommendations:\n"
+            "\n\nVerbindliche Worker-Guidance:\n"
+            f"Anzeigename: {policy.display_name}\n"
+            f"Rollenbeschreibung: {policy.role_description}\n"
+            "Operator-Empfehlungen:\n"
             f"{operator_recommendations}\n"
-            "Decision preferences:\n"
+            "Entscheidungspräferenzen:\n"
             f"{decision_preferences}\n"
-            f"Competence boundary: {policy.competence_boundary}\n"
-            "If you identify a potentially useful change outside this boundary, do not silently expand scope. "
-            "Return it as an explicit improvement suggestion instead."
+            f"Kompetenzgrenze: {policy.competence_boundary}\n"
+            f"Ausserhalb des Scopes eskalieren: {'ja' if policy.escalate_out_of_scope else 'nein'}\n"
+            "Globale Mindestregeln:\n"
+            f"{minimum_rules}\n"
+            "Wenn du ausserhalb des freigegebenen Scopes eine sinnvolle Verbesserung erkennst, "
+            "liefere sie als explizite Suggestion statt als stillen Umbau."
         )
 
     def annotate_worker_response(self, worker_name: str, request: WorkerRequest, response: WorkerResponse) -> WorkerResponse:
@@ -121,10 +160,20 @@ class WorkerGovernanceService:
         outputs = dict(response.outputs)
         outputs["applied_guidance"] = {
             "worker_name": worker_name,
+            "display_name": policy.display_name if policy else worker_name,
             "guidance_enabled": bool(policy and policy.enabled),
+            "role_description": policy.role_description if policy else None,
+            "role_summary": policy.role_description if policy else None,
             "operator_recommendations": policy.operator_recommendations if policy else [],
             "decision_preferences": policy.decision_preferences if policy else [],
             "competence_boundary": policy.competence_boundary if policy else None,
+            "escalate_out_of_scope": policy.escalate_out_of_scope if policy else False,
+            "escalate_beyond_boundary": policy.escalate_out_of_scope if policy else False,
+            "auto_submit_suggestions": policy.auto_submit_suggestions if policy else False,
+            "auto_submit_improvement_suggestions": policy.auto_submit_suggestions if policy else False,
+            "global_minimum_rules": list(GLOBAL_WORKER_MINIMUM_RULES),
+            "status_contract": ["running", "waiting", "blocked", "complete", "failed", "idle"],
+            "ui_language": "de",
         }
         outputs["decision_tree"] = self.build_decision_tree(worker_name, request, response).model_dump(mode="json")
         response.outputs = outputs
@@ -203,7 +252,7 @@ class WorkerGovernanceService:
         """Store deduplicated improvement suggestions derived from the worker result."""
 
         policy = self._policy_from_request(request, worker_name)
-        if policy is not None and not policy.auto_submit_improvement_suggestions:
+        if policy is not None and not policy.auto_submit_suggestions:
             return []
 
         generated = self._generate_suggestions(worker_name, request, response, policy)
@@ -211,22 +260,13 @@ class WorkerGovernanceService:
             return []
 
         registry = self.load_suggestion_registry()
-        existing_signatures = {
-            (item.worker_name, item.task_id or "", item.repository or "", item.title.lower()) for item in registry.suggestions
-        }
         added: list[ImprovementSuggestion] = []
         for suggestion in generated:
-            signature = (
-                suggestion.worker_name,
-                suggestion.task_id or "",
-                suggestion.repository or "",
-                suggestion.title.lower(),
-            )
-            if signature in existing_signatures:
+            normalized_suggestion = self._normalize_suggestion(suggestion)
+            if self._should_skip_suggestion(registry.suggestions, normalized_suggestion):
                 continue
-            registry.suggestions.append(suggestion)
-            existing_signatures.add(signature)
-            added.append(suggestion)
+            registry.suggestions.append(normalized_suggestion)
+            added.append(normalized_suggestion)
 
         if added:
             self._write_suggestion_registry(self._normalize_suggestion_registry(registry))
@@ -250,7 +290,8 @@ class WorkerGovernanceService:
         suggestions = self.load_suggestion_registry().suggestions
         filtered = suggestions
         if status is not None:
-            filtered = [item for item in filtered if item.status is status]
+            normalized_status = self._normalize_status(status)
+            filtered = [item for item in filtered if item.status == normalized_status]
         if task_id is not None:
             filtered = [item for item in filtered if item.task_id == task_id]
         return sorted(filtered, key=lambda item: item.updated_at, reverse=True)
@@ -265,11 +306,13 @@ class WorkerGovernanceService:
         for index, suggestion in enumerate(registry.suggestions):
             if suggestion.id != suggestion_id:
                 continue
+            normalized_status = self._normalize_status(request.decision)
             registry.suggestions[index] = suggestion.model_copy(
                 update={
-                    "status": request.decision,
+                    "status": normalized_status,
+                    "scope": self._scope_for_status(normalized_status),
                     "actor": request.actor,
-                    "decision_note": request.note,
+                    "decision_note": request.note.strip() if request.note else None,
                     "updated_at": datetime.now(UTC),
                 }
             )
@@ -313,36 +356,117 @@ class WorkerGovernanceService:
             encoding="utf-8",
         )
 
-    def _normalize_guidance_registry(self, registry: WorkerGuidanceRegistry) -> WorkerGuidanceRegistry:
+    def _normalize_guidance_registry(
+        self,
+        registry: WorkerGuidanceRegistry,
+        *,
+        seed_registry: WorkerGuidanceRegistry | None = None,
+        touch_updated_at: bool = False,
+    ) -> WorkerGuidanceRegistry:
+        seed_map = {
+            item.worker_name: item
+            for item in (seed_registry.workers if seed_registry is not None else [])
+        }
         seen_workers: set[str] = set()
         normalized_workers: list[WorkerGuidancePolicy] = []
         for item in registry.workers:
-            normalized = self._normalize_guidance_policy(item, previous_policy=None)
+            normalized = self._normalize_guidance_policy(
+                item,
+                previous_policy=None,
+                default_policy=seed_map.get(item.worker_name),
+                touch_updated_at=touch_updated_at,
+            )
             if normalized.worker_name in seen_workers:
                 raise WorkerGovernanceError(f"Duplicate worker guidance entry for `{normalized.worker_name}`.")
             seen_workers.add(normalized.worker_name)
             normalized_workers.append(normalized)
+        for worker_name, default_policy in seed_map.items():
+            if worker_name not in seen_workers:
+                normalized_workers.append(default_policy)
         return WorkerGuidanceRegistry(workers=sorted(normalized_workers, key=lambda item: item.display_name.lower()))
 
     def _normalize_guidance_policy(
         self,
         policy: WorkerGuidancePolicy,
         previous_policy: WorkerGuidancePolicy | None,
+        default_policy: WorkerGuidancePolicy | None = None,
+        touch_updated_at: bool = False,
     ) -> WorkerGuidancePolicy:
+        field_names = set(policy.model_fields_set)
+        fallback_policy = default_policy or policy
         created_at = previous_policy.created_at if previous_policy is not None else policy.created_at
-        return WorkerGuidancePolicy(
+        normalized_policy = WorkerGuidancePolicy(
             worker_name=policy.worker_name.strip(),
-            display_name=policy.display_name.strip(),
-            enabled=policy.enabled,
-            role_summary=policy.role_summary.strip(),
-            operator_recommendations=[item.strip() for item in policy.operator_recommendations if item.strip()],
-            decision_preferences=[item.strip() for item in policy.decision_preferences if item.strip()],
-            competence_boundary=policy.competence_boundary.strip(),
-            escalate_beyond_boundary=policy.escalate_beyond_boundary,
-            auto_submit_improvement_suggestions=policy.auto_submit_improvement_suggestions,
+            display_name=policy.display_name.strip() or fallback_policy.display_name.strip(),
+            enabled=policy.enabled if "enabled" in field_names else fallback_policy.enabled,
+            role_description=policy.role_description.strip() or fallback_policy.role_description.strip(),
+            operator_recommendations=(
+                self._clean_guidance_lines(policy.operator_recommendations)
+                or self._clean_guidance_lines(fallback_policy.operator_recommendations)
+            ),
+            decision_preferences=(
+                self._clean_guidance_lines(policy.decision_preferences)
+                or self._clean_guidance_lines(fallback_policy.decision_preferences)
+            ),
+            competence_boundary=policy.competence_boundary.strip() or fallback_policy.competence_boundary.strip(),
+            escalate_out_of_scope=(
+                policy.escalate_out_of_scope
+                if "escalate_out_of_scope" in field_names
+                else fallback_policy.escalate_out_of_scope
+            ),
+            auto_submit_suggestions=(
+                policy.auto_submit_suggestions
+                if "auto_submit_suggestions" in field_names
+                else fallback_policy.auto_submit_suggestions
+            ),
             created_at=created_at,
-            updated_at=datetime.now(UTC),
+            updated_at=(
+                datetime.now(UTC)
+                if touch_updated_at
+                else (previous_policy.updated_at if previous_policy is not None else policy.updated_at)
+            ),
         )
+        self._validate_guidance_policy(normalized_policy)
+        return normalized_policy
+
+    def _clean_guidance_lines(self, items: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in items:
+            value = item.strip()
+            if value:
+                cleaned.append(value)
+        return cleaned
+
+    def _validate_guidance_policy(self, policy: WorkerGuidancePolicy) -> None:
+        if not policy.worker_name.strip():
+            raise WorkerGovernanceError("Jede Worker-Guidance braucht einen gueltigen Worker-Namen.")
+        if not policy.display_name.strip():
+            raise WorkerGovernanceError(
+                f"Worker `{policy.worker_name}` braucht einen nicht-leeren Anzeigenamen."
+            )
+        if not policy.enabled:
+            return
+        if not policy.role_description.strip():
+            raise WorkerGovernanceError(
+                f"Worker `{policy.worker_name}` braucht eine nicht-leere Rollenbeschreibung."
+            )
+        if not policy.operator_recommendations:
+            raise WorkerGovernanceError(
+                f"Worker `{policy.worker_name}` braucht mindestens eine Operator-Empfehlung."
+            )
+        if not policy.decision_preferences:
+            raise WorkerGovernanceError(
+                f"Worker `{policy.worker_name}` braucht mindestens eine Entscheidungspräferenz."
+            )
+        if not policy.competence_boundary.strip():
+            raise WorkerGovernanceError(
+                f"Worker `{policy.worker_name}` braucht eine nicht-leere Kompetenzgrenze."
+            )
+        for line in [policy.role_description, policy.competence_boundary, *policy.operator_recommendations, *policy.decision_preferences]:
+            if len(line.strip()) > 700:
+                raise WorkerGovernanceError(
+                    f"Worker `{policy.worker_name}` enthaelt ueberlange Guidance-Texte. Bitte kuerzer formulieren."
+                )
 
     def _normalize_suggestion_registry(self, registry: ImprovementSuggestionRegistry) -> ImprovementSuggestionRegistry:
         normalized = [self._normalize_suggestion(item) for item in registry.suggestions]
@@ -351,24 +475,104 @@ class WorkerGovernanceService:
         )
 
     def _normalize_suggestion(self, suggestion: ImprovementSuggestion) -> ImprovementSuggestion:
+        normalized_status = self._normalize_status(suggestion.status)
+        normalized_repository = suggestion.repository.strip() if suggestion.repository else None
+        normalized_task_id = suggestion.task_id.strip() if suggestion.task_id else None
+        normalized_title = suggestion.title.strip()
+        normalized_action = suggestion.suggested_action.strip()
+        fingerprint = suggestion.fingerprint.strip() or self._suggestion_fingerprint(
+            repository=normalized_repository,
+            worker_name=suggestion.worker_name,
+            title=normalized_title,
+            suggested_action=normalized_action,
+            impact=suggestion.impact,
+        )
         return ImprovementSuggestion(
             id=suggestion.id.strip() or str(uuid4()),
             worker_name=suggestion.worker_name.strip(),
-            task_id=suggestion.task_id,
-            repository=suggestion.repository,
-            title=suggestion.title.strip(),
+            task_id=normalized_task_id,
+            repository=normalized_repository,
+            fingerprint=fingerprint,
+            title=normalized_title,
             summary=suggestion.summary.strip(),
             rationale=suggestion.rationale.strip(),
-            suggested_action=suggestion.suggested_action.strip(),
+            suggested_action=normalized_action,
             impact=suggestion.impact.strip() or "medium",
             exceeds_competence_boundary=suggestion.exceeds_competence_boundary,
             requires_ceo_approval=suggestion.requires_ceo_approval,
-            status=suggestion.status,
+            status=normalized_status,
+            scope=self._scope_for_status(normalized_status, suggestion.scope),
             actor=suggestion.actor,
-            decision_note=suggestion.decision_note,
+            decision_note=suggestion.decision_note.strip() if suggestion.decision_note else None,
             created_at=suggestion.created_at,
             updated_at=suggestion.updated_at,
         )
+
+    def _normalize_status(self, status: ImprovementSuggestionStatus) -> ImprovementSuggestionStatus:
+        if status in LEGACY_DISMISSED_STATUSES:
+            return ImprovementSuggestionStatus.DISMISSED
+        return status
+
+    def _scope_for_status(
+        self,
+        status: ImprovementSuggestionStatus,
+        scope: ImprovementSuggestionScope | None = None,
+    ) -> ImprovementSuggestionScope:
+        normalized_status = self._normalize_status(status)
+        if normalized_status in REPOSITORY_WIDE_SUGGESTION_STATUSES:
+            return ImprovementSuggestionScope.REPOSITORY_WIDE
+        return ImprovementSuggestionScope.TASK_LOCAL
+
+    def _should_skip_suggestion(
+        self,
+        existing: list[ImprovementSuggestion],
+        candidate: ImprovementSuggestion,
+    ) -> bool:
+        for item in existing:
+            if item.fingerprint != candidate.fingerprint:
+                continue
+            if self._normalize_repository_key(item.repository) != self._normalize_repository_key(candidate.repository):
+                continue
+            if item.task_id == candidate.task_id:
+                return True
+            if item.status in REPOSITORY_WIDE_SUGGESTION_STATUSES:
+                return True
+        return False
+
+    def _suggestion_fingerprint(
+        self,
+        *,
+        repository: str | None,
+        worker_name: str,
+        title: str,
+        suggested_action: str,
+        impact: str,
+    ) -> str:
+        payload = {
+            "repository": self._normalize_repository_key(repository),
+            "worker_name": self._normalize_text(worker_name),
+            "title": self._normalize_text(title),
+            "suggested_action": self._normalize_text(suggested_action),
+            "impact": self._normalize_text(impact),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+
+    def _normalize_repository_key(self, repository: str | None) -> str:
+        raw = str(repository or "").strip()
+        if raw.endswith(".git"):
+            raw = raw[:-4]
+        for prefix in ("https://github.com/", "http://github.com/", "git@github.com:"):
+            if raw.startswith(prefix):
+                raw = raw.removeprefix(prefix)
+        return self._normalize_text(raw)
+
+    def _normalize_text(self, value: str | None) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        normalized = re.sub(r"[^\w\s]+", " ", normalized, flags=re.UNICODE)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
 
     def _execution_evidence(self, worker_name: str, response: WorkerResponse) -> list[str]:
         outputs = response.outputs
@@ -467,7 +671,7 @@ class WorkerGovernanceService:
             impact: str = "medium",
             exceeds: bool = False,
         ) -> None:
-            requires_ceo_approval = exceeds or bool(policy and policy.escalate_beyond_boundary)
+            requires_ceo_approval = exceeds or bool(policy and policy.escalate_out_of_scope)
             suggestions.append(
                 ImprovementSuggestion(
                     id=str(uuid4()),

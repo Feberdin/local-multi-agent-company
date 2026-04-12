@@ -1,194 +1,147 @@
 """
-Unit tests for the system readiness check module.
-Tests cover status aggregation, secret file checks, env var checks, and duration formatting.
+Purpose: Verify that the readiness runner always produces a structured report, even when checks
+fail, are skipped, or raise exceptions internally.
+Input/Output: Tests patch the check definition list so report aggregation can be exercised without
+real network, Git, or model traffic.
+Important invariants: One broken check must not crash the report, category summaries stay
+consistent, and timing fields remain plausible.
+How to debug: If these tests fail, inspect `services/shared/agentic_lab/readiness_checks.py`
+because that module now owns the aggregation and safety net behavior.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from services.shared.agentic_lab.readiness import (
-    CheckStatus,
-    ReadinessCheckItem,
-    ReadinessSection,
-    ReadinessSummary,
-    _check_env_var,
-    _check_git_available,
-    _check_path_readable,
-    _check_secret_file,
-    _overall_status,
-    _section_status,
-    _summarize,
-    _workflow_message,
+from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.readiness_checks import (
+    ReadinessCheckDefinition,
+    build_catastrophic_readiness_report,
+    build_readiness_report,
+)
+from services.shared.agentic_lab.readiness_models import (
+    ReadinessCheckStatus,
+    ReadinessMode,
+    ReadinessSeverity,
 )
 
-# ---------------------------------------------------------------------------
-# Status aggregation
-# ---------------------------------------------------------------------------
 
-def _make_check(status: CheckStatus) -> ReadinessCheckItem:
-    return ReadinessCheckItem(name="x", label="x", status=status, message="x")
-
-
-def _make_section(checks: list[ReadinessCheckItem]) -> ReadinessSection:
-    return ReadinessSection(name="s", label="s", status=_section_status(checks), checks=checks)
-
-
-class TestSectionStatus:
-    def test_all_ok_returns_ok(self) -> None:
-        checks = [_make_check(CheckStatus.OK)] * 3
-        assert _section_status(checks) == CheckStatus.OK
-
-    def test_one_warning_returns_warning(self) -> None:
-        checks = [_make_check(CheckStatus.OK), _make_check(CheckStatus.WARNING)]
-        assert _section_status(checks) == CheckStatus.WARNING
-
-    def test_one_failed_returns_failed(self) -> None:
-        checks = [_make_check(CheckStatus.OK), _make_check(CheckStatus.WARNING), _make_check(CheckStatus.FAILED)]
-        assert _section_status(checks) == CheckStatus.FAILED
-
-    def test_all_skipped_returns_skipped(self) -> None:
-        checks = [_make_check(CheckStatus.SKIPPED)] * 2
-        assert _section_status(checks) == CheckStatus.SKIPPED
-
-    def test_skipped_mixed_with_ok_returns_ok(self) -> None:
-        checks = [_make_check(CheckStatus.OK), _make_check(CheckStatus.SKIPPED)]
-        assert _section_status(checks) == CheckStatus.OK
-
-    def test_empty_returns_skipped(self) -> None:
-        assert _section_status([]) == CheckStatus.SKIPPED
+def _settings(tmp_path: Path) -> Settings:
+    data_dir = tmp_path / "data"
+    reports_dir = tmp_path / "reports"
+    workspace_root = tmp_path / "workspace"
+    staging_stack_root = tmp_path / "staging"
+    for path in (data_dir, reports_dir, workspace_root, staging_stack_root):
+        path.mkdir(parents=True, exist_ok=True)
+    return Settings(
+        DATA_DIR=data_dir,
+        REPORTS_DIR=reports_dir,
+        WORKSPACE_ROOT=workspace_root,
+        STAGING_STACK_ROOT=staging_stack_root,
+        ORCHESTRATOR_DB_PATH=data_dir / "orchestrator.db",
+        SELF_IMPROVEMENT_LOCAL_REPO_PATH=str(workspace_root / "local-multi-agent-company"),
+        DEFAULT_LOCAL_REPO_PATH=str(workspace_root / "example-repo"),
+    )
 
 
-class TestOverallStatus:
-    def test_all_sections_ok(self) -> None:
-        sections = [_make_section([_make_check(CheckStatus.OK)]) for _ in range(3)]
-        assert _overall_status(sections) == CheckStatus.OK
+async def test_readiness_report_aggregates_partial_failures_without_crashing(tmp_path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
 
-    def test_one_section_failed(self) -> None:
-        sections = [
-            _make_section([_make_check(CheckStatus.OK)]),
-            _make_section([_make_check(CheckStatus.FAILED)]),
-        ]
-        assert _overall_status(sections) == CheckStatus.FAILED
+    async def backend_ok(_ctx):
+        return {
+            "status": ReadinessCheckStatus.OK,
+            "severity": ReadinessSeverity.INFO,
+            "message": "Backend steht.",
+        }
 
-    def test_degraded_when_only_warnings(self) -> None:
-        sections = [
-            _make_section([_make_check(CheckStatus.OK)]),
-            _make_section([_make_check(CheckStatus.WARNING)]),
-        ]
-        assert _overall_status(sections) == CheckStatus.WARNING
+    async def worker_warning(_ctx):
+        return {
+            "status": ReadinessCheckStatus.WARNING,
+            "severity": ReadinessSeverity.MEDIUM,
+            "message": "Worker ist langsam, aber erreichbar.",
+            "hint": "Timeouts beobachten.",
+        }
 
+    monkeypatch.setattr(
+        "services.shared.agentic_lab.readiness_checks._definitions_for_context",
+        lambda _ctx: [
+            ReadinessCheckDefinition("backend-ok", "backend", "Backend", backend_ok),
+            ReadinessCheckDefinition("worker-warning", "workers", "Worker", worker_warning),
+        ],
+    )
 
-class TestSummarize:
-    def test_counts_correctly(self) -> None:
-        sections = [
-            _make_section([_make_check(CheckStatus.OK), _make_check(CheckStatus.OK)]),
-            _make_section([_make_check(CheckStatus.WARNING), _make_check(CheckStatus.FAILED)]),
-            _make_section([_make_check(CheckStatus.SKIPPED)]),
-        ]
-        summary = _summarize(sections)
-        assert summary.checks_total == 5
-        assert summary.checks_ok == 2
-        assert summary.checks_warning == 1
-        assert summary.checks_failed == 1
-        assert summary.checks_skipped == 1
+    report = await build_readiness_report(settings, mode=ReadinessMode.QUICK)
 
-
-class TestWorkflowMessage:
-    def test_ok_is_ready(self) -> None:
-        summary = ReadinessSummary(checks_total=3, checks_ok=3)
-        ready, msg = _workflow_message(CheckStatus.OK, summary)
-        assert ready is True
-        assert "einsatzbereit" in msg.lower()
-
-    def test_warning_is_ready_but_degraded(self) -> None:
-        summary = ReadinessSummary(checks_total=3, checks_ok=2, checks_warning=1)
-        ready, msg = _workflow_message(CheckStatus.WARNING, summary)
-        assert ready is True
-        assert "eingeschraenkt" in msg.lower()
-
-    def test_failed_is_not_ready(self) -> None:
-        summary = ReadinessSummary(checks_total=3, checks_ok=1, checks_failed=2)
-        ready, msg = _workflow_message(CheckStatus.FAILED, summary)
-        assert ready is False
-        assert "nicht gestartet" in msg.lower()
+    assert report.overall_status is ReadinessCheckStatus.WARNING
+    assert report.summary.total == 2
+    assert report.summary.ok == 1
+    assert report.summary.warning == 1
+    backend_category = next(item for item in report.categories if item.id == "backend")
+    workers_category = next(item for item in report.categories if item.id == "workers")
+    assert backend_category.ok == 1
+    assert workers_category.warning == 1
+    assert report.recommendations[0].message == "Timeouts beobachten."
+    assert report.started_at <= report.finished_at
+    assert report.duration_ms >= 0
 
 
-# ---------------------------------------------------------------------------
-# Config checks
-# ---------------------------------------------------------------------------
+async def test_readiness_report_serializes_check_exceptions_into_failed_results(tmp_path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
 
-class TestCheckEnvVar:
-    def test_set_value_returns_ok(self) -> None:
-        item = _check_env_var("http://localhost:11434/v1", "MISTRAL_BASE_URL", "Base URL", "url")
-        assert item.status == CheckStatus.OK
+    async def crashing_check(_ctx):
+        raise RuntimeError("simulierter Check-Crash")
 
-    def test_empty_value_required_returns_failed(self) -> None:
-        item = _check_env_var("", "MISTRAL_BASE_URL", "Base URL", "url", required=True)
-        assert item.status == CheckStatus.FAILED
+    monkeypatch.setattr(
+        "services.shared.agentic_lab.readiness_checks._definitions_for_context",
+        lambda _ctx: [
+            ReadinessCheckDefinition("backend-crash", "backend", "Abgestuerzter Check", crashing_check),
+        ],
+    )
 
-    def test_empty_value_optional_returns_warning(self) -> None:
-        item = _check_env_var("", "GITHUB_TOKEN", "Token", "tok", required=False)
-        assert item.status == CheckStatus.WARNING
+    report = await build_readiness_report(settings, mode=ReadinessMode.QUICK)
 
-    def test_placeholder_treated_as_missing(self) -> None:
-        item = _check_env_var("replace-me", "GITHUB_TOKEN", "Token", "tok", required=True)
-        assert item.status == CheckStatus.FAILED
-
-
-# ---------------------------------------------------------------------------
-# Secret file checks
-# ---------------------------------------------------------------------------
-
-class TestCheckSecretFile:
-    def test_none_path_returns_skipped(self) -> None:
-        item = _check_secret_file(None, "Key", "key")
-        assert item.status == CheckStatus.SKIPPED
-
-    def test_missing_file_returns_warning(self, tmp_path: Path) -> None:
-        missing = tmp_path / "nothere.txt"
-        item = _check_secret_file(missing, "Key", "key")
-        assert item.status == CheckStatus.WARNING
-
-    def test_existing_readable_file_returns_ok(self, tmp_path: Path) -> None:
-        f = tmp_path / "secret.txt"
-        f.write_text("token-value", encoding="utf-8")
-        item = _check_secret_file(f, "Key", "key")
-        assert item.status == CheckStatus.OK
-
-    def test_unreadable_file_returns_failed(self, tmp_path: Path) -> None:
-        f = tmp_path / "secret.txt"
-        f.write_text("token-value", encoding="utf-8")
-        f.chmod(0o000)
-        try:
-            item = _check_secret_file(f, "Key", "key")
-            assert item.status == CheckStatus.FAILED
-        finally:
-            f.chmod(0o644)
+    assert report.overall_status is ReadinessCheckStatus.FAIL
+    assert report.summary.fail == 1
+    assert report.checks[0].status is ReadinessCheckStatus.FAIL
+    assert "RuntimeError" in report.checks[0].detail
+    assert "Andere Checks wurden trotzdem weiter ausgewertet" in report.checks[0].hint
 
 
-# ---------------------------------------------------------------------------
-# Path readability
-# ---------------------------------------------------------------------------
+async def test_quick_mode_marks_deep_checks_as_skipped(tmp_path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
 
-class TestCheckPathReadable:
-    def test_nonexistent_path_returns_failed(self, tmp_path: Path) -> None:
-        missing = tmp_path / "nope"
-        item = _check_path_readable(missing, "Dir", "dir")
-        assert item.status == CheckStatus.FAILED
+    async def deep_check(_ctx):
+        return {
+            "status": ReadinessCheckStatus.OK,
+            "severity": ReadinessSeverity.INFO,
+            "message": "Sollte im Schnellcheck nicht laufen.",
+        }
 
-    def test_existing_writable_path_returns_ok(self, tmp_path: Path) -> None:
-        item = _check_path_readable(tmp_path, "Dir", "dir")
-        assert item.status == CheckStatus.OK
+    monkeypatch.setattr(
+        "services.shared.agentic_lab.readiness_checks._definitions_for_context",
+        lambda _ctx: [
+            ReadinessCheckDefinition("deep-only", "llm", "Nur tief", deep_check, deep_only=True),
+        ],
+    )
+
+    report = await build_readiness_report(settings, mode=ReadinessMode.QUICK)
+
+    assert report.summary.skipped == 1
+    assert report.checks[0].status is ReadinessCheckStatus.SKIPPED
+    assert report.checks[0].message == "Nur im Tiefencheck aktiv."
 
 
-# ---------------------------------------------------------------------------
-# Git availability (non-destructive subprocess check)
-# ---------------------------------------------------------------------------
+def test_catastrophic_report_is_always_renderable(tmp_path) -> None:
+    settings = _settings(tmp_path)
 
-class TestCheckGitAvailable:
-    def test_returns_a_check_item(self) -> None:
-        item = _check_git_available()
-        # We don't assert OK/FAILED since git may or may not be available in CI.
-        assert item.name == "git-available"
-        assert item.status in {CheckStatus.OK, CheckStatus.FAILED, CheckStatus.WARNING}
+    report = build_catastrophic_readiness_report(
+        settings,
+        mode=ReadinessMode.DEEP,
+        exc=ValueError("harter Gesamtfehler"),
+    )
+
+    assert report.overall_status is ReadinessCheckStatus.FAIL
+    assert report.summary.fail == 1
+    assert report.checks[0].severity is ReadinessSeverity.CRITICAL
+    assert "ValueError" in report.checks[0].detail
+    assert report.mode is ReadinessMode.DEEP

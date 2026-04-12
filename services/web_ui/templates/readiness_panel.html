@@ -1,0 +1,227 @@
+<!--
+Purpose: Server-rendered readiness panel fragment that can be swapped in place without reloading the full page.
+Input/Output: Receives one decorated readiness report dict and renders compact category, worker, and check sections.
+Important invariants: Even catastrophic fallback reports remain readable, and every failed check still exposes its hint.
+How to debug: If this fragment renders oddly, inspect the decorated `report` object in `services/web_ui/app.py`.
+-->
+{% set summary = report.summary %}
+
+<section class="panel readiness-overview-panel">
+  <div class="readiness-status-hero readiness-status-{{ report.overall_status }}">
+    <div>
+      <p class="eyebrow">Gesamtstatus</p>
+      <h2>{{ report.headline }}</h2>
+      <p class="lead">{{ report.summary_message }}</p>
+    </div>
+    <div class="readiness-status-meta">
+      <span class="status {{ report.overall_status_class }}">{{ report.overall_status_label }}</span>
+      <span class="muted">Letzte Aktualisierung: {{ report.finished_at_display }}</span>
+      <span class="muted">Gesamtdauer: {{ report.duration_display }}</span>
+    </div>
+  </div>
+
+  <div class="readiness-metric-grid">
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ summary.total }}</span>
+      <span class="readiness-metric-label">Checks gesamt</span>
+    </article>
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ summary.ok }}</span>
+      <span class="readiness-metric-label">OK</span>
+    </article>
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ summary.warning }}</span>
+      <span class="readiness-metric-label">Warnungen</span>
+    </article>
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ summary.fail }}</span>
+      <span class="readiness-metric-label">Fehler</span>
+    </article>
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ summary.skipped }}</span>
+      <span class="readiness-metric-label">Uebersprungen</span>
+    </article>
+    <article class="readiness-metric-card">
+      <span class="readiness-metric-value">{{ report.mode_label }}</span>
+      <span class="readiness-metric-label">Pruefmodus</span>
+    </article>
+  </div>
+</section>
+
+<section class="readiness-category-grid">
+  {% for category in report.categories %}
+  <article class="panel readiness-category-card" data-readiness-status="{{ category.status }}">
+    <div class="panel-header">
+      <h2>{{ category.label }}</h2>
+      <span class="status {{ category.status_class }}">{{ category.status_label }}</span>
+    </div>
+    <div class="readiness-category-stats">
+      <span>{{ category.total }} Checks</span>
+      <span>{{ category.ok }} OK</span>
+      <span>{{ category.warning }} Warnung{{ "en" if category.warning != 1 }}</span>
+      <span>{{ category.fail }} Fehler</span>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="grid">
+  <article class="panel">
+    <div class="panel-header">
+      <h2>Priorisierte Empfehlungen</h2>
+      <span class="muted">{{ report.recommendations | length }} Punkt(e)</span>
+    </div>
+    {% if report.recommendations %}
+    <div class="stack">
+      {% for item in report.recommendations %}
+      <div class="readiness-recommendation" data-readiness-status="warning">
+        <div class="readiness-recommendation-header">
+          <strong>{{ item.title }}</strong>
+          <span class="status status-waiting">{{ item.priority_label }}</span>
+        </div>
+        <p>{{ item.message }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">Aktuell gibt es keine priorisierten To-dos aus dem Check-Bericht.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel">
+    <div class="panel-header">
+      <h2>Umgebungsueberblick</h2>
+      <span class="muted">Sanitierte Schluesselwerte</span>
+    </div>
+    <div class="readiness-overview-list">
+      {% for row in report.environment_rows %}
+      <div class="readiness-overview-row">
+        <span class="muted">{{ row.label }}</span>
+        <code>{{ row.value }}</code>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>Worker-Uebersicht</h2>
+    <span class="muted">Gesundheit, letzter Laufzustand und konkrete Warte- oder Fehlerhinweise</span>
+  </div>
+  <div class="stack">
+    {% for group in report.worker_groups %}
+    <div class="readiness-worker-group">
+      <div class="readiness-worker-group-header">
+        <h3>{{ group.label }}</h3>
+        <span class="muted">{{ group.workers | length }} Worker</span>
+      </div>
+      {% if group.workers %}
+      <div class="readiness-worker-grid">
+        {% for worker in group.workers %}
+        <article class="readiness-worker-card" data-readiness-status="{{ worker.status }}">
+          <div class="panel-header">
+            <strong>{{ worker.name }}</strong>
+            <span class="status {{ worker.status_class }}">{{ worker.status_label }}</span>
+          </div>
+          <div class="readiness-worker-meta">
+            <span>Dauer: {{ worker.duration_display }}</span>
+            {% if worker.task_id %}
+            <span>Task: {{ worker.task_id }}</span>
+            {% endif %}
+            <span>Letzte Aktivitaet: {{ worker.updated_at_display }}</span>
+          </div>
+          {% if worker.current_action %}
+          <p><strong>Aktueller Auftrag:</strong> {{ worker.current_action }}</p>
+          {% endif %}
+          {% if worker.waiting_for %}
+          <p><strong>Wartet auf:</strong> {{ worker.waiting_for }}</p>
+          {% endif %}
+          {% if worker.elapsed_display != "—" %}
+          <p><strong>Laufzeit:</strong> {{ worker.elapsed_display }}</p>
+          {% endif %}
+          {% if worker.goal %}
+          <p><strong>Betroffene Aufgabe:</strong> {{ worker.goal }}</p>
+          {% endif %}
+          {% if worker.last_error %}
+          <p class="readiness-inline-error"><strong>Letzter Fehler:</strong> {{ worker.last_error }}</p>
+          {% endif %}
+          <details class="readiness-details" data-detail-id="worker-{{ worker.id }}">
+            <summary>Details</summary>
+            {% if worker.detail %}
+            <p><strong>Technischer Kontext:</strong> {{ worker.detail }}</p>
+            {% endif %}
+            {% if worker.hint %}
+            <p><strong>Naechster Schritt:</strong> {{ worker.hint }}</p>
+            {% endif %}
+            {% if worker.target %}
+            <p><strong>Ziel:</strong> <code>{{ worker.target }}</code></p>
+            {% endif %}
+            {% if worker.raw_value %}
+            <pre>{{ worker.raw_value | safe_json }}</pre>
+            {% endif %}
+          </details>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">In dieser Gruppe liegt aktuell kein Worker.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% for category in report.categories %}
+<section class="panel readiness-category-panel">
+  <div class="panel-header">
+    <h2>{{ category.label }}</h2>
+    <span class="status {{ category.status_class }}">{{ category.status_label }}</span>
+  </div>
+  <div class="stack">
+    {% for check in category.checks %}
+    <div class="readiness-check-row" data-readiness-status="{{ check.status }}">
+      <div class="readiness-check-main">
+        <div class="readiness-check-title-row">
+          <strong>{{ check.name }}</strong>
+          <span class="status {{ check.status_class }}">{{ check.status_label }}</span>
+        </div>
+        <p class="readiness-check-message">{{ check.message }}</p>
+        <div class="readiness-check-meta">
+          <span>Dauer: {{ check.duration_display }}</span>
+          <span>Schwere: {{ check.severity_label }}</span>
+          {% if check.target %}
+          <span>Ziel: <code>{{ check.target }}</code></span>
+          {% endif %}
+        </div>
+      </div>
+      <details class="readiness-details" data-detail-id="{{ check.id }}">
+        <summary>Details</summary>
+        <div class="readiness-detail-stack">
+          <div><strong>Start:</strong> {{ check.started_at_display }}</div>
+          <div><strong>Ende:</strong> {{ check.finished_at_display }}</div>
+          {% if check.current_action %}
+          <div><strong>Aktueller Auftrag:</strong> {{ check.current_action }}</div>
+          {% endif %}
+          {% if check.waiting_for %}
+          <div><strong>Wartet auf:</strong> {{ check.waiting_for }}</div>
+          {% endif %}
+          {% if check.detail %}
+          <div><strong>Technischer Fehlertext:</strong> {{ check.detail }}</div>
+          {% endif %}
+          {% if check.hint %}
+          <div><strong>Handlungsempfehlung:</strong> {{ check.hint }}</div>
+          {% endif %}
+          {% if check.raw_value %}
+          <div>
+            <strong>Rohdaten:</strong>
+            <pre>{{ check.raw_value | safe_json }}</pre>
+          </div>
+          {% endif %}
+        </div>
+      </details>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}

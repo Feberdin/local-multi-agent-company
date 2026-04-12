@@ -97,6 +97,14 @@ def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
+def _node_end_line(node: ast.AST) -> int:
+    """Return a stable inclusive end line even when Python's AST omits end_lineno."""
+
+    end_line = getattr(node, "end_lineno", None)
+    start_line = getattr(node, "lineno", 1)
+    return end_line if isinstance(end_line, int) else int(start_line)
+
+
 def _index_python_file(path: str, content: str) -> FileIndex:
     """Parse a Python source file with ast and extract top-level and class-level symbols."""
     raw = content.encode("utf-8", errors="ignore")
@@ -121,12 +129,12 @@ def _index_python_file(path: str, content: str) -> FileIndex:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             kind = "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
             start = node.decorator_list[0].lineno if node.decorator_list else node.lineno
-            fi.symbols.append(SymbolInfo(name=node.name, kind=kind, start_line=start, end_line=node.end_lineno))
+            fi.symbols.append(SymbolInfo(name=node.name, kind=kind, start_line=start, end_line=_node_end_line(node)))
 
         elif isinstance(node, ast.ClassDef):
             class_start = node.decorator_list[0].lineno if node.decorator_list else node.lineno
             fi.symbols.append(
-                SymbolInfo(name=node.name, kind="class", start_line=class_start, end_line=node.end_lineno)
+                SymbolInfo(name=node.name, kind="class", start_line=class_start, end_line=_node_end_line(node))
             )
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -137,7 +145,7 @@ def _index_python_file(path: str, content: str) -> FileIndex:
                             name=sub.name,
                             kind=sub_kind,
                             start_line=sub_start,
-                            end_line=sub.end_lineno,
+                            end_line=_node_end_line(sub),
                             parent=node.name,
                         )
                     )

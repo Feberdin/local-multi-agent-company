@@ -1,8 +1,11 @@
 <!--
-Purpose: System readiness / preflight check page showing all worker, LLM, workspace, and config checks.
-Input/Output: Receives a readiness_report object and renders it as a compact, color-coded dashboard.
-Important invariants: No secret values are shown. All checks are individually labelled with hints.
-How to debug: Run GET /api/system/readiness on the orchestrator to see the raw JSON.
+Purpose: Shell page for the system-check dashboard that stays mounted while the readiness panel
+is refreshed in place.
+Input/Output: Receives one initial readiness report plus mode/timeouts and lets the browser reload
+only the diagnostics panel instead of the full page.
+Important invariants: Operators must keep their opened details and filter state while the report refreshes.
+How to debug: If the page no longer updates in place, inspect the `/system-check/panel` and
+`/system-check/report.json` endpoints first.
 -->
 <!doctype html>
 <html lang="de">
@@ -11,56 +14,6 @@ How to debug: Run GET /api/system/readiness on the orchestrator to see the raw J
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>System-Check</title>
     <link rel="stylesheet" href="/static/style.css">
-    <style>
-      .readiness-banner {
-        border-radius: 8px;
-        padding: 1rem 1.5rem;
-        margin-bottom: 1.5rem;
-        font-size: 1.1rem;
-        font-weight: 600;
-      }
-      .readiness-banner.ok      { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-      .readiness-banner.warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
-      .readiness-banner.failed  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-      .readiness-banner.skipped { background: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
-
-      .check-row {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.75rem;
-        padding: 0.5rem 0;
-        border-bottom: 1px solid var(--border, #e5e7eb);
-      }
-      .check-row:last-child { border-bottom: none; }
-      .check-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-        margin-top: 5px;
-      }
-      .check-dot.ok      { background: #28a745; }
-      .check-dot.warning { background: #ffc107; }
-      .check-dot.failed  { background: #dc3545; }
-      .check-dot.skipped { background: #6c757d; }
-
-      .check-label { font-weight: 600; min-width: 220px; flex-shrink: 0; }
-      .check-message { flex: 1; }
-      .check-hint { font-size: 0.85rem; color: #6c757d; margin-top: 0.15rem; }
-      .check-duration { font-size: 0.8rem; color: #aaa; white-space: nowrap; }
-
-      .summary-bar { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-      .summary-pill {
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.85rem;
-        font-weight: 600;
-      }
-      .pill-ok      { background: #d4edda; color: #155724; }
-      .pill-warning { background: #fff3cd; color: #856404; }
-      .pill-failed  { background: #f8d7da; color: #721c24; }
-      .pill-skipped { background: #e2e3e5; color: #383d41; }
-    </style>
   </head>
   <body>
     <main class="layout">
@@ -76,111 +29,231 @@ How to debug: Run GET /api/system/readiness on the orchestrator to see the raw J
         <a href="/self-improvement">Self-Improvement</a>
       </nav>
 
-      <section class="hero">
-        <p class="eyebrow">Preflight</p>
-        <h1>System-Bereitschaftspruefung</h1>
+      <section class="hero readiness-hero">
+        <p class="eyebrow">Diagnose</p>
+        <h1>System-Check-Dashboard</h1>
         <p class="lead">
-          Prueft Worker, LLM-Endpoints, Workspace und Konfiguration, bevor ein Workflow gestartet wird.
+          Kompakte Bereitschafts- und Fehlerdiagnose fuer Worker, lokale Modelle, Git-Workspaces,
+          Secrets und Integrationen. Teilfehler bleiben sichtbar, statt die ganze Seite unbrauchbar zu machen.
         </p>
       </section>
 
-      {% if error_message %}
-      <section class="panel panel-alert">
-        <h2>Fehler beim Laden des Berichts</h2>
-        <p>{{ error_message }}</p>
-        <p class="muted">Pruefe, ob der Orchestrator erreichbar ist, und versuche die Seite neu zu laden.</p>
+      <section class="panel readiness-toolbar">
+        <div class="readiness-toolbar-main">
+          <div class="readiness-mode-switch" role="tablist" aria-label="Pruefmodus">
+            <a
+              href="/system-check?mode=quick"
+              class="readiness-mode-button {% if mode == 'quick' %}is-active{% endif %}"
+            >
+              Schnellcheck
+            </a>
+            <a
+              href="/system-check?mode=deep"
+              class="readiness-mode-button {% if mode == 'deep' %}is-active{% endif %}"
+            >
+              Tiefencheck
+            </a>
+          </div>
+          <div class="readiness-toolbar-buttons">
+            <button type="button" id="readiness-refresh-button">Aktualisieren</button>
+            <a class="button-link secondary" id="readiness-export-link" href="/system-check/report.json?mode={{ mode }}">JSON exportieren</a>
+            <button type="button" class="button-link secondary" id="readiness-copy-json">JSON kopieren</button>
+          </div>
+        </div>
+
+        <div class="readiness-toolbar-filters">
+          <label class="checkbox-row readiness-toggle">
+            <input type="checkbox" id="readiness-auto-refresh">
+            <span>Auto-Refresh</span>
+          </label>
+          <label class="checkbox-row readiness-toggle">
+            <input type="checkbox" id="readiness-filter-fail">
+            <span>Nur Fehler</span>
+          </label>
+          <label class="checkbox-row readiness-toggle">
+            <input type="checkbox" id="readiness-filter-warning">
+            <span>Nur Warnungen</span>
+          </label>
+          <label class="checkbox-row readiness-toggle">
+            <input type="checkbox" id="readiness-expand-details">
+            <span>Details einblenden</span>
+          </label>
+        </div>
+
+        <div class="readiness-toolbar-note muted">
+          Schnellcheck: {{ fast_timeout_display }} HTTP-Fast-Timeout. Tiefencheck: {{ deep_timeout_display }} HTTP-Deep-Timeout
+          und bis zu {{ llm_smoke_timeout_display }} fuer lokale LLM-Smoke-Tests.
+          Langlaeufer-Warnung ab {{ slow_warning_display }}.
+        </div>
       </section>
-      {% endif %}
 
-      {% if report %}
-
-      {% set overall = report.get("overall_status", "skipped") %}
-      <div class="readiness-banner {{ overall }}">
-        {% if overall == "ok" %}
-        ✅ {{ report.workflow_message }}
-        {% elif overall == "warning" %}
-        ⚠️ {{ report.workflow_message }}
-        {% else %}
-        🔴 {{ report.workflow_message }}
-        {% endif %}
+      <div id="readiness-dashboard-root">
+        {% include "readiness_panel.html" %}
       </div>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Zusammenfassung</h2>
-          <span class="muted">
-            Pruefung in {{ report.duration_ms_display }} durchgefuehrt
-            · {{ report.started_at_display }}
-          </span>
-        </div>
-        <div class="summary-bar">
-          <span class="summary-pill pill-ok">✅ {{ report.summary.checks_ok }} OK</span>
-          {% if report.summary.checks_warning %}
-          <span class="summary-pill pill-warning">⚠️ {{ report.summary.checks_warning }} Warnung{{ "en" if report.summary.checks_warning != 1 }}</span>
-          {% endif %}
-          {% if report.summary.checks_failed %}
-          <span class="summary-pill pill-failed">🔴 {{ report.summary.checks_failed }} Fehler</span>
-          {% endif %}
-          {% if report.summary.checks_skipped %}
-          <span class="summary-pill pill-skipped">— {{ report.summary.checks_skipped }} uebersprungen</span>
-          {% endif %}
-          <span class="summary-pill" style="background:#f0f0f0;color:#333;">
-            {{ report.summary.checks_total }} Pruefungen gesamt
-          </span>
-        </div>
-      </section>
+      <script id="readiness-report-json" type="application/json">{{ report_json | safe }}</script>
+      <script>
+        (() => {
+          const dashboardRoot = document.getElementById("readiness-dashboard-root");
+          const refreshButton = document.getElementById("readiness-refresh-button");
+          const exportLink = document.getElementById("readiness-export-link");
+          const copyJsonButton = document.getElementById("readiness-copy-json");
+          const autoRefreshToggle = document.getElementById("readiness-auto-refresh");
+          const failToggle = document.getElementById("readiness-filter-fail");
+          const warningToggle = document.getElementById("readiness-filter-warning");
+          const detailsToggle = document.getElementById("readiness-expand-details");
+          const mode = {{ mode | tojson }};
+          const storagePrefix = "feberdin-readiness";
+          const panelUrl = `/system-check/panel?mode=${encodeURIComponent(mode)}`;
+          const reportUrl = `/system-check/report.json?mode=${encodeURIComponent(mode)}`;
+          let autoRefreshTimer = null;
+          let latestReportJson = document.getElementById("readiness-report-json")?.textContent ?? "{}";
 
-      {% for section in report.sections %}
-      <section class="panel">
-        <div class="panel-header">
-          <h2>
-            {% if section.status == "ok" %}✅{% elif section.status == "warning" %}⚠️{% elif section.status == "failed" %}🔴{% else %}—{% endif %}
-            {{ section.label }}
-          </h2>
-          <span class="status status-{{ section.status }}">{{ section.status }}</span>
-        </div>
+          function loadStoredBoolean(key, fallback = false) {
+            const raw = window.localStorage.getItem(`${storagePrefix}:${key}`);
+            if (raw === null) {
+              return fallback;
+            }
+            return raw === "true";
+          }
 
-        {% for check in section.checks %}
-        <div class="check-row">
-          <div class="check-dot {{ check.status }}"></div>
-          <div class="check-label">{{ check.label }}</div>
-          <div class="check-message">
-            <div>{{ check.message }}</div>
-            {% if check.hint %}
-            <div class="check-hint">💡 {{ check.hint }}</div>
-            {% endif %}
-          </div>
-          {% if check.duration_ms > 0 %}
-          <div class="check-duration">{{ check.duration_ms_display }}</div>
-          {% endif %}
-        </div>
-        {% endfor %}
-      </section>
-      {% endfor %}
+          function storeBoolean(key, value) {
+            window.localStorage.setItem(`${storagePrefix}:${key}`, value ? "true" : "false");
+          }
 
-      <section class="panel panel-note">
-        <div class="panel-header">
-          <h2>Preflight erneut ausfuehren</h2>
-        </div>
-        <form method="post" action="/system-check">
-          <button type="submit">Pruefung jetzt wiederholen</button>
-        </form>
-        <p class="muted">
-          Der Check benoetigt einige Sekunden, da LLM-Endpoints mit einem kurzen Completion-Test geprueft werden.
-          Auf langsamer Hardware kann das bis zu {{ llm_timeout_display }} dauern.
-        </p>
-      </section>
+          function currentOpenDetailIds() {
+            return Array.from(dashboardRoot.querySelectorAll("details[data-detail-id][open]"))
+              .map((item) => item.getAttribute("data-detail-id"))
+              .filter(Boolean);
+          }
 
-      {% else %}
-      <section class="panel panel-note">
-        <h2>Bereit zum Pruefen</h2>
-        <p>Starte die Pruefung, um den aktuellen System-Status zu sehen.</p>
-        <form method="post" action="/system-check">
-          <button type="submit">Pruefung starten</button>
-        </form>
-      </section>
-      {% endif %}
+          function restoreOpenDetails(openIds) {
+            if (!openIds.length) {
+              return;
+            }
+            for (const detail of dashboardRoot.querySelectorAll("details[data-detail-id]")) {
+              if (openIds.includes(detail.getAttribute("data-detail-id"))) {
+                detail.open = true;
+              }
+            }
+          }
 
+          function applyFilters() {
+            const onlyFail = failToggle.checked;
+            const onlyWarning = warningToggle.checked;
+            for (const row of dashboardRoot.querySelectorAll("[data-readiness-status]")) {
+              const status = row.getAttribute("data-readiness-status");
+              let visible = true;
+              if (onlyFail) {
+                visible = status === "fail";
+              } else if (onlyWarning) {
+                visible = status === "warning";
+              }
+              row.classList.toggle("is-hidden-by-filter", !visible);
+            }
+          }
+
+          function applyDetailVisibility() {
+            const expanded = detailsToggle.checked;
+            for (const detail of dashboardRoot.querySelectorAll("details.readiness-details")) {
+              detail.open = expanded;
+            }
+          }
+
+          async function copyJson() {
+            try {
+              await navigator.clipboard.writeText(latestReportJson);
+              copyJsonButton.textContent = "JSON kopiert";
+              window.setTimeout(() => {
+                copyJsonButton.textContent = "JSON kopieren";
+              }, 1400);
+            } catch (error) {
+              copyJsonButton.textContent = "Kopieren fehlgeschlagen";
+              console.error(error);
+            }
+          }
+
+          async function refreshDashboard() {
+            const openIds = currentOpenDetailIds();
+            refreshButton.disabled = true;
+            refreshButton.textContent = "Aktualisiere …";
+            try {
+              const [panelResponse, reportResponse] = await Promise.all([
+                fetch(panelUrl, { headers: { "X-Requested-With": "fetch" } }),
+                fetch(reportUrl, { headers: { "X-Requested-With": "fetch" } }),
+              ]);
+              dashboardRoot.innerHTML = await panelResponse.text();
+              latestReportJson = await reportResponse.text();
+              restoreOpenDetails(openIds);
+              applyFilters();
+              if (detailsToggle.checked) {
+                applyDetailVisibility();
+              }
+            } catch (error) {
+              console.error("Readiness refresh failed", error);
+            } finally {
+              refreshButton.disabled = false;
+              refreshButton.textContent = "Aktualisieren";
+            }
+          }
+
+          function rescheduleAutoRefresh() {
+            if (autoRefreshTimer) {
+              window.clearInterval(autoRefreshTimer);
+              autoRefreshTimer = null;
+            }
+            if (!autoRefreshToggle.checked) {
+              return;
+            }
+            autoRefreshTimer = window.setInterval(() => {
+              void refreshDashboard();
+            }, 20000);
+          }
+
+          autoRefreshToggle.checked = loadStoredBoolean("auto-refresh", false);
+          failToggle.checked = loadStoredBoolean("only-fail", false);
+          warningToggle.checked = loadStoredBoolean("only-warning", false);
+          detailsToggle.checked = loadStoredBoolean("expand-details", false);
+
+          autoRefreshToggle.addEventListener("change", () => {
+            storeBoolean("auto-refresh", autoRefreshToggle.checked);
+            rescheduleAutoRefresh();
+          });
+          failToggle.addEventListener("change", () => {
+            if (failToggle.checked) {
+              warningToggle.checked = false;
+            }
+            storeBoolean("only-fail", failToggle.checked);
+            storeBoolean("only-warning", warningToggle.checked);
+            applyFilters();
+          });
+          warningToggle.addEventListener("change", () => {
+            if (warningToggle.checked) {
+              failToggle.checked = false;
+            }
+            storeBoolean("only-fail", failToggle.checked);
+            storeBoolean("only-warning", warningToggle.checked);
+            applyFilters();
+          });
+          detailsToggle.addEventListener("change", () => {
+            storeBoolean("expand-details", detailsToggle.checked);
+            applyDetailVisibility();
+          });
+          refreshButton.addEventListener("click", () => {
+            void refreshDashboard();
+          });
+          copyJsonButton.addEventListener("click", () => {
+            void copyJson();
+          });
+          exportLink.href = reportUrl;
+
+          applyFilters();
+          if (detailsToggle.checked) {
+            applyDetailVisibility();
+          }
+          rescheduleAutoRefresh();
+        })();
+      </script>
     </main>
   </body>
 </html>

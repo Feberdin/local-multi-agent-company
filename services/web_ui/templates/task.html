@@ -320,22 +320,39 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           <article class="event">
             <div class="event-header">
               <strong>{{ suggestion.title }}</strong>
-              <span class="muted">{{ suggestion.worker_label }} · {{ suggestion.status }} · {{ suggestion.updated_at_display }}</span>
+              <div class="event-meta">
+                <span class="status {{ suggestion.status_class }}">{{ suggestion.status_label }}</span>
+                <span class="status status-idle">{{ suggestion.scope_label }}</span>
+                <span class="muted">{{ suggestion.worker_label }} · {{ suggestion.updated_at_display }}</span>
+              </div>
             </div>
             <p>{{ suggestion.summary }}</p>
             <p class="muted"><strong>Begründung:</strong> {{ suggestion.rationale }}</p>
             <p class="muted"><strong>Empfohlene Maßnahme:</strong> {{ suggestion.suggested_action }}</p>
+            {% if suggestion.decision_note_display %}
+            <p class="muted"><strong>Entscheidungsnotiz:</strong> {{ suggestion.decision_note_display }}</p>
+            {% endif %}
             {% if suggestion.status == "pending" %}
             <div class="actions">
               <form method="post" action="/suggestions/{{ suggestion.id }}/approve">
                 <input type="hidden" name="task_id" value="{{ task.id }}">
-                <input type="text" name="note" placeholder="Freigabevermerk">
-                <button type="submit">Freigeben</button>
+                <input type="text" name="note" placeholder="Warum nur fuer diese Aufgabe?">
+                <button type="submit">Nur hier freigeben</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/implement">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="text" name="note" placeholder="Wie wurde es repo-weit umgesetzt?">
+                <button type="submit">Als umgesetzt markieren</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/suppress">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="text" name="note" placeholder="Warum repo-weit ausblenden?">
+                <button type="submit">Repo-weit ausblenden</button>
               </form>
               <form method="post" action="/suggestions/{{ suggestion.id }}/reject">
                 <input type="hidden" name="task_id" value="{{ task.id }}">
-                <input type="text" name="note" placeholder="Ablehnungsgrund">
-                <button type="submit" class="danger">Ablehnen</button>
+                <input type="text" name="note" placeholder="Warum repo-weit verwerfen?">
+                <button type="submit" class="danger">Verwerfen</button>
               </form>
             </div>
             {% endif %}

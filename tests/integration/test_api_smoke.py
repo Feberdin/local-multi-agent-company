@@ -82,11 +82,68 @@ def test_create_and_fetch_task(tmp_path) -> None:
 
         worker_guidance_response = client.get("/api/settings/worker-guidance")
         assert worker_guidance_response.status_code == 200
-        assert any(item["worker_name"] == "coding" for item in worker_guidance_response.json()["workers"])
+        guidance_workers = worker_guidance_response.json()["workers"]
+        assert len(guidance_workers) == 17
+        coding_policy = next(item for item in guidance_workers if item["worker_name"] == "coding")
+        assert coding_policy["display_name"] == "Coding Worker"
+        assert coding_policy["role_description"].startswith("Setzt minimal-invasive")
 
         suggestions_response = client.get("/api/suggestions")
         assert suggestions_response.status_code == 200
         assert suggestions_response.json() == []
+
+        async def fake_readiness(_settings, *, mode, services=None):
+            return app_module.ReadinessReport.model_validate(
+                {
+                    "mode": mode.value,
+                    "overall_status": "ok",
+                    "started_at": "2026-04-12T00:00:00+00:00",
+                    "finished_at": "2026-04-12T00:00:01+00:00",
+                    "duration_ms": 1000.0,
+                    "summary": {"total": 1, "ok": 1, "warning": 0, "fail": 0, "skipped": 0, "running": 0},
+                    "categories": [
+                        {
+                            "id": "backend",
+                            "label": "Backend / Core",
+                            "status": "ok",
+                            "total": 1,
+                            "ok": 1,
+                            "warning": 0,
+                            "fail": 0,
+                            "skipped": 0,
+                            "running": 0,
+                        }
+                    ],
+                    "checks": [
+                        {
+                            "id": "backend-ok",
+                            "category": "backend",
+                            "name": "Backend",
+                            "status": "ok",
+                            "severity": "info",
+                            "started_at": "2026-04-12T00:00:00+00:00",
+                            "finished_at": "2026-04-12T00:00:01+00:00",
+                            "duration_ms": 1000.0,
+                            "message": "Backend antwortet.",
+                            "detail": "",
+                            "hint": "",
+                            "target": "http://orchestrator:8080/health",
+                            "raw_value": None,
+                            "depends_on": [],
+                        }
+                    ],
+                    "environment_overview": {"mode": mode.value},
+                    "recommendations": [],
+                    "ready_for_workflows": True,
+                    "headline": "Bereit",
+                    "summary_message": "Alles gut.",
+                }
+            )
+
+        app_module.run_system_readiness_check = fake_readiness
+        readiness_response = client.get("/api/system/readiness")
+        assert readiness_response.status_code == 200
+        assert readiness_response.json()["overall_status"] == "ok"
 
 
 def test_web_ui_import_and_health(tmp_path) -> None:

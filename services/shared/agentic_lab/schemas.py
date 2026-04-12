@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class TaskStatus(StrEnum):
@@ -124,7 +124,15 @@ class ApprovalDecision(StrEnum):
 class ImprovementSuggestionStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
+    IMPLEMENTED = "implemented"
+    DISMISSED = "dismissed"
+    SUPPRESSED_FOR_REPOSITORY = "suppressed_for_repository"
     REJECTED = "rejected"
+
+
+class ImprovementSuggestionScope(StrEnum):
+    TASK_LOCAL = "task_local"
+    REPOSITORY_WIDE = "repository_wide"
 
 
 class TrustedSourceCategory(StrEnum):
@@ -308,17 +316,41 @@ class RepositoryAccessSettings(BaseModel):
 
 
 class WorkerGuidancePolicy(BaseModel):
-    worker_name: str
-    display_name: str
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    worker_name: str = Field(min_length=2, max_length=64)
+    display_name: str = Field(min_length=3, max_length=80)
     enabled: bool = True
-    role_summary: str
-    operator_recommendations: list[str] = Field(default_factory=list)
-    decision_preferences: list[str] = Field(default_factory=list)
-    competence_boundary: str
-    escalate_beyond_boundary: bool = True
-    auto_submit_improvement_suggestions: bool = True
+    role_description: str = Field(
+        default="",
+        max_length=600,
+        validation_alias=AliasChoices("role_description", "role_summary"),
+    )
+    operator_recommendations: list[str] = Field(default_factory=list, max_length=12)
+    decision_preferences: list[str] = Field(default_factory=list, max_length=12)
+    competence_boundary: str = Field(default="", max_length=700)
+    escalate_out_of_scope: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("escalate_out_of_scope", "escalate_beyond_boundary"),
+    )
+    auto_submit_suggestions: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("auto_submit_suggestions", "auto_submit_improvement_suggestions"),
+    )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
+
+    @property
+    def role_summary(self) -> str:
+        return self.role_description
+
+    @property
+    def escalate_beyond_boundary(self) -> bool:
+        return self.escalate_out_of_scope
+
+    @property
+    def auto_submit_improvement_suggestions(self) -> bool:
+        return self.auto_submit_suggestions
 
 
 class WorkerGuidanceRegistry(BaseModel):
@@ -330,6 +362,7 @@ class ImprovementSuggestion(BaseModel):
     worker_name: str
     task_id: str | None = None
     repository: str | None = None
+    fingerprint: str = ""
     title: str
     summary: str
     rationale: str
@@ -338,6 +371,7 @@ class ImprovementSuggestion(BaseModel):
     exceeds_competence_boundary: bool = False
     requires_ceo_approval: bool = False
     status: ImprovementSuggestionStatus = ImprovementSuggestionStatus.PENDING
+    scope: ImprovementSuggestionScope = ImprovementSuggestionScope.TASK_LOCAL
     actor: str | None = None
     decision_note: str | None = None
     created_at: datetime = Field(default_factory=_utc_now)

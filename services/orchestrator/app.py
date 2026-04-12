@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from services.orchestrator.workflow import WorkflowOrchestrator
 from services.shared.agentic_lab.config import get_settings
@@ -19,7 +19,13 @@ from services.shared.agentic_lab.db import init_db
 from services.shared.agentic_lab.llm import LLMClient
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
-from services.shared.agentic_lab.readiness import ReadinessReport, run_system_readiness_check
+from services.shared.agentic_lab.readiness import (
+    ReadinessMode,
+    ReadinessReport,
+    ReadinessServices,
+    build_catastrophic_readiness_report,
+    run_system_readiness_check,
+)
 from services.shared.agentic_lab.schemas import (
     ApprovalRequest,
     HealthResponse,
@@ -105,6 +111,7 @@ async def _auto_start_self_improvement() -> None:
 
 app = FastAPI(title="Feberdin Agent Team Orchestrator", version="0.1.0", lifespan=lifespan)
 app.state.running_tasks = set()
+READINESS_MODE_QUERY = Query(default=ReadinessMode.QUICK)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -385,9 +392,23 @@ async def health_check_web_search_provider(provider_id: str) -> SearchProviderTe
 
 
 @app.get("/api/system/readiness", response_model=ReadinessReport)
-async def system_readiness() -> ReadinessReport:
-    """Run a full preflight check and return a structured readiness report."""
-    return await run_system_readiness_check(settings)
+async def system_readiness(mode: ReadinessMode = READINESS_MODE_QUERY) -> ReadinessReport:
+    """Run a structured readiness report and keep partial results renderable even on partial failures."""
+
+    try:
+        return await run_system_readiness_check(
+            settings,
+            mode=mode,
+            services=ReadinessServices(
+                task_service=task_service,
+                worker_governance_service=worker_governance_service,
+                policy_service=policy_service,
+                search_provider_service=search_provider_service,
+            ),
+        )
+    except Exception as exc:  # pragma: no cover - endpoint safety net
+        logger.exception("System readiness report crashed unexpectedly.")
+        return build_catastrophic_readiness_report(settings, mode=mode, exc=exc)
 
 
 async def _run_in_background(task_id: str) -> None:

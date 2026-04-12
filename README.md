@@ -141,11 +141,13 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
    - `http://<unraid-host>:18088/web-search`
    - `http://<unraid-host>:18088/benchmarks`
    - `http://<unraid-host>:18088/debug`
+   - `http://<unraid-host>:18088/system-check`
 
    Auf der Task-Detailseite zeigt das `Worker-Theater`, welcher Worker gerade denkt, welcher bereits gesprochen hat und wo der Workflow aktuell haengt.
    Unter `Benchmarks` siehst du pro Worker gut lesbar Laufzeit, sichtbaren Auftrag, sichtbares Ergebnis, Fehlerhaeufung und Modellnutzung.
    Wenn nur ein Teilbereich schiefgelaufen ist, kannst du auf derselben Task-Seite unter `Teilbereich neu starten` ab genau dem betroffenen Schritt erneut ansetzen, ohne einen komplett neuen Task anzulegen.
    Im `Debug-Center` kannst du System-Snapshots, persistierte Runtime-Dateien und Task-Reports einzeln oder als ZIP-Bundle herunterladen.
+   Unter `System-Check` findest du jetzt ein kompaktes Diagnose-Dashboard mit Schnellcheck, Tiefencheck, Worker-Zustaenden, Modell-Smoke-Tests, Git-/Workspace-Pruefungen, Secret-Hinweisen und priorisierten Empfehlungen statt einer generischen Alles-oder-nichts-Fehlermeldung.
 
 7. Beispiel-Task anlegen:
 

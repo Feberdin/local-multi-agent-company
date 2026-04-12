@@ -111,3 +111,23 @@ def test_settings_load_slow_runtime_timeout_aliases(monkeypatch) -> None:
     assert settings.stage_heartbeat_interval_seconds == 25
     assert settings.runtime_home_dir == Path("/tmp/agent-home")
     assert settings.effective_task_workspace_root == Path("/workspace/.task-workspaces")
+
+
+def test_settings_load_readiness_timeout_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_UI_INTERNAL_URL", "http://web-ui:8088")
+    monkeypatch.setenv("READINESS_HTTP_FAST_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("READINESS_HTTP_DEEP_TIMEOUT_SECONDS", "55")
+    monkeypatch.setenv("READINESS_LLM_SMOKE_TIMEOUT_SECONDS", "260")
+    monkeypatch.setenv("READINESS_WORKER_SMOKE_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("READINESS_GIT_TIMEOUT_SECONDS", "40")
+    monkeypatch.setenv("READINESS_SLOW_WARNING_SECONDS", "25")
+
+    settings = Settings()
+
+    assert settings.web_ui_internal_url == "http://web-ui:8088"
+    assert settings.readiness_http_fast_timeout_seconds == 9
+    assert settings.readiness_http_deep_timeout_seconds == 55
+    assert settings.readiness_llm_smoke_timeout_seconds == 260
+    assert settings.readiness_worker_smoke_timeout_seconds == 30
+    assert settings.readiness_git_timeout_seconds == 40
+    assert settings.readiness_slow_warning_seconds == 25

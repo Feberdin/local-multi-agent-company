@@ -283,3 +283,80 @@ def test_restart_stage_form_posts_selected_worker_name(tmp_path, monkeypatch) ->
         "reason": "Git-Fehler wurde behoben.",
         "run_immediately": True,
     }
+
+
+def test_normalize_suggestions_shows_repository_wide_statuses_readably(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    suggestions = app_module._normalize_suggestions(
+        [
+            {
+                "id": "suggestion-1",
+                "worker_name": "architecture",
+                "task_id": "task-1",
+                "repository": "Feberdin/local-multi-agent-company",
+                "fingerprint": "abc123def4567890",
+                "title": "Repository-spezifische Governance dokumentieren",
+                "summary": "Die Repo-Governance ist bereits dokumentiert.",
+                "rationale": "Historischer Testdatensatz.",
+                "suggested_action": "Keine weitere Aktion noetig.",
+                "status": "rejected",
+                "scope": "repository_wide",
+                "decision_note": "Bereits bewusst unterdrueckt.",
+                "created_at": now,
+                "updated_at": now,
+            }
+        ]
+    )
+
+    assert suggestions[0]["status"] == "dismissed"
+    assert suggestions[0]["status_label"] == "Repo-weit verworfen"
+    assert suggestions[0]["scope_label"] == "Ganzer Repository-Kontext"
+    assert suggestions[0]["decision_note_display"] == "Bereits bewusst unterdrueckt."
+
+
+def test_worker_guidance_form_posts_new_field_names(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_payload"] = json_payload
+        return httpx.Response(200, json={"workers": []})
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/settings/worker-guidance",
+            data={
+                "worker_name": "coding",
+                "display_name": "Coding Worker",
+                "enabled": "true",
+                "role_description": "Setzt minimal-invasive, sichere und nachvollziehbare Änderungen im freigegebenen Scope um.",
+                "operator_recommendations_text": "Minimiere den Diff.\nArbeite schrittweise.",
+                "decision_preferences_text": "Kleine sichere Schritte vor Big Bang.",
+                "competence_boundary": "Keine Scope-Erweiterungen ohne Freigabe.",
+                "escalate_out_of_scope": "true",
+                "auto_submit_suggestions": "true",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/worker-guidance"
+    assert captured["method"] == "PUT"
+    assert captured["path"] == "/api/settings/worker-guidance/coding"
+    assert captured["json_payload"] == {
+        "worker_name": "coding",
+        "display_name": "Coding Worker",
+        "enabled": True,
+        "role_description": "Setzt minimal-invasive, sichere und nachvollziehbare Änderungen im freigegebenen Scope um.",
+        "operator_recommendations": ["Minimiere den Diff.", "Arbeite schrittweise."],
+        "decision_preferences": ["Kleine sichere Schritte vor Big Bang."],
+        "competence_boundary": "Keine Scope-Erweiterungen ohne Freigabe.",
+        "escalate_out_of_scope": True,
+        "auto_submit_suggestions": True,
+    }

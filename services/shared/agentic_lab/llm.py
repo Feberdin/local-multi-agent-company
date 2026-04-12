@@ -15,7 +15,12 @@ import httpx
 
 from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.guardrails import sanitize_untrusted_text
-from services.shared.agentic_lab.model_routing import resolve_fallback_provider, resolve_worker_route
+from services.shared.agentic_lab.model_routing import (
+    ModelProvider,
+    WorkerModelRoute,
+    resolve_fallback_provider,
+    resolve_worker_route,
+)
 
 
 class LLMError(RuntimeError):
@@ -45,6 +50,102 @@ class LLMClient:
             )
         return self._client
 
+    @staticmethod
+    def _provider_candidates(primary: ModelProvider, fallback: ModelProvider | None) -> list[ModelProvider]:
+        """Return providers in try-order without contacting the same backend twice."""
+
+        candidates = [primary]
+        if fallback and fallback.name != primary.name:
+            candidates.append(fallback)
+        return candidates
+
+    @staticmethod
+    def _response_preview(text: str, *, max_length: int = 240) -> str:
+        """Keep raw model output readable in operator-visible error messages."""
+
+        compact = " ".join(text.split())
+        if len(compact) <= max_length:
+            return compact
+        return compact[: max_length - 1].rstrip() + "…"
+
+    async def _complete_with_provider(
+        self,
+        *,
+        provider: ModelProvider,
+        route: WorkerModelRoute,
+        system_prompt: str,
+        user_prompt: str,
+        worker_name: str,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> str:
+        """Run one chat completion against one concrete provider and return plain text content."""
+
+        headers = {"Content-Type": "application/json"}
+        if provider.api_key and "replace-me" not in provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+
+        payload = {
+            "model": provider.model_name,
+            "messages": [
+                {"role": "system", "content": sanitize_untrusted_text(system_prompt, max_length=8_000)},
+                {"role": "user", "content": sanitize_untrusted_text(user_prompt, max_length=16_000)},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        request_url = f"{provider.base_url.rstrip('/')}/chat/completions"
+        timeout_summary = self.settings.llm_timeout_summary(request_deadline_seconds=route.request_timeout_seconds)
+        client = self._get_client()
+
+        try:
+            async with asyncio.timeout(route.request_timeout_seconds):
+                response = await client.post(
+                    request_url,
+                    headers=headers,
+                    json=payload,
+                )
+            response.raise_for_status()
+            data = response.json()
+        except TimeoutError as exc:
+            raise LLMError(
+                "LLM request exceeded the worker-stage deadline for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`. "
+                f"Configured timeouts: {timeout_summary}. "
+                "On slow local hardware this usually means the model is still inferencing longer than the configured stage budget."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise LLMError(
+                "LLM transport timed out for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`. "
+                f"Configured timeouts: {timeout_summary}. Transport error: {exc}."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            response_snippet = exc.response.text[:300].strip()
+            raise LLMError(
+                "LLM backend returned an HTTP error for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`: "
+                f"{exc.response.status_code} {response_snippet}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LLMError(
+                "LLM transport failed for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`: {exc}"
+            ) from exc
+        except ValueError as exc:
+            raise LLMError(
+                "LLM backend returned invalid JSON for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`: {exc}"
+            ) from exc
+
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError(
+                "Unexpected LLM response shape for "
+                f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`: {data}"
+            ) from exc
+
     async def complete(
         self,
         system_prompt: str,
@@ -65,88 +166,25 @@ class LLMClient:
         request_temperature = temperature if temperature is not None else route.temperature
         request_max_tokens = max_tokens if max_tokens is not None else route.max_tokens
 
-        async def _request(provider_name: str, base_url: str, model_name: str, api_key: str) -> dict[str, Any]:
-            headers = {"Content-Type": "application/json"}
-            if api_key and "replace-me" not in api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": sanitize_untrusted_text(system_prompt, max_length=8_000)},
-                    {"role": "user", "content": sanitize_untrusted_text(user_prompt, max_length=16_000)},
-                ],
-                "temperature": request_temperature,
-                "max_tokens": request_max_tokens,
-            }
-            request_url = f"{base_url.rstrip('/')}/chat/completions"
-            timeout_summary = self.settings.llm_timeout_summary(request_deadline_seconds=route.request_timeout_seconds)
-            client = self._get_client()
-            try:
-                async with asyncio.timeout(route.request_timeout_seconds):
-                    response = await client.post(
-                        request_url,
-                        headers=headers,
-                        json=payload,
-                    )
-                response.raise_for_status()
-                return response.json()
-            except TimeoutError as exc:
-                raise LLMError(
-                    "LLM request exceeded the worker-stage deadline for "
-                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
-                    f"Configured timeouts: {timeout_summary}. "
-                    "On slow local hardware this usually means the model is still inferencing longer than the configured stage budget."
-                ) from exc
-            except httpx.TimeoutException as exc:
-                raise LLMError(
-                    "LLM transport timed out for "
-                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`. "
-                    f"Configured timeouts: {timeout_summary}. Transport error: {exc}."
-                ) from exc
-            except httpx.HTTPStatusError as exc:
-                response_snippet = exc.response.text[:300].strip()
-                raise LLMError(
-                    "LLM backend returned an HTTP error for "
-                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: "
-                    f"{exc.response.status_code} {response_snippet}"
-                ) from exc
-            except httpx.HTTPError as exc:
-                raise LLMError(
-                    "LLM transport failed for "
-                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
-                ) from exc
-            except ValueError as exc:
-                raise LLMError(
-                    "LLM backend returned invalid JSON for "
-                    f"`{worker_name}` via provider `{provider_name}` using model `{model_name}` at `{base_url}`: {exc}"
-                ) from exc
-
         errors: list[str] = []
-        try:
-            data = await _request(provider.name, provider.base_url, provider.model_name, provider.api_key)
-        except LLMError as primary_error:
-            errors.append(str(primary_error))
-            if fallback_provider is None:
-                raise LLMError(str(primary_error)) from primary_error
+        for candidate in self._provider_candidates(provider, fallback_provider):
             try:
-                data = await _request(
-                    fallback_provider.name,
-                    fallback_provider.base_url,
-                    fallback_provider.model_name,
-                    fallback_provider.api_key,
+                return await self._complete_with_provider(
+                    provider=candidate,
+                    route=route,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    worker_name=worker_name,
+                    temperature=request_temperature,
+                    max_tokens=request_max_tokens,
                 )
-            except LLMError as fallback_error:
-                errors.append(str(fallback_error))
-                raise LLMError(
-                    "All configured model providers failed for "
-                    f"`{worker_name}`. " + " | ".join(errors)
-                ) from fallback_error
+            except LLMError as exc:
+                errors.append(str(exc))
 
-        try:
-            return data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"Unexpected LLM response shape: {data}") from exc
+        raise LLMError(
+            "All configured model providers failed for "
+            f"`{worker_name}`. " + " | ".join(errors)
+        )
 
     async def complete_json(
         self,
@@ -173,36 +211,68 @@ class LLMClient:
             "Do not write any text before or after the JSON. "
             "Do not use markdown. Start with '{' and end with '}'.\n\n"
         )
-        raw = await self.complete(
-            system_prompt=json_instruction + system_prompt,
-            user_prompt=user_prompt,
-            worker_name=worker_name,
-            temperature=0.1,
+        provider, route = resolve_worker_route(self.settings, worker_name)
+        fallback_provider = resolve_fallback_provider(self.settings, worker_name)
+        errors: list[str] = []
+
+        for candidate in self._provider_candidates(provider, fallback_provider):
+            try:
+                raw = await self._complete_with_provider(
+                    provider=candidate,
+                    route=route,
+                    system_prompt=json_instruction + system_prompt,
+                    user_prompt=user_prompt,
+                    worker_name=worker_name,
+                    temperature=0.1,
+                    max_tokens=route.max_tokens,
+                )
+            except LLMError as exc:
+                errors.append(str(exc))
+                continue
+
+            result = self._extract_json(raw)
+            if result is not None:
+                return result
+
+            errors.append(
+                "Provider "
+                f"`{candidate.name}` with model `{candidate.model_name}` returned non-JSON text: "
+                f"{self._response_preview(raw)}"
+            )
+
+            retry_input = raw[:3000] + ("..." if len(raw) > 3000 else "")
+            try:
+                retry_raw = await self._complete_with_provider(
+                    provider=candidate,
+                    route=route,
+                    system_prompt=(
+                        "You must output a valid JSON object and nothing else. "
+                        "No prose, no markdown, no explanation. "
+                        "Start your reply with '{' and end with '}'. "
+                        "Convert the following text into a JSON object that captures its key information."
+                    ),
+                    user_prompt=retry_input,
+                    worker_name=worker_name,
+                    temperature=0.0,
+                    max_tokens=route.max_tokens,
+                )
+            except LLMError as exc:
+                errors.append(str(exc))
+                continue
+
+            result = self._extract_json(retry_raw)
+            if result is not None:
+                return result
+
+            errors.append(
+                "Provider "
+                f"`{candidate.name}` JSON-repair attempt still returned no valid JSON: "
+                f"{self._response_preview(retry_raw)}"
+            )
+
+        raise LLMError(
+            f"Model did not return valid JSON for `{worker_name}`. " + " | ".join(errors)
         )
-
-        result = self._extract_json(raw)
-        if result is not None:
-            return result
-
-        # One retry: ask the model to convert its own prose answer into JSON.
-        # Truncate the input so local small models are not overwhelmed by the full response.
-        retry_input = raw[:3000] + ("..." if len(raw) > 3000 else "")
-        retry_raw = await self.complete(
-            system_prompt=(
-                "You must output a valid JSON object and nothing else. "
-                "No prose, no markdown, no explanation. "
-                "Start your reply with '{' and end with '}'. "
-                "Convert the following text into a JSON object that captures its key information."
-            ),
-            user_prompt=retry_input,
-            worker_name=worker_name,
-            temperature=0.0,
-        )
-        result = self._extract_json(retry_raw)
-        if result is not None:
-            return result
-
-        raise LLMError(f"Model did not return valid JSON: {raw}")
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any] | None:

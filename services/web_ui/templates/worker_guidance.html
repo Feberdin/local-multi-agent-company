@@ -1,6 +1,6 @@
 <!--
-Purpose: Operator UI for maintaining worker-level Handlungsempfehlungen and competence boundaries.
-Input/Output: Receives stored worker guidance policies from the orchestrator API and lets the CEO adjust them.
+Purpose: Operator UI for maintaining worker-level guidance, competence boundaries, and escalation defaults.
+Input/Output: Receives stored worker guidance policies from the orchestrator API and lets the operator adjust them.
 Important invariants: Guidance remains explicit, per-worker, and separate from the task-specific approval system.
 How to debug: If a worker policy does not save, inspect the returned validation message and the submitted text fields.
 -->
@@ -9,7 +9,7 @@ How to debug: If a worker policy does not save, inspect the returned validation 
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Worker Guidance</title>
+    <title>Worker-Guidance</title>
     <link rel="stylesheet" href="/static/style.css">
   </head>
   <body>
@@ -17,7 +17,7 @@ How to debug: If a worker policy does not save, inspect the returned validation 
       <nav class="topnav">
         <a href="/">Dashboard</a>
         <a href="/benchmarks">Benchmarks</a>
-        <a href="/worker-guidance" class="active">Worker Guidance</a>
+        <a href="/worker-guidance" class="active">Worker-Guidance</a>
         <a href="/suggestions">Mitarbeiterideen</a>
         <a href="/trusted-sources">Trusted Sources</a>
         <a href="/web-search">Web Search Providers</a>
@@ -28,8 +28,8 @@ How to debug: If a worker policy does not save, inspect the returned validation 
 
       <section class="hero">
         <p class="eyebrow">Führungsebene</p>
-        <h1>Worker Guidance</h1>
-        <p class="lead">Lege pro Worker fest, wie er grundsätzlich arbeiten soll, wo sein Kompetenzrahmen endet und ob Ideen automatisch eingereicht werden.</p>
+        <h1>Worker-Guidance</h1>
+        <p class="lead">Lege pro Worker fest, wie er grundsätzlich arbeitet, wo sein Kompetenzrahmen endet und ob Vorschläge automatisch eingereicht werden.</p>
       </section>
 
       {% if error_message %}
@@ -57,8 +57,9 @@ How to debug: If a worker policy does not save, inspect the returned validation 
               <tr>
                 <th>Worker</th>
                 <th>Aktiv</th>
-                <th>Rolle</th>
+                <th>Rollenbeschreibung</th>
                 <th>Kompetenzgrenze</th>
+                <th>Scope eskalieren</th>
                 <th>Vorschläge auto-einreichen</th>
                 <th>Aktion</th>
               </tr>
@@ -68,9 +69,10 @@ How to debug: If a worker policy does not save, inspect the returned validation 
               <tr>
                 <td>{{ worker.display_name }}</td>
                 <td>{{ "Ja" if worker.enabled else "Nein" }}</td>
-                <td>{{ worker.role_summary }}</td>
+                <td>{{ worker.role_description or worker.role_summary }}</td>
                 <td>{{ worker.competence_boundary }}</td>
-                <td>{{ "Ja" if worker.auto_submit_improvement_suggestions else "Nein" }}</td>
+                <td>{{ "Ja" if worker.escalate_out_of_scope or worker.escalate_beyond_boundary else "Nein" }}</td>
+                <td>{{ "Ja" if worker.auto_submit_suggestions or worker.auto_submit_improvement_suggestions else "Nein" }}</td>
                 <td><a class="button-link secondary" href="/worker-guidance?edit={{ worker.worker_name }}">Bearbeiten</a></td>
               </tr>
               {% endfor %}
@@ -93,7 +95,7 @@ How to debug: If a worker policy does not save, inspect the returned validation 
           </label>
           <label>
             Rollenbeschreibung
-            <textarea name="role_summary" rows="3" required>{{ worker_guidance_form_values.role_summary }}</textarea>
+            <textarea name="role_description" rows="4" required>{{ worker_guidance_form_values.role_description }}</textarea>
           </label>
           <label>
             Handlungsempfehlungen
@@ -108,14 +110,14 @@ How to debug: If a worker policy does not save, inspect the returned validation 
             <textarea name="competence_boundary" rows="4" required>{{ worker_guidance_form_values.competence_boundary }}</textarea>
           </label>
           <label class="checkbox-row">
-            <input type="checkbox" name="escalate_beyond_boundary" value="true" {% if worker_guidance_form_values.escalate_beyond_boundary %}checked{% endif %}>
+            <input type="checkbox" name="escalate_out_of_scope" value="true" {% if worker_guidance_form_values.escalate_out_of_scope %}checked{% endif %}>
             <span>Ideen außerhalb des Kompetenzrahmens grundsätzlich eskalieren</span>
           </label>
           <label class="checkbox-row">
-            <input type="checkbox" name="auto_submit_improvement_suggestions" value="true" {% if worker_guidance_form_values.auto_submit_improvement_suggestions %}checked{% endif %}>
+            <input type="checkbox" name="auto_submit_suggestions" value="true" {% if worker_guidance_form_values.auto_submit_suggestions %}checked{% endif %}>
             <span>Mitarbeiterideen automatisch ins Vorschlags-Dashboard einreichen</span>
           </label>
-          <button type="submit">Worker Guidance speichern</button>
+          <button type="submit">Worker-Guidance speichern</button>
         </form>
       </section>
     </main>

@@ -1,6 +1,6 @@
 <!--
 Purpose: CEO dashboard for reviewing worker-generated improvement suggestions and deciding on out-of-scope ideas.
-Input/Output: Receives the suggestion registry and renders pending, approved, and rejected recommendations.
+Input/Output: Receives the suggestion registry and renders offene, task-lokale und repo-weite Entscheidungen nachvollziehbar.
 Important invariants: Suggestions remain explicit proposals; they never execute by themselves.
 How to debug: If a suggestion action fails, inspect the orchestrator decision endpoint response and the suggestion ID.
 -->
@@ -52,12 +52,12 @@ How to debug: If a suggestion action fails, inspect the orchestrator decision en
           <p><strong>{{ pending_suggestions|length }}</strong> Vorschläge warten auf deine Entscheidung.</p>
         </article>
         <article class="panel">
-          <h2>Freigegeben</h2>
-          <p><strong>{{ approved_suggestions|length }}</strong> Vorschläge wurden bestätigt.</p>
+          <h2>Nur task-lokal freigegeben</h2>
+          <p><strong>{{ approved_suggestions|length }}</strong> Vorschläge wurden für eine Aufgabe bestätigt, gelten aber nicht automatisch repo-weit.</p>
         </article>
         <article class="panel">
-          <h2>Abgelehnt</h2>
-          <p><strong>{{ rejected_suggestions|length }}</strong> Vorschläge wurden verworfen.</p>
+          <h2>Repo-weit geklärt</h2>
+          <p><strong>{{ repository_resolved_suggestions|length }}</strong> Vorschläge sind bereits umgesetzt, verworfen oder dauerhaft ausgeblendet.</p>
         </article>
       </section>
 
@@ -68,29 +68,47 @@ How to debug: If a suggestion action fails, inspect the orchestrator decision en
           <article class="event">
             <div class="event-header">
               <strong>{{ suggestion.title }}</strong>
-              <span class="muted">{{ suggestion.worker_name }} · {{ suggestion.status }}{% if suggestion.task_id %} · Task {{ suggestion.task_id }}{% endif %}</span>
+              <div class="event-meta">
+                <span class="status {{ suggestion.status_class }}">{{ suggestion.status_label }}</span>
+                <span class="status status-idle">{{ suggestion.scope_label }}</span>
+                <span class="muted">{{ suggestion.worker_label }}{% if suggestion.task_id %} · Task {{ suggestion.task_id }}{% endif %}</span>
+              </div>
             </div>
             <p>{{ suggestion.summary }}</p>
+            <p class="muted"><strong>Repository:</strong> {{ suggestion.repository_label }}</p>
             <p class="muted"><strong>Begründung:</strong> {{ suggestion.rationale }}</p>
             <p class="muted"><strong>Empfohlene Maßnahme:</strong> {{ suggestion.suggested_action }}</p>
             <p class="muted"><strong>Wirkung:</strong> {{ suggestion.impact }}</p>
+            <p class="muted"><strong>Fingerprint:</strong> {{ suggestion.fingerprint_short or "unbekannt" }}</p>
             <p class="muted"><strong>Kompetenzrahmen überschritten:</strong> {{ "Ja" if suggestion.exceeds_competence_boundary else "Nein" }}</p>
             {% if suggestion.status == "pending" %}
             <div class="actions">
               <form method="post" action="/suggestions/{{ suggestion.id }}/approve">
                 <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
-                <input type="text" name="note" placeholder="Freigabevermerk">
-                <button type="submit">Freigeben</button>
+                <input type="text" name="note" placeholder="Warum nur fuer diese Aufgabe?">
+                <button type="submit">Nur hier freigeben</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/implement">
+                <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
+                <input type="text" name="note" placeholder="Wie wurde es repo-weit umgesetzt?">
+                <button type="submit">Als umgesetzt markieren</button>
+              </form>
+              <form method="post" action="/suggestions/{{ suggestion.id }}/suppress">
+                <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
+                <input type="text" name="note" placeholder="Warum repo-weit ausblenden?">
+                <button type="submit">Repo-weit ausblenden</button>
               </form>
               <form method="post" action="/suggestions/{{ suggestion.id }}/reject">
                 <input type="hidden" name="task_id" value="{{ suggestion.task_id or '' }}">
-                <input type="text" name="note" placeholder="Ablehnungsgrund">
-                <button type="submit" class="danger">Ablehnen</button>
+                <input type="text" name="note" placeholder="Warum repo-weit verwerfen?">
+                <button type="submit" class="danger">Verwerfen</button>
               </form>
             </div>
-            {% elif suggestion.decision_note %}
-            <p class="muted"><strong>Entscheidungsnotiz:</strong> {{ suggestion.decision_note }}</p>
             {% endif %}
+            {% if suggestion.decision_note_display %}
+            <p class="muted"><strong>Entscheidungsnotiz:</strong> {{ suggestion.decision_note_display }}</p>
+            {% endif %}
+            <p class="muted"><strong>Zuletzt aktualisiert:</strong> {{ suggestion.updated_at_display }}</p>
           </article>
           {% else %}
           <p class="muted">Noch keine Mitarbeiterideen gespeichert.</p>

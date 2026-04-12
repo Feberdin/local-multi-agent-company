@@ -71,6 +71,7 @@ class Settings(BaseSettings):
         default="http://orchestrator:8080",
         alias="ORCHESTRATOR_INTERNAL_URL",
     )
+    web_ui_internal_url: str = Field(default="http://web-ui:8088", alias="WEB_UI_INTERNAL_URL")
     requirements_worker_url: str = Field(
         default="http://requirements-worker:8090",
         alias="REQUIREMENTS_WORKER_URL",
@@ -124,6 +125,12 @@ class Settings(BaseSettings):
         default=30.0,
         validation_alias=AliasChoices("STAGE_HEARTBEAT_INTERVAL_SECONDS", "WORKER_HEARTBEAT_INTERVAL_SECONDS"),
     )
+    readiness_http_fast_timeout_seconds: float = Field(default=8.0, alias="READINESS_HTTP_FAST_TIMEOUT_SECONDS")
+    readiness_http_deep_timeout_seconds: float = Field(default=45.0, alias="READINESS_HTTP_DEEP_TIMEOUT_SECONDS")
+    readiness_llm_smoke_timeout_seconds: float = Field(default=240.0, alias="READINESS_LLM_SMOKE_TIMEOUT_SECONDS")
+    readiness_worker_smoke_timeout_seconds: float = Field(default=20.0, alias="READINESS_WORKER_SMOKE_TIMEOUT_SECONDS")
+    readiness_git_timeout_seconds: float = Field(default=25.0, alias="READINESS_GIT_TIMEOUT_SECONDS")
+    readiness_slow_warning_seconds: float = Field(default=20.0, alias="READINESS_SLOW_WARNING_SECONDS")
 
     default_target_repo: str = Field(default="Feberdin/example-repo", alias="DEFAULT_TARGET_REPO")
     default_local_repo_path: str = Field(

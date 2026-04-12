@@ -95,3 +95,101 @@ async def test_llm_client_falls_back_when_primary_provider_times_out(
     response = await client.complete("system", "user", worker_name="research")
 
     assert response == "fallback-ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_json_falls_back_when_primary_provider_returns_non_json_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "# Feberdin Multi-Agent Architecture Review\nThis answer is prose, not JSON."
+                            }
+                        }
+                    ]
+                },
+                request=request,
+            )
+        call_counter["mistral"] += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"summary":"Recovered JSON plan","operations":[]}'
+                        }
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json("system", "user", worker_name="coding")
+
+    assert response == {"summary": "Recovered JSON plan", "operations": []}
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_json_error_mentions_all_provider_attempts_when_json_never_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            content = "# Architecture Review\nStill prose."
+        else:
+            content = "No JSON here either."
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(LLMError) as exc_info:
+        await client.complete_json("system", "user", worker_name="coding")
+
+    message = str(exc_info.value)
+    assert "Model did not return valid JSON for `coding`" in message
+    assert "Provider `qwen`" in message
+    assert "Provider `mistral`" in message
