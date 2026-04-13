@@ -205,16 +205,21 @@ async def test_worker_probe_service_runs_only_selected_workers_in_canonical_orde
         WorkerProbeStartRequest(
             probe_goal="Pruefe nur Architektur und Code nach einem gezielten Fix.",
             selected_workers=["coding", "architecture", "coding"],
+            focus_paths=["tests/unit/test_worker_probe_service.py", "services/web_ui/app.py"],
         )
     )
     finished = await service.execute_run(run.id)
 
     assert finished.status == WorkerProbeRunStatus.COMPLETED
     assert finished.selected_workers == ["architecture", "coding"]
+    assert finished.focus_paths == ["tests/unit/test_worker_probe_service.py", "services/web_ui/app.py"]
     assert finished.total_workers == 2
     assert finished.completed_workers == 2
     assert [item.worker_name for item in finished.results] == ["architecture", "coding"]
     assert set(fake_llm.prompt_log) == {"architecture", "coding"}
+    architecture_system_prompt, architecture_user_prompt = fake_llm.prompt_log["architecture"]
+    assert "tests/unit/test_worker_probe_service.py" in architecture_user_prompt
+    assert "services/web_ui/app.py" in architecture_user_prompt
 
 
 async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_path, monkeypatch) -> None:

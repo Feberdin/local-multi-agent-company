@@ -81,6 +81,11 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
               Teiltest-Auftrag
               <textarea name="probe_goal" rows="3" placeholder="{{ worker_probe_default_goal }}">{{ worker_probe_default_goal }}</textarea>
             </label>
+            <label>
+              Fix-Fokus Dateien
+              <textarea name="focus_paths_text" rows="5" placeholder="services/coding_worker/app.py&#10;tests/unit/test_coding_worker.py">{{ focus_paths_text }}</textarea>
+            </label>
+            <p class="muted">Standardmäßig schlagen wir die zuletzt geänderten Dateien aus dem aktuellen Checkout vor. Damit testet der Worker eher den echten Fixbereich und nicht nur irgendein Beispiel.</p>
             <p class="muted">Der Auftrag bleibt absichtlich kurz. Wir wollen hier schnell sehen, ob genau der gefixte Worker wieder saubere Antworten liefert.</p>
             <div class="toolbar-inline">
               <button type="submit">Ausgewaehlte Worker testen</button>
@@ -139,12 +144,14 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
                 <input type="hidden" name="selected_workers" value="{{ choice.worker_name }}">
                 <input type="hidden" name="probe_goal" value="{{ choice.quick_full_goal }}">
                 <input type="hidden" name="probe_mode" value="full">
+                <input type="hidden" name="focus_paths_text" value="{{ focus_paths_text }}">
                 <button type="submit">Diesen Worker testen</button>
               </form>
               <form method="post" action="/worker-tests/start" class="stack">
                 <input type="hidden" name="selected_workers" value="{{ choice.worker_name }}">
                 <input type="hidden" name="probe_goal" value="{{ choice.quick_ok_goal }}">
                 <input type="hidden" name="probe_mode" value="ok_contract">
+                <input type="hidden" name="focus_paths_text" value="{{ focus_paths_text }}">
                 <button type="submit" class="secondary-button">Nur OK pruefen</button>
               </form>
             </div>
@@ -172,6 +179,7 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
           <div class="stats-grid">
             <p><strong>Typ:</strong> {{ worker_probe_report.latest_run.probe_mode_label }}</p>
             <p><strong>Getestete Worker:</strong> {{ worker_probe_report.latest_run.selected_worker_summary }}</p>
+            <p><strong>Fix-Fokus:</strong> {{ ", ".join(worker_probe_report.latest_run.focus_paths) if worker_probe_report.latest_run.focus_paths else "kein Fokus gespeichert" }}</p>
             <p><strong>Erstellt:</strong> {{ worker_probe_report.latest_run.created_at_display }}</p>
             <p><strong>Gestartet:</strong> {{ worker_probe_report.latest_run.started_at_display }}</p>
             <p><strong>Abgeschlossen:</strong> {{ worker_probe_report.latest_run.completed_at_display }}</p>

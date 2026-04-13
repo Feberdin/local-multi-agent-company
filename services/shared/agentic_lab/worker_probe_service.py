@@ -220,12 +220,14 @@ class WorkerProbeService:
                 )
 
             selected_workers = list(_normalize_probe_workers(request.selected_workers))
+            focus_paths = list(_normalize_focus_paths(request.focus_paths))
             run = WorkerProbeRunResponse(
                 id=str(uuid4()),
                 status=WorkerProbeRunStatus.QUEUED,
                 probe_goal=request.probe_goal.strip(),
                 probe_mode=request.probe_mode,
                 selected_workers=selected_workers,
+                focus_paths=focus_paths,
                 total_workers=len(selected_workers),
             )
             registry.runs.insert(0, run)
@@ -303,6 +305,8 @@ class WorkerProbeService:
                 definition=definition,
                 probe_goal=probe_run.probe_goal,
                 probe_mode=probe_run.probe_mode,
+                focus_paths=probe_run.focus_paths,
+                selected_worker_count=len(probe_run.selected_workers),
                 guidance_block=guidance_block,
             )
             if definition.response_format in {"json"}:
@@ -389,6 +393,8 @@ class WorkerProbeService:
         definition: WorkerProbeDefinition,
         probe_goal: str,
         probe_mode: WorkerProbeMode,
+        focus_paths: list[str],
+        selected_worker_count: int,
         guidance_block: str,
     ) -> tuple[str, str]:
         """Return a compact prompt pair that exercises the same route contract without touching a real repo."""
@@ -398,15 +404,28 @@ class WorkerProbeService:
                 definition=definition,
                 probe_goal=probe_goal,
                 guidance_block=guidance_block,
+                focus_paths=focus_paths,
             )
 
-        candidate_files = [
+        candidate_files = focus_paths or [
             "services/web_ui/app.py",
             "services/shared/agentic_lab/llm.py",
             "services/orchestrator/app.py",
             "tests/unit/test_web_ui_benchmarks.py",
             "README.md",
         ]
+        focus_block = ""
+        if focus_paths:
+            focus_block = (
+                "Fix-Fokus fuer diesen Teiltest:\n"
+                + "\n".join(f"- {path}" for path in focus_paths)
+                + "\n\n"
+            )
+        targeted_probe_note = (
+            "Dies ist ein fokussierter Teiltest nur fuer den ausgewaehlten Worker. "
+            if selected_worker_count == 1
+            else "Dies ist ein kleiner Teiltest fuer eine ausgewaehlte Worker-Gruppe. "
+        )
         synthetic_diff = (
             "diff --git a/services/web_ui/app.py b/services/web_ui/app.py\n"
             "@@\n"
@@ -432,6 +451,8 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Original Auftrag:\n{probe_goal}\n\n"
+                    f"{focus_block}"
+                    f"{targeted_probe_note}"
                     "Dies ist nur ein schneller Modell-Probelauf. "
                     "Formuliere die Antwort kurz, aber vollstaendig und gut lesbar."
                 ),
@@ -443,6 +464,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Probe-Auftrag:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     f"Repository: Feberdin/local-multi-agent-company\n"
                     f"Vermutete Kandidatdateien: {candidate_files}\n"
                     "Wichtig: Dies ist ein schneller Probelauf ohne echten Repo-Zugriff. "
@@ -460,6 +482,7 @@ class WorkerProbeService:
                 + guidance_block
             ), (
                 f"Goal:\n{probe_goal}\n\n"
+                f"{focus_block}"
                 "Research summary:\n"
                 f"- Candidate files: {candidate_files}\n"
                 "- Main risk: observability changes can accidentally leak debug data.\n"
@@ -472,11 +495,12 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Goal:\n{probe_goal}\n\n"
-                    "This is a benchmark probe only. No real repository access is available. "
-                    "Create an illustrative edit plan that touches only these synthetic files:\n"
-                    "- services/web_ui/app.py\n"
-                    "- tests/unit/test_web_ui_benchmarks.py\n"
-                    "Add safer error output and one small visibility test."
+                    f"{focus_block}"
+                    f"{targeted_probe_note}"
+                    "No real repository access is available. Return the smallest useful edit plan that proves you "
+                    "understood the fix focus. Touch only these files:\n"
+                    + "\n".join(f"- {path}" for path in candidate_files[:4])
+                    + "\nUse at most one small operation per relevant file, avoid long file contents, and never invent unrelated files."
                 ),
             )
         if definition.worker_name == "reviewer":
@@ -486,6 +510,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Goal:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     f"Changed files:\n{candidate_files[:2]}\n\n"
                     f"Unified diff:\n{synthetic_diff}\n\n"
                     "List only the most important review observations."
@@ -497,6 +522,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Goal:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     f"Changed files:\n{candidate_files[:2]}\n\n"
                     f"Unified diff:\n{synthetic_diff}\n\n"
                     "Focus on secret exposure, debug leakage, and operator-safe defaults."
@@ -509,6 +535,7 @@ class WorkerProbeService:
                 f"{guidance_block}"
             ), (
                 f"Original Auftrag:\n{probe_goal}\n\n"
+                f"{focus_block}"
                 f"Validation input:\n{validation_input}\n\n"
                 f"Security input:\n{security_input}\n\n"
                 "Be strict and separate verified evidence from assumptions."
@@ -518,6 +545,7 @@ class WorkerProbeService:
             f"{guidance_block}",
             (
                 f"Goal:\n{probe_goal}\n\n"
+                f"{focus_block}"
                 f"Validation:\n{validation_input}\n\n"
                 f"Security:\n{security_input}\n\n"
                 "Write a short operator handoff that is easy to skim in a benchmark UI."
@@ -530,8 +558,17 @@ class WorkerProbeService:
         definition: WorkerProbeDefinition,
         probe_goal: str,
         guidance_block: str,
+        focus_paths: list[str],
     ) -> tuple[str, str]:
         """Return the smallest contract-valid prompt set so operators can run one empty smoke test quickly."""
+
+        focus_block = ""
+        if focus_paths:
+            focus_block = (
+                "Fix-Fokus fuer diesen Teiltest:\n"
+                + "\n".join(f"- {path}" for path in focus_paths)
+                + "\n\n"
+            )
 
         if definition.worker_name == "requirements":
             return (
@@ -542,6 +579,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     "Return only the smallest valid JSON payload that proves the requirements contract works."
                 ),
             )
@@ -549,7 +587,7 @@ class WorkerProbeService:
             return (
                 "You are a research lead. Return plain text only. Reply with exactly `OK` and nothing else."
                 f"{guidance_block}",
-                "This is an empty contract smoke test. Do not add sections, explanations, or markdown fences.",
+                f"This is an empty contract smoke test.\n\n{focus_block}Do not add sections, explanations, or markdown fences.",
             )
         if definition.worker_name == "architecture":
             return (
@@ -568,6 +606,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     "Return exactly the minimal JSON skeleton from the system prompt with the same keys and the same "
                     "overall structure. Do not omit any key."
                 ),
@@ -580,6 +619,7 @@ class WorkerProbeService:
                 f"{guidance_block}",
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
+                    f"{focus_block}"
                     "Do not invent file operations. Prove only that the edit_plan contract can be emitted cleanly."
                 ),
             )
@@ -588,7 +628,7 @@ class WorkerProbeService:
                 "You are a strict reviewer. Return a single JSON object with keys findings and warnings. "
                 "Use the smallest valid payload with 'OK' content. No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
             )
         if definition.worker_name == "security":
             return (
@@ -596,7 +636,7 @@ class WorkerProbeService:
                 "requires_human_approval, approval_reason. Use the smallest valid payload with 'OK' content and "
                 "requires_human_approval false. No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
             )
         if definition.worker_name == "validation":
             return (
@@ -604,7 +644,7 @@ class WorkerProbeService:
                 "residual_risks, release_readiness, recommendation. Use the smallest valid payload with 'OK' content. "
                 "No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
             )
         return (
             "You are a documentation lead. Return markdown only with these sections: Summary, Validation, Risks, Deployment Notes, "
@@ -612,6 +652,7 @@ class WorkerProbeService:
             f"{guidance_block}",
             (
                 f"Contract smoke test:\n{probe_goal}\n\n"
+                f"{focus_block}"
                 "Return the smallest valid markdown handoff with exactly the requested headings."
             ),
         )
@@ -625,7 +666,7 @@ class WorkerProbeService:
             repository="Feberdin/local-multi-agent-company",
             local_repo_path="/probe/noop",
             base_branch="main",
-            metadata={},
+            metadata={"focus_paths": list(self._find_run(run_id).focus_paths)},
         )
 
     def _find_run(self, run_id: str) -> WorkerProbeRunResponse:
@@ -687,6 +728,25 @@ def _normalize_probe_workers(raw_workers: list[str] | tuple[str, ...] | None) ->
         )
 
     return tuple(worker_name for worker_name in PROBE_WORKERS if worker_name in selected)
+
+
+def _normalize_focus_paths(raw_paths: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """Keep focused probe paths compact and deterministic for persisted operator-facing runs."""
+
+    if not raw_paths:
+        return ()
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        path = str(raw or "").strip().replace("\\", "/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+        if len(normalized) >= 8:
+            break
+    return tuple(normalized)
 
 
 def _clip_text(value: str, *, max_length: int = 180) -> str:

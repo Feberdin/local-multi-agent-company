@@ -346,6 +346,7 @@ class WorkerProbeStartRequest(BaseModel):
     )
     probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
     selected_workers: list[str] = Field(default_factory=list)
+    focus_paths: list[str] = Field(default_factory=list)
 
 
 class WorkerProbeResultResponse(BaseModel):
@@ -375,6 +376,7 @@ class WorkerProbeRunResponse(BaseModel):
     probe_goal: str
     probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
     selected_workers: list[str] = Field(default_factory=list)
+    focus_paths: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utc_now)
     started_at: datetime | None = None
     updated_at: datetime = Field(default_factory=_utc_now)

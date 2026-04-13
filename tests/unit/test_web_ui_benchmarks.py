@@ -550,6 +550,10 @@ def test_benchmark_page_can_start_ok_contract_probe_from_ui(tmp_path, monkeypatc
 def test_worker_tests_page_renders_targeted_actions_and_latest_run(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     now = datetime.now(UTC).replace(microsecond=0)
+    app_module._recent_fix_focus_paths = lambda limit=6: [  # noqa: ARG005
+        "services/coding_worker/app.py",
+        "tests/unit/test_coding_worker.py",
+    ]
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         del method, json_payload
@@ -564,6 +568,7 @@ def test_worker_tests_page_renders_targeted_actions_and_latest_run(tmp_path, mon
                             "probe_goal": "Pruefe nur Code und Architektur nach einem Fix.",
                             "probe_mode": "full",
                             "selected_workers": ["architecture", "coding"],
+                            "focus_paths": ["services/coding_worker/app.py", "tests/unit/test_coding_worker.py"],
                             "created_at": now.isoformat(),
                             "started_at": now.isoformat(),
                             "updated_at": now.isoformat(),
@@ -590,6 +595,7 @@ def test_worker_tests_page_renders_targeted_actions_and_latest_run(tmp_path, mon
     assert "Diesen Worker testen" in response.text
     assert "Nur OK pruefen" in response.text
     assert "Architektur, Code" in response.text
+    assert "services/coding_worker/app.py" in response.text
 
 
 def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_path, monkeypatch) -> None:
@@ -602,6 +608,7 @@ def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_pa
                 "probe_goal": "Pruefe nur Code und Architektur nach dem Fix.",
                 "probe_mode": "full",
                 "selected_workers": ["architecture", "coding"],
+                "focus_paths": ["services/coding_worker/app.py", "tests/unit/test_coding_worker.py"],
             }
             return httpx.Response(
                 201,
@@ -625,6 +632,10 @@ def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_pa
         raise AssertionError(f"Unexpected call: {method} {path}")
 
     app_module._api_request = fake_api_request
+    app_module._recent_fix_focus_paths = lambda limit=6: [  # noqa: ARG005
+        "services/coding_worker/app.py",
+        "tests/unit/test_coding_worker.py",
+    ]
 
     with TestClient(app_module.app) as client:
         response = client.post(
@@ -632,6 +643,7 @@ def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_pa
             data={
                 "probe_goal": "Pruefe nur Code und Architektur nach dem Fix.",
                 "selected_workers": ["architecture", "coding"],
+                "focus_paths_text": "services/coding_worker/app.py\ntests/unit/test_coding_worker.py",
             },
             follow_redirects=False,
         )

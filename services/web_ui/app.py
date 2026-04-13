@@ -45,8 +45,9 @@ DEFAULT_WORKER_PROBE_GOAL = (
 )
 DEFAULT_OK_WORKER_PROBE_GOAL = "Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen."
 DEFAULT_TARGETED_WORKER_PROBE_GOAL = (
-    "Pruefe nur den ausgewaehlten Worker mit einem kurzen, synthetischen Teiltest ohne Repository-Aenderungen."
+    "Pruefe nur den ausgewaehlten Worker gegen den zuletzt gefixten Bereich ohne Repository-Aenderungen."
 )
+TARGETED_WORKER_FOCUS_LIMIT = 6
 
 # Why this exists:
 # The UI should import both inside the container (`/app/...`) and in local tests where the
@@ -95,6 +96,68 @@ def _run_git_metadata_command(repo_path: Path, *args: str) -> str | None:
         return None
     value = completed.stdout.strip()
     return value or None
+
+
+def _ui_repo_candidate_paths() -> list[Path]:
+    """Return likely repository roots for UI metadata and targeted fix helpers."""
+
+    candidate_paths: list[Path] = [PROJECT_ROOT]
+    if settings.self_improvement_local_repo_path.strip():
+        candidate_paths.append(Path(settings.self_improvement_local_repo_path))
+    return candidate_paths
+
+
+def _resolve_ui_repo_path() -> Path | None:
+    """Pick the first reachable Git checkout so targeted tests can suggest the latest changed files."""
+
+    seen_paths: set[Path] = set()
+    for candidate in _ui_repo_candidate_paths():
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate in seen_paths:
+            continue
+        seen_paths.add(resolved_candidate)
+        if not resolved_candidate.exists():
+            continue
+        if not (resolved_candidate / ".git").exists():
+            continue
+        return resolved_candidate
+    return None
+
+
+def _recent_fix_focus_paths(limit: int = TARGETED_WORKER_FOCUS_LIMIT) -> list[str]:
+    """Suggest the latest changed tracked files so targeted worker tests can follow the real last fix."""
+
+    repo_path = _resolve_ui_repo_path()
+    if repo_path is None:
+        return []
+    output = _run_git_metadata_command(repo_path, "show", "--pretty=format:", "--name-only", "HEAD")
+    if not output:
+        return []
+    paths: list[str] = []
+    for raw_line in output.splitlines():
+        path = raw_line.strip().replace("\\", "/")
+        if not path or path in paths:
+            continue
+        paths.append(path)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def _normalize_focus_paths_text(value: str | None) -> list[str]:
+    """Normalize operator-entered focus paths so the part-test stays readable and bounded."""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_line in _split_lines(value or ""):
+        path = raw_line.strip().replace("\\", "/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+        if len(normalized) >= TARGETED_WORKER_FOCUS_LIMIT:
+            break
+    return normalized
 
 WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     {
@@ -1886,12 +1949,18 @@ def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
             PROBE_WORKER_LABELS.get(worker_name, WORKER_LABELS.get(worker_name, worker_name))
             for worker_name in selected_workers
         ]
+        focus_paths = [
+            path
+            for path in _as_list(run.get("focus_paths"))
+            if isinstance(path, str) and path.strip()
+        ]
         runs.append(
             {
                 **run,
                 "status": status,
                 "probe_mode": probe_mode,
                 "selected_workers": selected_workers,
+                "focus_paths": focus_paths,
                 "selected_worker_labels": selected_worker_labels,
                 "selected_worker_count": len(selected_workers),
                 "selected_worker_summary": ", ".join(selected_worker_labels),
@@ -2517,10 +2586,11 @@ async def _load_benchmarks_context(
     success_message: str | None = None,
     selected_workers: list[str] | None = None,
     probe_goal: str | None = None,
+    focus_paths_text: str | None = None,
 ) -> dict[str, Any]:
     """Collect a readable worker benchmark view from persisted task details without crashing on partial backend issues."""
 
-    del selected_workers, probe_goal
+    del selected_workers, probe_goal, focus_paths_text
     messages = [error_message] if error_message else []
     reset_at = _benchmark_reset_at()
     tasks_response = await _api_request("GET", "/api/tasks?include_archived=true")
@@ -2608,6 +2678,7 @@ async def _load_worker_tests_context(
     success_message: str | None = None,
     selected_workers: list[str] | None = None,
     probe_goal: str | None = None,
+    focus_paths_text: str | None = None,
 ) -> dict[str, Any]:
     """Render a dedicated operator page for quick single-worker or small subset model probes."""
 
@@ -2621,6 +2692,8 @@ async def _load_worker_tests_context(
     normalized_selected_workers = [
         worker_name for worker_name in (selected_workers or ["coding"]) if worker_name in PROBE_WORKERS
     ] or ["coding"]
+    suggested_focus_paths = _recent_fix_focus_paths()
+    normalized_focus_paths = _normalize_focus_paths_text(focus_paths_text) or suggested_focus_paths
 
     return {
         "worker_probe_report": worker_probe_report,
@@ -2629,6 +2702,8 @@ async def _load_worker_tests_context(
         "worker_probe_default_goal": probe_goal or DEFAULT_TARGETED_WORKER_PROBE_GOAL,
         "worker_probe_ok_goal": DEFAULT_OK_WORKER_PROBE_GOAL,
         "selected_workers": normalized_selected_workers,
+        "focus_paths": normalized_focus_paths,
+        "focus_paths_text": "\n".join(normalized_focus_paths),
         "auto_refresh_seconds": probe_auto_refresh,
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
@@ -3158,6 +3233,7 @@ async def _submit_worker_probe_form(
         for value in form.getlist("selected_workers")
         if str(value).strip()
     ]
+    focus_paths = _normalize_focus_paths_text(str(form.get("focus_paths_text") or ""))
     if default_selected_workers and not selected_workers:
         selected_workers = list(default_selected_workers)
 
@@ -3167,6 +3243,8 @@ async def _submit_worker_probe_form(
     payload: dict[str, Any] = {"probe_goal": normalized_goal, "probe_mode": probe_mode.value}
     if selected_workers:
         payload["selected_workers"] = selected_workers
+    if focus_paths:
+        payload["focus_paths"] = focus_paths
 
     response = await _api_request("POST", "/api/benchmarks/model-probe", json_payload=payload)
     if response.status_code >= 400:
@@ -3175,6 +3253,7 @@ async def _submit_worker_probe_form(
             error_message=detail,
             selected_workers=selected_workers or default_selected_workers,
             probe_goal=normalized_goal,
+            focus_paths_text="\n".join(focus_paths),
         )
         return templates.TemplateResponse(
             request=request,
