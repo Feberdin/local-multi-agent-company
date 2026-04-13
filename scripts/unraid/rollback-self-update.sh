@@ -55,6 +55,23 @@ if [ -n "\${SERVICES}" ]; then
 else
   docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" up -d --build
 fi
+
+ATTEMPTS=0
+while [ "\${ATTEMPTS}" -lt 24 ]; do
+  ATTEMPTS=\$((ATTEMPTS + 1))
+  OBSERVED_COMMIT=\$(docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" exec -T web-ui python -c \
+    "import json; print(json.load(open('/opt/feberdin/build-info.json', encoding='utf-8')).get('build_commit_sha', ''))" \
+    2>/dev/null || true)
+  if [ "\${OBSERVED_COMMIT}" = "\${BUILD_COMMIT_SHA}" ]; then
+    break
+  fi
+  sleep 5
+done
+
+if [ "\${OBSERVED_COMMIT:-}" != "\${BUILD_COMMIT_SHA}" ]; then
+  echo "rollback-self-update: web-ui meldet nicht den erwarteten Build-Commit \${BUILD_COMMIT_SHA}." >&2
+  exit 1
+fi
 EOF
 
 if [ -n "${HEALTH_URL}" ]; then

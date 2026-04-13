@@ -736,24 +736,30 @@ def _ui_build_info() -> dict[str, str]:
     build_timestamp_display = _format_build_timestamp(build_timestamp_raw)
     build_commit_sha = build_info.get("build_commit_sha", "")
     build_ref = build_info.get("build_git_ref", "")
+    build_mismatch = bool(build_commit_sha and git_sha and build_commit_sha != git_sha)
+    display_commit_sha = build_commit_sha or git_sha or ""
 
     display_parts = [f"Version {APP_VERSION}"]
-    if git_sha:
-        display_parts.append(git_sha)
+    if display_commit_sha:
+        display_parts.append(display_commit_sha)
     if build_timestamp_display:
         display_parts.append(f"Build {build_timestamp_display}")
+    if build_mismatch and git_sha:
+        display_parts.append(f"Host {git_sha}")
 
     full_parts = [f"Version {APP_VERSION}"]
     if git_branch:
         full_parts.append(f"Branch {git_branch}")
+    if build_commit_sha:
+        full_parts.append(f"Build-Commit {build_commit_sha}")
     if git_sha:
         full_parts.append(f"Laufender Commit {git_sha}")
     if build_ref:
         full_parts.append(f"Build-Ref {build_ref}")
-    if build_commit_sha:
-        full_parts.append(f"Build-Commit {build_commit_sha}")
     if build_timestamp_display:
         full_parts.append(f"Gebaut {build_timestamp_display}")
+    if build_mismatch:
+        full_parts.append("Warnung Host-Checkout und laufender Build unterscheiden sich")
     if repo_path_display:
         full_parts.append(f"Repo {repo_path_display}")
 
@@ -766,6 +772,7 @@ def _ui_build_info() -> dict[str, str]:
         "build_timestamp_display": build_timestamp_display,
         "build_commit_sha": build_commit_sha,
         "build_git_ref": build_ref,
+        "build_mismatch": "true" if build_mismatch else "",
         "display": " · ".join(display_parts),
         "full_label": " · ".join(full_parts),
     }

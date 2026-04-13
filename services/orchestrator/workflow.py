@@ -407,6 +407,12 @@ class WorkflowOrchestrator:
             provider, route = resolve_worker_route(self.settings, worker_name)
         except Exception as exc:  # pragma: no cover - defensive only, route loading is tested separately.
             return {"route_error": str(exc)}
+        return self._route_summary_payload(provider, route)
+
+    @staticmethod
+    def _route_summary_payload(provider, route) -> dict[str, Any]:
+        """Normalize provider and route details into one stable, JSON-friendly structure."""
+
         return {
             "provider": provider.name,
             "fallback_provider": route.fallback_provider,
@@ -418,6 +424,46 @@ class WorkflowOrchestrator:
             "routing_note": route.routing_note,
             "purpose": route.purpose,
         }
+
+    def _build_worker_route_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Freeze one route summary per worker so long tasks stay reproducible even if routing changes later."""
+
+        snapshot: dict[str, dict[str, Any]] = {}
+        for worker_name in WORKER_STAGE_DESCRIPTIONS:
+            snapshot[worker_name] = self._model_route_summary(worker_name)
+        return snapshot
+
+    def _ensure_execution_snapshots(self, state: WorkflowState) -> WorkflowState:
+        """Persist one immutable guidance/routing snapshot for the task's remaining lifetime."""
+
+        metadata = dict(state.get("metadata", {}))
+        metadata_updates: dict[str, Any] = {}
+
+        guidance_snapshot = metadata.get("worker_guidance_snapshot")
+        if not isinstance(guidance_snapshot, dict) or not guidance_snapshot:
+            guidance_snapshot = self.worker_governance_service.guidance_map()
+            metadata_updates["worker_guidance_snapshot"] = guidance_snapshot
+
+        route_snapshot = metadata.get("worker_route_snapshot")
+        if not isinstance(route_snapshot, dict) or not route_snapshot:
+            route_snapshot = self._build_worker_route_snapshot()
+            metadata_updates["worker_route_snapshot"] = route_snapshot
+
+        if metadata_updates:
+            self.task_service.update_runtime_context(state["task_id"], metadata_updates=metadata_updates)
+            metadata.update(metadata_updates)
+
+        return {**state, "metadata": metadata}
+
+    def _frozen_model_route_summary(self, state: WorkflowState, worker_name: str) -> dict[str, Any]:
+        """Return the persisted per-task model route, falling back to the live route only when no snapshot exists yet."""
+
+        route_snapshot = state.get("metadata", {}).get("worker_route_snapshot", {})
+        if isinstance(route_snapshot, dict):
+            route_summary = route_snapshot.get(worker_name)
+            if isinstance(route_summary, dict) and route_summary:
+                return route_summary
+        return self._model_route_summary(worker_name)
 
     def _truncate_text(self, value: str, max_length: int = 220) -> str:
         """Keep UI-facing progress summaries short enough for dashboards and event cards."""
@@ -743,6 +789,20 @@ class WorkflowOrchestrator:
         return self._task_to_state(task)
 
     async def _deploy_node(self, state: WorkflowState) -> WorkflowState:
+        deploy_metadata = dict(state.get("metadata", {}))
+        deployment_commit_sha = str(
+            deploy_metadata.get("deployment_target_commit_sha")
+            or state.get("worker_results", {}).get("github", {}).get("outputs", {}).get("commit_sha")
+            or ""
+        ).strip()
+        if deployment_commit_sha and deploy_metadata.get("deployment_target_commit_sha") != deployment_commit_sha:
+            self.task_service.update_runtime_context(
+                state["task_id"],
+                metadata_updates={"deployment_target_commit_sha": deployment_commit_sha},
+            )
+            deploy_metadata["deployment_target_commit_sha"] = deployment_commit_sha
+            state = {**state, "metadata": deploy_metadata}
+
         stage_state = await self._run_stage(
             state=state,
             worker_name="deploy",
@@ -862,10 +922,11 @@ class WorkflowOrchestrator:
     ) -> WorkflowState:
         """Shared worker-stage behavior with logging, retries, persistence, and failure handling."""
 
+        state = self._ensure_execution_snapshots(state)
         task_id = state["task_id"]
         logger = TaskLoggerAdapter(self.logger.logger, {"service": self.settings.service_name, "task_id": task_id})
         stage_meta = self._stage_metadata(worker_name)
-        route_summary = self._model_route_summary(worker_name)
+        route_summary = self._frozen_model_route_summary(state, worker_name)
         started_at_iso = datetime.now(UTC).isoformat()
         self.task_service.update_status(
             task_id,
@@ -1087,10 +1148,15 @@ class WorkflowOrchestrator:
 
     def _build_worker_request(self, state: WorkflowState, worker_name: str) -> WorkerRequest:
         metadata = dict(state.get("metadata", {}))
-        guidance_map = self.worker_governance_service.guidance_map()
+        guidance_map = metadata.get("worker_guidance_snapshot")
+        if not isinstance(guidance_map, dict) or not guidance_map:
+            guidance_map = self.worker_governance_service.guidance_map()
         metadata["worker_guidance_map"] = guidance_map
         metadata["current_worker_guidance"] = guidance_map.get(worker_name)
         metadata["current_worker_name"] = worker_name
+        route_snapshot = metadata.get("worker_route_snapshot")
+        if isinstance(route_snapshot, dict):
+            metadata["current_worker_route"] = route_snapshot.get(worker_name)
         return WorkerRequest(
             task_id=state["task_id"],
             goal=state["goal"],

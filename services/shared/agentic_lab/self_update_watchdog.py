@@ -14,6 +14,8 @@ How to debug:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -42,6 +44,7 @@ class SelfUpdateWatchdogState(BaseModel):
     task_id: str
     status: SelfUpdateWatchdogStatus
     branch_name: str
+    target_commit_sha: str | None = None
     health_url: str
     project_dir: str
     compose_file: str
@@ -78,7 +81,18 @@ def write_watchdog_state(state: SelfUpdateWatchdogState, settings: Settings | No
     target_path = watchdog_state_path(state.task_id, settings)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     payload = state.model_dump(mode="json")
-    target_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=target_path.parent,
+        prefix=f"{target_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(serialized)
+        temp_path = Path(handle.name)
+    os.replace(temp_path, target_path)
     return target_path
 
 
@@ -88,5 +102,8 @@ def read_watchdog_state(task_id: str, settings: Settings | None = None) -> SelfU
     target_path = watchdog_state_path(task_id, settings)
     if not target_path.exists():
         return None
-    raw = json.loads(target_path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(target_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
     return SelfUpdateWatchdogState.model_validate(raw)

@@ -421,9 +421,10 @@ def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list
     """Fallback file discovery: grep Python sources for keywords from the goal.
 
     Used when architecture/research workers returned no valid file paths. Extracts
-    short keyword tokens from the goal and searches .py files for matches.
+    short keyword tokens from the goal and searches common code, config, and UI files for matches.
     """
     import re
+    import shutil
     import subprocess
 
     stopwords = {"add", "the", "to", "in", "for", "a", "an", "and", "or", "with", "of", "from", "on", "by"}
@@ -431,17 +432,36 @@ def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list
     if not tokens:
         return []
 
+    rg_path = shutil.which("rg")
+    candidate_globs = (
+        "*.py",
+        "*.sh",
+        "*.yaml",
+        "*.yml",
+        "*.json",
+        "*.toml",
+        "*.md",
+        "*.html",
+        "*.css",
+        "Dockerfile*",
+    )
     hits: dict[str, int] = {}
     for token in tokens[:4]:
         try:
-            result = subprocess.run(
-                ["grep", "-rl", "--include=*.py", token, str(repo_path)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            if rg_path:
+                command = [rg_path, "-l", "-i"]
+                for candidate_glob in candidate_globs:
+                    command.extend(["-g", candidate_glob])
+                command.extend([token, str(repo_path)])
+            else:
+                command = ["grep", "-rli", token, str(repo_path)]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
             for line in result.stdout.splitlines():
-                rel = str(Path(line).relative_to(repo_path))
+                path = Path(line)
+                try:
+                    rel = str(path.relative_to(repo_path))
+                except ValueError:
+                    continue
                 hits[rel] = hits.get(rel, 0) + 1
         except Exception:
             continue

@@ -52,6 +52,7 @@ logger = configure_logging(settings.service_name, settings.log_level)
 class SelfUpdateWatchdogStartRequest(BaseModel):
     task_id: str
     branch_name: str
+    target_commit_sha: str | None = None
     ssh_user: str
     ssh_host: str
     ssh_port: int
@@ -137,6 +138,7 @@ async def start_watchdog(request: SelfUpdateWatchdogStartRequest) -> SelfUpdateW
         task_id=request.task_id,
         status=SelfUpdateWatchdogStatus.ARMED,
         branch_name=request.branch_name,
+        target_commit_sha=(request.target_commit_sha or "").strip() or None,
         health_url=request.health_url,
         project_dir=request.project_dir,
         compose_file=request.compose_file,
@@ -258,7 +260,9 @@ async def _monitor_self_update(
         state.updated_at = datetime.now(UTC)
         state.last_heartbeat_at = state.updated_at
         state.current_sha = _read_remote_head(request)
-        if state.current_sha and state.previous_sha and state.current_sha != state.previous_sha:
+        if state.target_commit_sha:
+            state.observed_target_change = bool(state.current_sha and state.current_sha == state.target_commit_sha)
+        elif state.current_sha and state.previous_sha and state.current_sha != state.previous_sha:
             state.observed_target_change = True
 
         health_ok = await _healthcheck_ok(request.health_url)
@@ -276,9 +280,12 @@ async def _monitor_self_update(
         write_watchdog_state(state, settings)
 
     state.status = SelfUpdateWatchdogStatus.TIMED_OUT
-    state.last_error = (
-        f"Self-update blieb laenger als {timeout_seconds:.0f}s ohne bestaetigte gesunde Rueckkehr."
+    target_hint = (
+        f" fuer Ziel-Commit {state.target_commit_sha}"
+        if state.target_commit_sha
+        else ""
     )
+    state.last_error = f"Self-update blieb laenger als {timeout_seconds:.0f}s ohne bestaetigte gesunde Rueckkehr{target_hint}."
     state.notes.append("Timeout reached; host rollback will be attempted.")
     write_watchdog_state(state, settings)
     await _run_host_rollback(request, state)

@@ -255,12 +255,13 @@ Warum:
 - das Skript wartet, bis der gewünschte Commit wirklich auf `origin/<branch>` sichtbar ist
 - es bewegt den lokalen Branch nur per Fast-Forward auf genau diesen Commit
 - es exportiert Build-Metadaten für Docker, damit die Web-UI danach Commit **und** Build-Zeit klar anzeigen kann
+- es prüft nach dem Rebuild, ob der laufende `web-ui`-Container wirklich den erwarteten Build-Commit meldet
 
 Beispiel:
 
 ```bash
 cd /mnt/user/appdata/feberdin-agent-team/repo
-./scripts/unraid/update-to-commit.sh dbc485262814 main
+./scripts/unraid/update-to-commit.sh <commit-sha> main
 ```
 
 Wenn der Commit noch nicht auf GitHub angekommen ist, wartet das Skript automatisch weiter und bricht erst nach dem konfigurierbaren Timeout sauber mit einer lesbaren Fehlermeldung ab.

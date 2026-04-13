@@ -146,6 +146,7 @@ async def test_self_update_watchdog_marks_healthy_after_sha_change_and_health_re
     request = rollback_app.SelfUpdateWatchdogStartRequest(
         task_id="watch-healthy",
         branch_name="feature/self-update",
+        target_commit_sha="bbb222",
         ssh_user="root",
         ssh_host="tower.local",
         ssh_port=22,
@@ -176,6 +177,7 @@ async def test_self_update_watchdog_marks_healthy_after_sha_change_and_health_re
     assert persisted is not None
     assert persisted.status == SelfUpdateWatchdogStatus.HEALTHY
     assert persisted.observed_target_change is True
+    assert persisted.current_sha == "bbb222"
     assert rollback_called["value"] is False
 
 
@@ -206,6 +208,7 @@ async def test_self_update_watchdog_triggers_host_rollback_after_timeout(
     request = rollback_app.SelfUpdateWatchdogStartRequest(
         task_id="watch-timeout",
         branch_name="feature/self-update",
+        target_commit_sha="bbb222",
         ssh_user="root",
         ssh_host="tower.local",
         ssh_port=22,
@@ -234,4 +237,68 @@ async def test_self_update_watchdog_triggers_host_rollback_after_timeout(
     persisted = read_watchdog_state(request.task_id, settings)
     assert persisted is not None
     assert persisted.status == SelfUpdateWatchdogStatus.ROLLED_BACK
+    assert rollback_called["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_self_update_watchdog_does_not_accept_the_wrong_new_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _rollback_settings(tmp_path, monkeypatch)
+    rollback_app = _load_rollback_module()
+    monkeypatch.setattr(rollback_app, "settings", settings)
+
+    observed_heads = iter(["aaa111", "ccc333", "ccc333", "ccc333"])
+    monkeypatch.setattr(rollback_app, "_read_remote_head", lambda request: next(observed_heads, "ccc333"))
+
+    async def fake_health(_url: str) -> bool:
+        return True
+
+    rollback_called = {"value": False}
+
+    async def fake_rollback(_request, state) -> None:
+        rollback_called["value"] = True
+        state.status = SelfUpdateWatchdogStatus.ROLLED_BACK
+        state.last_error = None
+        write_watchdog_state(state, settings)
+
+    monkeypatch.setattr(rollback_app, "_healthcheck_ok", fake_health)
+    monkeypatch.setattr(rollback_app, "_run_host_rollback", fake_rollback)
+
+    request = rollback_app.SelfUpdateWatchdogStartRequest(
+        task_id="watch-wrong-commit",
+        branch_name="feature/self-update",
+        target_commit_sha="bbb222",
+        ssh_user="root",
+        ssh_host="tower.local",
+        ssh_port=22,
+        ssh_key_file="",
+        project_dir="/mnt/user/appdata/feberdin-agent-team/repo",
+        compose_file="docker-compose.yml",
+        health_url="http://tower.local:18080/health",
+        poll_seconds=0.01,
+        timeout_seconds=0.05,
+    )
+    state = SelfUpdateWatchdogState(
+        task_id=request.task_id,
+        status=SelfUpdateWatchdogStatus.ARMED,
+        branch_name=request.branch_name,
+        target_commit_sha=request.target_commit_sha,
+        health_url=request.health_url,
+        project_dir=request.project_dir,
+        compose_file=request.compose_file,
+        ssh_host=request.ssh_host,
+        ssh_user=request.ssh_user,
+        ssh_port=request.ssh_port,
+        previous_sha="aaa111",
+    )
+
+    await rollback_app._monitor_self_update(request, state)  # pyright: ignore[reportPrivateUsage]
+
+    persisted = read_watchdog_state(request.task_id, settings)
+    assert persisted is not None
+    assert persisted.status == SelfUpdateWatchdogStatus.ROLLED_BACK
+    assert persisted.current_sha == "ccc333"
+    assert persisted.observed_target_change is False
     assert rollback_called["value"] is True

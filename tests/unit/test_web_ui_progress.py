@@ -175,6 +175,41 @@ def test_ui_build_info_reads_baked_build_metadata_and_formats_local_time(tmp_pat
     assert info["display"] == "Version 0.1.0 · deadbeefcafe · Build Mo 13.04.2026 19:02:19 CEST"
 
 
+def test_ui_build_info_highlights_when_running_repo_head_differs_from_built_image(tmp_path, monkeypatch) -> None:
+    build_info_path = tmp_path / "build-info.json"
+    build_info_path.write_text(
+        json.dumps(
+            {
+                "build_commit_sha": "built12345678",
+                "build_git_ref": "main",
+                "build_timestamp_utc": "2026-04-13T17:02:19Z",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FEBERDIN_BUILD_INFO_PATH", str(build_info_path))
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    def fake_git_metadata(_repo_path, *args):
+        if args == ("rev-parse", "--short=12", "HEAD"):
+            return "live99999999"
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main"
+        return None
+
+    monkeypatch.setattr(app_module, "_run_git_metadata_command", fake_git_metadata)
+    app_module._ui_build_info.cache_clear()
+
+    info = app_module._ui_build_info()
+
+    assert info["build_commit_sha"] == "built12345678"
+    assert info["git_sha"] == "live99999999"
+    assert info["build_mismatch"] == "true"
+    assert "Host live99999999" in info["display"]
+    assert "Warnung Host-Checkout und laufender Build unterscheiden sich" in info["full_label"]
+
+
 def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     now = datetime.now(UTC).isoformat()

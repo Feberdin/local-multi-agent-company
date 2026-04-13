@@ -157,6 +157,29 @@ def test_git_revert_backend_prepares_a_deterministic_rollback(
     assert Path(response.artifacts[0].path).exists() is True
 
 
+def test_candidate_search_considers_config_and_shell_files_when_python_hints_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    (repo_path / "docker-compose.override.yaml").write_text(
+        "services:\n  app:\n    healthcheck:\n      test: ['CMD', 'curl', '-f', 'http://localhost/health']\n",
+        encoding="utf-8",
+    )
+    (repo_path / "scripts").mkdir()
+    (repo_path / "scripts" / "health-check.sh").write_text("#!/bin/sh\necho healthcheck\n", encoding="utf-8")
+
+    candidates = coding_app._grep_for_candidates(  # pyright: ignore[reportPrivateUsage]
+        repo_path,
+        "Improve the healthcheck handling in the local deployment scripts",
+        max_files=6,
+    )
+
+    assert "docker-compose.override.yaml" in candidates or "scripts/health-check.sh" in candidates
+
+
 @pytest.mark.asyncio
 async def test_local_patch_backend_recovers_when_primary_model_returns_prose(
     tmp_path: Path,

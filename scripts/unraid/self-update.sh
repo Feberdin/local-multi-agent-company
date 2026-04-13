@@ -11,12 +11,13 @@ set -eu
 PROJECT_DIR="${1:?missing project dir on unraid host}"
 COMPOSE_FILE="${2:?missing compose file}"
 BRANCH_NAME="${3:?missing branch name}"
-SSH_USER="${4:?missing ssh user}"
-SSH_HOST="${5:?missing ssh host}"
-SSH_PORT="${6:?missing ssh port}"
-HEALTH_URL="${7:-}"
-SSH_KEY="${8:-}"
-TASK_ID="${9:-manual-self-update}"
+TARGET_COMMIT_SHA="${4:?missing target commit sha}"
+SSH_USER="${5:?missing ssh user}"
+SSH_HOST="${6:?missing ssh host}"
+SSH_PORT="${7:?missing ssh port}"
+HEALTH_URL="${8:-}"
+SSH_KEY="${9:-}"
+TASK_ID="${10:-manual-self-update}"
 
 REMOTE="${SSH_USER}@${SSH_HOST}"
 
@@ -54,38 +55,28 @@ set -eu
 PROJECT_DIR="\$1"
 COMPOSE_FILE="\$2"
 BRANCH_NAME="\$3"
+TARGET_COMMIT_SHA="\$4"
+HEALTH_URL="\$5"
 
 services_without_rollback() {
   docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" config --services | grep -v '^rollback-worker$' | tr '\n' ' '
 }
-
-SERVICES="\$(services_without_rollback)"
-
-export_build_metadata() {
-  BUILD_COMMIT_SHA="\$(git -C "\${PROJECT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo "")"
-  BUILD_GIT_REF="\${BRANCH_NAME}"
-  BUILD_BUILT_AT_UTC="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  export BUILD_COMMIT_SHA BUILD_GIT_REF BUILD_BUILT_AT_UTC
-}
-
-git -C "\${PROJECT_DIR}" fetch origin
-git -C "\${PROJECT_DIR}" checkout "\${BRANCH_NAME}"
-git -C "\${PROJECT_DIR}" pull --ff-only origin "\${BRANCH_NAME}" || true
-echo "self-update: checked out \${BRANCH_NAME}"
-export_build_metadata
-
-if [ -n "\${SERVICES}" ]; then
-  # Why this exists: the rollback worker must stay alive while the rest of the stack restarts.
-  # What happens here: rebuild every service except `rollback-worker`, so health monitoring survives the rollout.
-  docker compose -f "\${PROJECT_DIR}/\${COMPOSE_FILE}" up -d --build \${SERVICES}
-else
-  docker compose -f "\${PROJECT_DIR}/\${COMPOSE_FILE}" up -d --build
+UPDATE_SCRIPT="\${PROJECT_DIR}/scripts/unraid/update-to-commit.sh"
+if [ ! -x "\${UPDATE_SCRIPT}" ]; then
+  echo "self-update: exact commit updater missing at \${UPDATE_SCRIPT}." >&2
+  exit 1
 fi
-echo "self-update: rollout dispatched"
+
+cd "\${PROJECT_DIR}"
+COMPOSE_FILE_PATH="\${COMPOSE_FILE}" \
+VERIFY_HEALTH_URL="${HEALTH_URL}" \
+KEEP_RUNNING_SERVICES="rollback-worker" \
+"\${UPDATE_SCRIPT}" "\${TARGET_COMMIT_SHA}" "\${BRANCH_NAME}"
+echo "self-update: rollout to \${TARGET_COMMIT_SHA} dispatched"
 REMOTE_SCRIPT
 
 chmod +x "\${SCRIPT_PATH}"
-nohup "\${SCRIPT_PATH}" "${PROJECT_DIR}" "${COMPOSE_FILE}" "${BRANCH_NAME}" > "\${LOG_PATH}" 2>&1 < /dev/null &
+nohup "\${SCRIPT_PATH}" "${PROJECT_DIR}" "${COMPOSE_FILE}" "${BRANCH_NAME}" "${TARGET_COMMIT_SHA}" "${HEALTH_URL}" > "\${LOG_PATH}" 2>&1 < /dev/null &
 printf '%s\n' "\$!" > "\${STATE_DIR}/pid"
 echo "self-update: detached rollout pid \$(cat "\${STATE_DIR}/pid")"
 EOF

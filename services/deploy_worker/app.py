@@ -32,6 +32,7 @@ app = FastAPI(title="Feberdin Deploy Worker", version="0.1.0")
 class SelfUpdateWatchdogStartRequest(BaseModel):
     task_id: str
     branch_name: str
+    target_commit_sha: str
     ssh_user: str
     ssh_host: str
     ssh_port: int
@@ -84,6 +85,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 settings.staging_ssh_user,
                 settings.staging_host,
                 str(settings.staging_ssh_port),
+                healthcheck_url,
             ],
             timeout=900,
         )
@@ -141,8 +143,20 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
             errors=["SELF_HOST_HEALTH_URL is not set. The rollback worker needs a reachable health URL to supervise the rollout."],
         )
 
+    target_commit_sha = _resolve_self_update_target_commit(request)
+    if target_commit_sha is None:
+        return WorkerResponse(
+            worker="deploy",
+            success=False,
+            summary="Self-update commit konnte nicht eindeutig bestimmt werden.",
+            errors=[
+                "Im Deploy-Request fehlt ein verifizierter Ziel-Commit. "
+                "Der Self-Update-Pfad ist jetzt commit-pinned und bricht ohne commit_sha aus dem GitHub-Schritt bewusst ab."
+            ],
+        )
+
     try:
-        watchdog_state = await _start_self_update_watchdog(request.task_id, branch_name)
+        watchdog_state = await _start_self_update_watchdog(request.task_id, branch_name, target_commit_sha)
     except httpx.HTTPError as exc:
         return WorkerResponse(
             worker="deploy",
@@ -152,7 +166,12 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
         )
 
     script_path = Path("/app/scripts/unraid/self-update.sh")
-    task_logger.info("Self-update: deploying branch %s to %s", branch_name, settings.self_host_ssh_host)
+    task_logger.info(
+        "Self-update: deploying branch %s at commit %s to %s",
+        branch_name,
+        target_commit_sha,
+        settings.self_host_ssh_host,
+    )
 
     try:
         completed = run_command(
@@ -162,6 +181,7 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
                 settings.self_host_project_dir,
                 settings.self_host_compose_file,
                 branch_name,
+                target_commit_sha,
                 settings.self_host_ssh_user,
                 settings.self_host_ssh_host,
                 str(settings.self_host_ssh_port),
@@ -184,6 +204,7 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
         "stdout": completed.stdout[-6000:],
         "stderr": completed.stderr[-6000:],
         "branch": branch_name,
+        "target_commit_sha": target_commit_sha,
         "host": settings.self_host_ssh_host,
         "project_dir": settings.self_host_project_dir,
         "watchdog": watchdog_state.model_dump(mode="json"),
@@ -199,6 +220,7 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
         ),
         outputs={
             "branch_name": branch_name,
+            "target_commit_sha": target_commit_sha,
             "host": settings.self_host_ssh_host,
             "project_dir": settings.self_host_project_dir,
             "health_url": settings.self_host_health_url,
@@ -216,12 +238,13 @@ async def _run_self_update(request, task_logger, branch_name: str) -> WorkerResp
     )
 
 
-async def _start_self_update_watchdog(task_id: str, branch_name: str) -> SelfUpdateWatchdogState:
+async def _start_self_update_watchdog(task_id: str, branch_name: str, target_commit_sha: str) -> SelfUpdateWatchdogState:
     """Arm the dedicated rollback worker before the self-update restarts the rest of the stack."""
 
     payload = SelfUpdateWatchdogStartRequest(
         task_id=task_id,
         branch_name=branch_name,
+        target_commit_sha=target_commit_sha,
         ssh_user=settings.self_host_ssh_user,
         ssh_host=settings.self_host_ssh_host,
         ssh_port=settings.self_host_ssh_port,
@@ -239,6 +262,18 @@ async def _start_self_update_watchdog(task_id: str, branch_name: str) -> SelfUpd
         )
         response.raise_for_status()
     return SelfUpdateWatchdogState.model_validate(response.json())
+
+
+def _resolve_self_update_target_commit(request: WorkerRequest) -> str | None:
+    """Read the exact commit that must be deployed so self-updates never roll to a moving branch head."""
+
+    metadata_commit = str(request.metadata.get("deployment_target_commit_sha") or "").strip()
+    if metadata_commit:
+        return metadata_commit
+
+    github_outputs = (request.prior_results.get("github") or {}).get("outputs", {})
+    commit_sha = str(github_outputs.get("commit_sha") or "").strip()
+    return commit_sha or None
 
 
 def _mark_watchdog_dispatch_failed(task_id: str, error_text: str) -> None:

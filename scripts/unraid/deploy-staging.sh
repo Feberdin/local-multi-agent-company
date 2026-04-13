@@ -13,6 +13,7 @@ BRANCH_NAME="${4:?missing branch name}"
 SSH_USER="${5:?missing ssh user}"
 SSH_HOST="${6:?missing ssh host}"
 SSH_PORT="${7:?missing ssh port}"
+HEALTHCHECK_URL="${8:-}"
 
 if [ ! -d "${LOCAL_REPO_PATH}/.git" ]; then
   echo "Expected a local git checkout at ${LOCAL_REPO_PATH}." >&2
@@ -23,6 +24,7 @@ if ! git -C "${LOCAL_REPO_PATH}" rev-parse --verify "${BRANCH_NAME}" >/dev/null 
   echo "Local branch ${BRANCH_NAME} does not exist." >&2
   exit 1
 fi
+TARGET_COMMIT_SHA="$(git -C "${LOCAL_REPO_PATH}" rev-parse --short=12 "${BRANCH_NAME}")"
 
 REMOTE="${SSH_USER}@${SSH_HOST}"
 
@@ -40,12 +42,8 @@ printf '%s\n' "\${PREVIOUS_SHA}" > "${PROJECT_DIR}/.agentic-releases/previous.sh
 
 git -C "${PROJECT_DIR}" fetch origin
 git -C "${PROJECT_DIR}" checkout "${BRANCH_NAME}"
-git -C "${PROJECT_DIR}" pull --ff-only origin "${BRANCH_NAME}"
-
-BUILD_COMMIT_SHA="\$(git -C "${PROJECT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo "")"
-BUILD_GIT_REF="${BRANCH_NAME}"
-BUILD_BUILT_AT_UTC="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export BUILD_COMMIT_SHA BUILD_GIT_REF BUILD_BUILT_AT_UTC
-
-docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" up -d --build
+cd "${PROJECT_DIR}"
+COMPOSE_FILE_PATH="${COMPOSE_FILE}" \
+VERIFY_HEALTH_URL="${HEALTHCHECK_URL}" \
+"${PROJECT_DIR}/scripts/unraid/update-to-commit.sh" "${TARGET_COMMIT_SHA}" "${BRANCH_NAME}"
 EOF
