@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,6 +56,7 @@ PROBE_WORKER_LABELS: dict[str, str] = {
 }
 PROBE_HISTORY_LIMIT = 10
 PROBE_MAX_TOKENS = 320
+FOCUS_CONTEXT_MAX_CHARS = 2200
 
 
 class WorkerProbeError(RuntimeError):
@@ -421,6 +423,7 @@ class WorkerProbeService:
                 + "\n".join(f"- {path}" for path in focus_paths)
                 + "\n\n"
             )
+        focus_context_block = self._focus_context_block(focus_paths)
         targeted_probe_note = (
             "Dies ist ein fokussierter Teiltest nur fuer den ausgewaehlten Worker. "
             if selected_worker_count == 1
@@ -452,6 +455,7 @@ class WorkerProbeService:
                 (
                     f"Original Auftrag:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     f"{targeted_probe_note}"
                     "Dies ist nur ein schneller Modell-Probelauf. "
                     "Formuliere die Antwort kurz, aber vollstaendig und gut lesbar."
@@ -465,6 +469,7 @@ class WorkerProbeService:
                 (
                     f"Probe-Auftrag:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     f"Repository: Feberdin/local-multi-agent-company\n"
                     f"Vermutete Kandidatdateien: {candidate_files}\n"
                     "Wichtig: Dies ist ein schneller Probelauf ohne echten Repo-Zugriff. "
@@ -483,6 +488,7 @@ class WorkerProbeService:
             ), (
                 f"Goal:\n{probe_goal}\n\n"
                 f"{focus_block}"
+                f"{focus_context_block}"
                 "Research summary:\n"
                 f"- Candidate files: {candidate_files}\n"
                 "- Main risk: observability changes can accidentally leak debug data.\n"
@@ -496,8 +502,10 @@ class WorkerProbeService:
                 (
                     f"Goal:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     f"{targeted_probe_note}"
-                    "No real repository access is available. Return the smallest useful edit plan that proves you "
+                    "Use the provided file context and do not claim missing file access when excerpts or diffs are present. "
+                    "Return the smallest useful edit plan that proves you "
                     "understood the fix focus. Touch only these files:\n"
                     + "\n".join(f"- {path}" for path in candidate_files[:4])
                     + "\nUse at most one small operation per relevant file, avoid long file contents, and never invent unrelated files."
@@ -511,6 +519,7 @@ class WorkerProbeService:
                 (
                     f"Goal:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     f"Changed files:\n{candidate_files[:2]}\n\n"
                     f"Unified diff:\n{synthetic_diff}\n\n"
                     "List only the most important review observations."
@@ -523,6 +532,7 @@ class WorkerProbeService:
                 (
                     f"Goal:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     f"Changed files:\n{candidate_files[:2]}\n\n"
                     f"Unified diff:\n{synthetic_diff}\n\n"
                     "Focus on secret exposure, debug leakage, and operator-safe defaults."
@@ -536,6 +546,7 @@ class WorkerProbeService:
             ), (
                 f"Original Auftrag:\n{probe_goal}\n\n"
                 f"{focus_block}"
+                f"{focus_context_block}"
                 f"Validation input:\n{validation_input}\n\n"
                 f"Security input:\n{security_input}\n\n"
                 "Be strict and separate verified evidence from assumptions."
@@ -546,6 +557,7 @@ class WorkerProbeService:
             (
                 f"Goal:\n{probe_goal}\n\n"
                 f"{focus_block}"
+                f"{focus_context_block}"
                 f"Validation:\n{validation_input}\n\n"
                 f"Security:\n{security_input}\n\n"
                 "Write a short operator handoff that is easy to skim in a benchmark UI."
@@ -569,6 +581,7 @@ class WorkerProbeService:
                 + "\n".join(f"- {path}" for path in focus_paths)
                 + "\n\n"
             )
+        focus_context_block = self._focus_context_block(focus_paths)
 
         if definition.worker_name == "requirements":
             return (
@@ -580,6 +593,7 @@ class WorkerProbeService:
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     "Return only the smallest valid JSON payload that proves the requirements contract works."
                 ),
             )
@@ -587,7 +601,12 @@ class WorkerProbeService:
             return (
                 "You are a research lead. Return plain text only. Reply with exactly `OK` and nothing else."
                 f"{guidance_block}",
-                f"This is an empty contract smoke test.\n\n{focus_block}Do not add sections, explanations, or markdown fences.",
+                (
+                    "This is an empty contract smoke test.\n\n"
+                    f"{focus_block}"
+                    f"{focus_context_block}"
+                    "Do not add sections, explanations, or markdown fences."
+                ),
             )
         if definition.worker_name == "architecture":
             return (
@@ -607,6 +626,7 @@ class WorkerProbeService:
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     "Return exactly the minimal JSON skeleton from the system prompt with the same keys and the same "
                     "overall structure. Do not omit any key."
                 ),
@@ -620,6 +640,7 @@ class WorkerProbeService:
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
                     f"{focus_block}"
+                    f"{focus_context_block}"
                     "Do not invent file operations. Prove only that the edit_plan contract can be emitted cleanly."
                 ),
             )
@@ -628,7 +649,7 @@ class WorkerProbeService:
                 "You are a strict reviewer. Return a single JSON object with keys findings and warnings. "
                 "Use the smallest valid payload with 'OK' content. No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}{focus_context_block}",
             )
         if definition.worker_name == "security":
             return (
@@ -636,7 +657,7 @@ class WorkerProbeService:
                 "requires_human_approval, approval_reason. Use the smallest valid payload with 'OK' content and "
                 "requires_human_approval false. No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}{focus_context_block}",
             )
         if definition.worker_name == "validation":
             return (
@@ -644,7 +665,7 @@ class WorkerProbeService:
                 "residual_risks, release_readiness, recommendation. Use the smallest valid payload with 'OK' content. "
                 "No prose outside the JSON object."
                 f"{guidance_block}",
-                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}",
+                f"Contract smoke test:\n{probe_goal}\n\n{focus_block}{focus_context_block}",
             )
         return (
             "You are a documentation lead. Return markdown only with these sections: Summary, Validation, Risks, Deployment Notes, "
@@ -653,6 +674,7 @@ class WorkerProbeService:
             (
                 f"Contract smoke test:\n{probe_goal}\n\n"
                 f"{focus_block}"
+                f"{focus_context_block}"
                 "Return the smallest valid markdown handoff with exactly the requested headings."
             ),
         )
@@ -668,6 +690,14 @@ class WorkerProbeService:
             base_branch="main",
             metadata={"focus_paths": list(self._find_run(run_id).focus_paths)},
         )
+
+    def _focus_context_block(self, focus_paths: list[str]) -> str:
+        """Load small real file excerpts or recent diffs so targeted probes can inspect the actual fix area."""
+
+        context = _build_focus_context(self.settings, focus_paths)
+        if not context:
+            return ""
+        return f"Verfuegbarer Dateikontext:\n{context}\n\n"
 
     def _find_run(self, run_id: str) -> WorkerProbeRunResponse:
         registry = self.load_registry()
@@ -747,6 +777,91 @@ def _normalize_focus_paths(raw_paths: list[str] | tuple[str, ...] | None) -> tup
         if len(normalized) >= 8:
             break
     return tuple(normalized)
+
+
+def _build_focus_context(settings: Settings, focus_paths: list[str]) -> str:
+    """Return compact git diff or file excerpts for focused probe files without mutating the repository."""
+
+    repo_root = _resolve_probe_repo_root(settings)
+    if repo_root is None or not focus_paths:
+        return ""
+
+    sections: list[str] = []
+    for path in focus_paths:
+        normalized_path = str(path or "").strip().replace("\\", "/")
+        if not normalized_path:
+            continue
+        diff_text = _read_git_focus_diff(repo_root, normalized_path)
+        if diff_text:
+            sections.append(f"[{normalized_path}] Letzter Commit-Diff\n{diff_text}")
+            continue
+        file_excerpt = _read_focus_file_excerpt(repo_root / normalized_path)
+        if file_excerpt:
+            sections.append(f"[{normalized_path}] Aktueller Auszug\n{file_excerpt}")
+    return "\n\n".join(sections)
+
+
+def _resolve_probe_repo_root(settings: Settings) -> Path | None:
+    """Locate the checked-out project root so probe prompts can inspect the latest fixed files."""
+
+    candidates = [
+        Path(settings.self_improvement_local_repo_path) if settings.self_improvement_local_repo_path else None,
+        Path(__file__).resolve().parents[3],
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def _read_git_focus_diff(repo_root: Path, relative_path: str) -> str:
+    """Read the last commit diff for one file so targeted probes see the actual recent fix area first."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "show", "--format=", "--unified=10", "HEAD", "--", relative_path],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return ""
+
+    content = completed.stdout.strip()
+    if not content:
+        return ""
+    return _clip_text(content, max_length=FOCUS_CONTEXT_MAX_CHARS)
+
+
+def _read_focus_file_excerpt(file_path: Path) -> str:
+    """Fallback to a compact file excerpt when no recent diff is available for the selected focus path."""
+
+    try:
+        lines = file_path.read_text("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+    if not lines:
+        return ""
+
+    numbered_head = [f"{index + 1:>4}: {line}" for index, line in enumerate(lines[:40])]
+    if len(lines) <= 60:
+        excerpt_lines = numbered_head + [f"{index + 1:>4}: {line}" for index, line in enumerate(lines[40:], start=40)]
+    else:
+        numbered_tail = [
+            f"{len(lines) - len(lines[-20:]) + offset + 1:>4}: {line}"
+            for offset, line in enumerate(lines[-20:])
+        ]
+        excerpt_lines = numbered_head + [" ...."] + numbered_tail
+    return _clip_text("\n".join(excerpt_lines), max_length=FOCUS_CONTEXT_MAX_CHARS)
 
 
 def _clip_text(value: str, *, max_length: int = 180) -> str:

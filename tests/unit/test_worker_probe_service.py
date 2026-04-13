@@ -220,6 +220,10 @@ async def test_worker_probe_service_runs_only_selected_workers_in_canonical_orde
     architecture_system_prompt, architecture_user_prompt = fake_llm.prompt_log["architecture"]
     assert "tests/unit/test_worker_probe_service.py" in architecture_user_prompt
     assert "services/web_ui/app.py" in architecture_user_prompt
+    coding_system_prompt, coding_user_prompt = fake_llm.prompt_log["coding"]
+    assert "Verfuegbarer Dateikontext" in coding_user_prompt
+    assert "do not claim missing file access" in coding_user_prompt.lower()
+    assert "Letzter Commit-Diff" in coding_user_prompt or "Aktueller Auszug" in coding_user_prompt
 
 
 async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_path, monkeypatch) -> None:
