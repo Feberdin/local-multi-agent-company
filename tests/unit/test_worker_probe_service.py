@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from services.shared.agentic_lab.config import get_settings
+from services.shared.agentic_lab.llm import LLMError
 from services.shared.agentic_lab.schemas import WorkerProbeMode, WorkerProbeRunStatus, WorkerProbeStartRequest
 from services.shared.agentic_lab.worker_probe_service import PROBE_WORKERS, WorkerProbeService
 
@@ -221,9 +222,47 @@ async def test_worker_probe_service_runs_only_selected_workers_in_canonical_orde
     assert "tests/unit/test_worker_probe_service.py" in architecture_user_prompt
     assert "services/web_ui/app.py" in architecture_user_prompt
     coding_system_prompt, coding_user_prompt = fake_llm.prompt_log["coding"]
+    assert "replace_lines" in coding_system_prompt
+    assert "`file`, `operation`, or `description`" in coding_system_prompt
     assert "Verfuegbarer Dateikontext" in coding_user_prompt
     assert "do not claim missing file access" in coding_user_prompt.lower()
     assert "Letzter Commit-Diff" in coding_user_prompt or "Aktueller Auszug" in coding_user_prompt
+
+
+class _FailingLLM:
+    async def complete_json_with_trace(self, **kwargs):
+        del kwargs
+        raise LLMError(
+            "Model did not return valid JSON for `coding`. "
+            "Provider `mistral` with model `mistral-small3.2:latest` returned JSON that did not satisfy the `edit_plan` contract. "
+            "Provider `mistral` JSON-repair attempt still returned no valid JSON."
+        )
+
+    async def complete_with_trace(self, **kwargs):
+        del kwargs
+        raise AssertionError("Text probe path should not be used in this test.")
+
+
+async def test_worker_probe_service_surfaces_fallback_and_repair_details_on_failure(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    service = WorkerProbeService(settings=settings, llm=_FailingLLM(), storage_path=storage_path)
+
+    run = await service.start_run(
+        WorkerProbeStartRequest(
+            probe_goal="Pruefe nur Code nach einem gezielten Fix.",
+            selected_workers=["coding"],
+            focus_paths=["services/shared/agentic_lab/worker_probe_service.py"],
+        )
+    )
+    finished = await service.execute_run(run.id)
+
+    assert finished.status == WorkerProbeRunStatus.COMPLETED
+    result = finished.results[0]
+    assert result.status == "failed"
+    assert result.used_fallback is True
+    assert result.repair_pass_used is True
+    assert "JSON-repair attempt" in result.response_text
 
 
 async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_path, monkeypatch) -> None:

@@ -20,6 +20,7 @@ from typing import Any
 from uuid import uuid4
 
 from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.edit_ops import EDIT_ACTION_CHOICES
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.model_routing import resolve_fallback_provider, resolve_worker_route
@@ -363,6 +364,7 @@ class WorkerProbeService:
             )
         except LLMError as exc:
             completed_at = _utc_now()
+            error_text = str(exc)
             return WorkerProbeResultResponse(
                 worker_name=worker_name,
                 worker_label=PROBE_WORKER_LABELS.get(worker_name, worker_name),
@@ -370,15 +372,16 @@ class WorkerProbeService:
                 output_contract=route.output_contract,
                 response_format=definition.response_format,
                 summary="Keine nutzbare Modellantwort erhalten.",
+                response_text=error_text,
                 provider=primary_provider.name,
                 model_name=primary_provider.model_name,
                 base_url=primary_provider.base_url,
-                used_fallback=False,
-                repair_pass_used=False,
+                used_fallback=bool(fallback_provider and f"`{fallback_provider.name}`" in error_text),
+                repair_pass_used="JSON-repair attempt" in error_text,
                 started_at=started_at,
                 completed_at=completed_at,
                 elapsed_seconds=round((completed_at - started_at).total_seconds(), 1),
-                error_message=str(exc),
+                error_message=error_text,
                 notes=[
                     f"Konfiguriertes Primärmodell: {primary_provider.name} / {primary_provider.model_name}",
                     (
@@ -497,7 +500,15 @@ class WorkerProbeService:
         if definition.worker_name == "coding":
             return (
                 "You are a careful coding worker. Return a single JSON edit plan with keys summary, operations, "
-                "and optionally blocking_reason. Keep it small, safe, and audit-friendly."
+                "and optionally blocking_reason. Keep it small, safe, and audit-friendly. "
+                "Allowed action values are: "
+                + ", ".join(EDIT_ACTION_CHOICES)
+                + ". "
+                "Never use keys like `file`, `operation`, or `description` inside operations. "
+                "Each operation must use `action`, `file_path`, `reason`, and when needed `new_content`. "
+                "Example valid operation: "
+                '{"action":"replace_lines","file_path":"services/shared/agentic_lab/worker_probe_service.py",'
+                '"reason":"Tighten targeted probe prompt","start_line":120,"end_line":128,"new_content":"..."}'
                 f"{guidance_block}",
                 (
                     f"Goal:\n{probe_goal}\n\n"
