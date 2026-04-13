@@ -668,8 +668,10 @@ def test_self_improvement_page_marks_archived_task_references_as_archive_links(t
                     }
                 ],
             )
+        if path == "/api/self-improvement/sessions":
+            return httpx.Response(200, json=[])
         if path == "/api/settings/self-improvement":
-            return httpx.Response(200, json={"mode": "assisted", "normalized_mode": "assisted"})
+            return httpx.Response(200, json={"mode": "assisted", "normalized_mode": "assisted", "max_session_cycles": 3})
         if path == "/api/settings/self-improvement/policy":
             return httpx.Response(200, json={"repository": "Feberdin/local-multi-agent-company", "mode_rules": {}})
         if path == "/api/self-improvement/incidents":
@@ -717,6 +719,152 @@ def test_self_improvement_page_marks_archived_task_references_as_archive_links(t
     assert "archiviert" in response.text
     assert '/archive?task_id=task-archived#task-task-archived' in response.text
     assert '/tasks/task-archived' not in response.text
+
+
+def test_self_improvement_page_shows_active_overnight_repair_session(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/self-improvement/status":
+            return httpx.Response(
+                200,
+                json={
+                    "enabled": True,
+                    "can_start": False,
+                    "daily_cycle_count": 2,
+                    "max_cycles_per_day": 5,
+                    "mode": "automatic",
+                    "open_incident_count": 1,
+                    "active_cycle": None,
+                    "active_session": {
+                        "id": "session-1",
+                        "status": "running",
+                        "trigger": "overnight",
+                        "problem_hint": "Coding Worker bleibt bei edit_plan haengen.",
+                        "current_cycle_id": "cycle-2",
+                        "last_cycle_id": "cycle-2",
+                        "cycles_started": 2,
+                        "completed_cycles": 1,
+                        "success_cycles": 0,
+                        "failed_cycles": 1,
+                        "max_cycles": 4,
+                        "last_error": "Model did not return valid JSON for coding.",
+                        "stop_reason": "Naechster autonomer Reparaturzyklus wird vorbereitet.",
+                        "started_at": now,
+                        "updated_at": now,
+                        "completed_at": None,
+                        "metadata": {},
+                    },
+                    "last_cycle": None,
+                    "pending_review_cycles": [],
+                },
+            )
+        if path == "/api/self-improvement/cycles":
+            return httpx.Response(200, json=[])
+        if path == "/api/self-improvement/sessions":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "session-1",
+                        "status": "running",
+                        "trigger": "overnight",
+                        "problem_hint": "Coding Worker bleibt bei edit_plan haengen.",
+                        "current_cycle_id": "cycle-2",
+                        "last_cycle_id": "cycle-2",
+                        "cycles_started": 2,
+                        "completed_cycles": 1,
+                        "success_cycles": 0,
+                        "failed_cycles": 1,
+                        "max_cycles": 4,
+                        "last_error": "Model did not return valid JSON for coding.",
+                        "stop_reason": "Naechster autonomer Reparaturzyklus wird vorbereitet.",
+                        "started_at": now,
+                        "updated_at": now,
+                        "completed_at": None,
+                        "metadata": {},
+                    }
+                ],
+            )
+        if path == "/api/settings/self-improvement":
+            return httpx.Response(200, json={"mode": "automatic", "normalized_mode": "automatic", "max_session_cycles": 4})
+        if path == "/api/settings/self-improvement/policy":
+            return httpx.Response(200, json={"repository": "Feberdin/local-multi-agent-company", "mode_rules": {}})
+        if path == "/api/self-improvement/incidents":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/self-improvement")
+
+    assert response.status_code == 200
+    assert "Selbstreparatur ueber Nacht" in response.text
+    assert "Nachtmodus stoppen" in response.text
+    assert "2 / 4" in response.text
+    assert "Model did not return valid JSON for coding." in response.text
+
+
+def test_self_improvement_session_start_form_posts_max_cycles(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if method == "POST" and path == "/api/self-improvement/session/start":
+            captured["json_payload"] = json_payload
+            return httpx.Response(201, json={"id": "session-1", "status": "running"})
+        if path == "/api/self-improvement/status":
+            return httpx.Response(
+                200,
+                json={
+                    "enabled": True,
+                    "can_start": True,
+                    "daily_cycle_count": 0,
+                    "max_cycles_per_day": 5,
+                    "mode": "automatic",
+                    "open_incident_count": 0,
+                    "active_cycle": None,
+                    "active_session": None,
+                    "last_cycle": None,
+                    "pending_review_cycles": [],
+                },
+            )
+        if path == "/api/self-improvement/cycles":
+            return httpx.Response(200, json=[])
+        if path == "/api/self-improvement/sessions":
+            return httpx.Response(200, json=[])
+        if path == "/api/settings/self-improvement":
+            return httpx.Response(
+                200,
+                json={"mode": "automatic", "normalized_mode": "automatic", "max_session_cycles": 4},
+            )
+        if path == "/api/settings/self-improvement/policy":
+            return httpx.Response(200, json={"repository": "Feberdin/local-multi-agent-company", "mode_rules": {}})
+        if path == "/api/self-improvement/incidents":
+            return httpx.Response(200, json=[])
+        if path.startswith("/api/tasks/"):
+            return httpx.Response(404, json={"detail": "not found"})
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/self-improvement/session/start",
+            data={"problem_hint": "Coding fixen", "max_cycles": "5", "force": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert captured["json_payload"] == {
+        "trigger": "overnight",
+        "force": True,
+        "max_cycles": 5,
+        "problem_hint": "Coding fixen",
+    }
 
 
 def test_normalize_suggestions_shows_repository_wide_statuses_readably(tmp_path, monkeypatch) -> None:

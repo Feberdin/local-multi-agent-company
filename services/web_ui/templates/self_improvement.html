@@ -32,6 +32,8 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
       .badge-post_deploy_testing { background: #fff3cd; color: #856404; }
       .badge-awaiting_manual_review { background: #f8d7da; color: #721c24; }
       .badge-idle        { background: #f3f4f6; color: #6b7280; }
+      .badge-running     { background: #d1ecf1; color: #0c5460; }
+      .badge-stopped     { background: #e2e3e5; color: #383d41; }
 
       .state-machine {
         display: flex;
@@ -168,6 +170,92 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
         </div>
       </section>
       {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Selbstreparatur ueber Nacht</h2>
+          {% if si_active_session %}
+          <span class="cycle-status-badge badge-{{ si_active_session.status }}">{{ si_active_session.status }}</span>
+          {% else %}
+          <span class="cycle-status-badge badge-idle">bereit</span>
+          {% endif %}
+        </div>
+
+        <p class="muted">
+          Dieser Modus startet mehrere komplette Self-Improvement-Zyklen nacheinander, stoppt nach dem ersten
+          erfolgreichen Fix und beendet sich frueh bei manueller Freigabe oder erkannten Schleifen.
+        </p>
+
+        {% if si_active_session %}
+        <div class="config-grid" style="margin-top:0.75rem;">
+          <div class="config-item">
+            <div class="label">Gestartet</div>
+            <div class="value">{{ si_active_session.started_at_display }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Zuletzt aktualisiert</div>
+            <div class="value">{{ si_active_session.updated_at_display }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Zyklen gestartet</div>
+            <div class="value">{{ si_active_session.cycles_started }} / {{ si_active_session.max_cycles }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Fehlgeschlagen / erfolgreich</div>
+            <div class="value">{{ si_active_session.failed_cycles }} / {{ si_active_session.success_cycles }}</div>
+          </div>
+        </div>
+        {% if si_active_session.problem_hint %}
+        <p><strong>Start-Hinweis:</strong> {{ si_active_session.problem_hint }}</p>
+        {% endif %}
+        {% if si_active_session.current_cycle_id %}
+        <p><strong>Aktueller Zyklus:</strong> {{ si_active_session.current_cycle_id }}</p>
+        {% endif %}
+        {% if si_active_session.stop_reason %}
+        <p><strong>Session-Notiz:</strong> {{ si_active_session.stop_reason }}</p>
+        {% endif %}
+        {% if si_active_session.last_error %}
+        <div class="panel-alert" style="margin-top:0.75rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
+          <strong>Letzter Session-Fehler:</strong> {{ si_active_session.last_error }}
+        </div>
+        {% endif %}
+        <form method="post" action="/self-improvement/session/stop" style="margin-top:1rem;">
+          <button type="submit" class="btn btn-secondary">Nachtmodus stoppen</button>
+        </form>
+        {% else %}
+        <form method="post" action="/self-improvement/session/start" class="stack">
+          <label>
+            Problem-Hinweis fuer die Nacht (optional)
+            <input
+              type="text"
+              name="problem_hint"
+              placeholder="Z. B. Coding-Worker bleibt bei edit_plan haengen …"
+              style="width:100%;"
+            >
+          </label>
+          <label>
+            Maximal aufeinanderfolgende Zyklen
+            <input
+              type="number"
+              name="max_cycles"
+              min="1"
+              max="10"
+              value="{{ si_config.max_session_cycles if si_config else 3 }}"
+              style="width:120px;"
+            >
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="force" value="true">
+            Force (ignoriert Tageslimit und Deaktivierungs-Flag)
+          </label>
+          <button
+            type="submit"
+            class="btn btn-primary"
+            {% if not si_can_start %}disabled{% endif %}
+          >Nachtmodus starten</button>
+        </form>
+        {% endif %}
+      </section>
 
       <!-- State-Machine Visualization -->
       <section class="panel">
@@ -324,7 +412,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
           <button
             type="submit"
             class="btn btn-primary"
-            {% if not si_can_start and not si_enabled %}disabled{% endif %}
+            {% if not si_can_start %}disabled{% endif %}
           >Analyse starten</button>
         </form>
 
@@ -335,6 +423,59 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
         </p>
       </section>
       {% endif %}
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Session-Historie</h2>
+          <span class="muted">Letzte {{ si_sessions | length }} Sessions</span>
+        </div>
+        {% if si_sessions %}
+        <div class="table-wrapper" style="overflow-x:auto;">
+          <table class="cycle-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Trigger</th>
+                <th>Zyklen</th>
+                <th>Erfolg / Fehler</th>
+                <th>Gestartet</th>
+                <th>Beendet</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for session in si_sessions %}
+              <tr>
+                <td><span class="cycle-status-badge badge-{{ session.status }}">{{ session.status }}</span></td>
+                <td>{{ session.trigger }}</td>
+                <td>{{ session.cycles_started }} / {{ session.max_cycles }}</td>
+                <td>{{ session.success_cycles }} / {{ session.failed_cycles }}</td>
+                <td>{{ session.started_at_display }}</td>
+                <td>{{ session.completed_at_display }}</td>
+              </tr>
+              {% if session.problem_hint %}
+              <tr>
+                <td></td>
+                <td colspan="5" style="font-size:0.82rem; color:#374151; padding-top:0; padding-bottom:0.6rem;">
+                  <em>Hinweis:</em> {{ session.problem_hint[:220] }}{% if session.problem_hint | length > 220 %}…{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% if session.stop_reason %}
+              <tr>
+                <td></td>
+                <td colspan="5" style="font-size:0.82rem; color:#374151; padding-top:0; padding-bottom:0.6rem;">
+                  <em>Stop-Grund:</em> {{ session.stop_reason[:220] }}{% if session.stop_reason | length > 220 %}…{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">Noch keine Selbstreparatur-Session gestartet.</p>
+        {% endif %}
+      </section>
 
       <!-- Cycle History -->
       <section class="panel">

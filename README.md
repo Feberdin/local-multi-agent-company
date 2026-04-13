@@ -294,10 +294,12 @@ Wichtige Bausteine:
   - `assisted`: niedrige und mittlere Risiken autonom, riskante Veroeffentlichung mit Freigabe
   - `automatic`: niedrige Risiken vollautonom, hohe Risiken vorbereitet mit Approval-Gate
 - dauerhafte Cycle-Historie in `self_improvement_cycles`
+- dauerhafte Session-Historie fuer unbeaufsichtigte Nachtlaeufe in `self_improvement_sessions`
 - Incident-Audit-Tabelle `self_improvement_incidents`
 - Rollback-Vorbereitung ueber einen eigenen `rollback-worker` mit deterministischem `git revert`
 - Self-Updates bewaffnen vor dem Neustart einen Watchdog, der Healthchecks und Host-Rollback ueberlebt
 - E-Mail-Outbox unter `DATA_DIR/self-improvement-email-outbox`
+- Nachtmodus in der Web-UI: mehrere komplette Reparaturzyklen hintereinander, frueher Stopp bei Erfolg, manueller Freigabe oder erkannten Schleifen
 
 Wichtig fuer den Betrieb:
 
@@ -305,6 +307,7 @@ Wichtig fuer den Betrieb:
 - Riskante Zyklen duerfen weiter Branches, Tests und Artefakte vorbereiten, blockieren aber die Veroeffentlichung bis zur Freigabe.
 - Ein Fehler beendet nicht die Diagnose: Incidents, letzte Fehler, Gate-Status und Rollback-Hinweise bleiben im UI sichtbar.
 - Wenn SMTP noch nicht vollstaendig konfiguriert ist, werden Approval-Mails trotzdem als JSON im Outbox-Ordner protokolliert.
+- Fuer laengere unbeaufsichtigte Laeufe starte im Dashboard den Nachtmodus und begrenze ihn ueber `SELF_IMPROVEMENT_MAX_SESSION_CYCLES` oder das UI-Feld `Maximal aufeinanderfolgende Zyklen`.
 
 ## Modellrouting
 

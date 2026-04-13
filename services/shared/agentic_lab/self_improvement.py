@@ -28,7 +28,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from services.shared.agentic_lab.config import Settings, get_settings
-from services.shared.agentic_lab.db import SelfImprovementCycleRecord, get_session_factory
+from services.shared.agentic_lab.db import (
+    SelfImprovementCycleRecord,
+    SelfImprovementSessionRecord,
+    get_session_factory,
+)
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.schemas import (
     ApprovalDecision,
@@ -75,6 +79,15 @@ class CycleStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    AWAITING_MANUAL_REVIEW = "awaiting_manual_review"
+
+
+class SessionStatus(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STOPPED = "stopped"
     AWAITING_MANUAL_REVIEW = "awaiting_manual_review"
 
 
@@ -391,10 +404,57 @@ class SelfImprovementCycleResponse(BaseModel):
         )
 
 
+class SelfImprovementSessionResponse(BaseModel):
+    id: str
+    status: str
+    trigger: str
+    problem_hint: str | None
+    current_cycle_id: str | None
+    last_cycle_id: str | None
+    cycles_started: int
+    completed_cycles: int
+    success_cycles: int
+    failed_cycles: int
+    max_cycles: int
+    last_error: str | None
+    stop_reason: str | None
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    metadata: dict[str, Any]
+
+    @classmethod
+    def from_record(cls, r: SelfImprovementSessionRecord) -> SelfImprovementSessionResponse:
+        try:
+            status = SessionStatus(r.status).value
+        except ValueError:
+            status = r.status
+        return cls(
+            id=r.id,
+            status=status,
+            trigger=r.trigger,
+            problem_hint=r.problem_hint,
+            current_cycle_id=r.current_cycle_id,
+            last_cycle_id=r.last_cycle_id,
+            cycles_started=r.cycles_started,
+            completed_cycles=r.completed_cycles,
+            success_cycles=r.success_cycles,
+            failed_cycles=r.failed_cycles,
+            max_cycles=r.max_cycles,
+            last_error=r.last_error,
+            stop_reason=r.stop_reason,
+            started_at=r.started_at,
+            updated_at=r.updated_at,
+            completed_at=r.completed_at,
+            metadata=r.metadata_json or {},
+        )
+
+
 class SelfImprovementStatusResponse(BaseModel):
     mode: str
     enabled: bool
     active_cycle: SelfImprovementCycleResponse | None
+    active_session: SelfImprovementSessionResponse | None
     pending_review_cycles: list[SelfImprovementCycleResponse]
     daily_cycle_count: int
     max_cycles_per_day: int
@@ -410,6 +470,13 @@ class StartCycleRequest(BaseModel):
     force: bool = False
 
 
+class StartSessionRequest(BaseModel):
+    trigger: str = "overnight"
+    problem_hint: str | None = None
+    force: bool = False
+    max_cycles: int = 3
+
+
 class ApproveCycleRequest(BaseModel):
     actor: str = "human-operator"
     reason: str | None = None
@@ -421,6 +488,7 @@ class SelfImprovementConfigResponse(BaseModel):
     normalized_mode: str
     max_auto_fix_attempts: int
     max_cycles_per_day: int
+    max_session_cycles: int
     deploy_after_success: bool
     require_approval_for_risky: bool
     preflight_required: bool
@@ -479,6 +547,7 @@ class SelfImprovementService:
 
     Safety gates:
       - Only one active cycle at a time.
+      - Only one unattended repair session at a time.
       - Daily cycle limit.
       - Risky goals require manual approval before task creation.
       - On restart, in-flight cycles are marked FAILED (no partial resume).
@@ -496,6 +565,10 @@ class SelfImprovementService:
         CycleStatus.VALIDATING,
         CycleStatus.DEPLOYING,
         CycleStatus.POST_DEPLOY_TESTING,
+    }
+    _SESSION_ACTIVE = {
+        SessionStatus.RUNNING,
+        SessionStatus.AWAITING_MANUAL_REVIEW,
     }
 
     def __init__(
@@ -559,9 +632,23 @@ class SelfImprovementService:
                 .first()
             )
 
+    def get_active_session(self) -> SelfImprovementSessionRecord | None:
+        active_values = [s.value for s in self._SESSION_ACTIVE]
+        with self._session() as session:
+            return (
+                session.query(SelfImprovementSessionRecord)
+                .filter(SelfImprovementSessionRecord.status.in_(active_values))
+                .order_by(SelfImprovementSessionRecord.started_at.desc())
+                .first()
+            )
+
     def get_cycle(self, cycle_id: str) -> SelfImprovementCycleRecord | None:
         with self._session() as session:
             return session.get(SelfImprovementCycleRecord, cycle_id)
+
+    def get_session_record(self, session_id: str) -> SelfImprovementSessionRecord | None:
+        with self._session() as session:
+            return session.get(SelfImprovementSessionRecord, session_id)
 
     def list_cycles(self, limit: int = 20) -> list[SelfImprovementCycleRecord]:
         with self._session() as session:
@@ -572,8 +659,18 @@ class SelfImprovementService:
                 .all()
             )
 
+    def list_sessions(self, limit: int = 20) -> list[SelfImprovementSessionRecord]:
+        with self._session() as session:
+            return (
+                session.query(SelfImprovementSessionRecord)
+                .order_by(SelfImprovementSessionRecord.started_at.desc())
+                .limit(limit)
+                .all()
+            )
+
     def get_status(self) -> SelfImprovementStatusResponse:
         active = self.get_active_cycle()
+        active_session = self.get_active_session()
         all_cycles = self.list_cycles(limit=1)
         last_cycle = all_cycles[0] if all_cycles else None
         pending_review_cycles = [
@@ -587,11 +684,17 @@ class SelfImprovementService:
             mode=normalize_self_improvement_mode(self.settings.self_improvement_mode).value,
             enabled=self.settings.self_improvement_enabled,
             active_cycle=SelfImprovementCycleResponse.from_record(active) if active else None,
+            active_session=SelfImprovementSessionResponse.from_record(active_session) if active_session else None,
             pending_review_cycles=pending_review_cycles,
             daily_cycle_count=daily,
             max_cycles_per_day=self.settings.self_improvement_max_cycles_per_day,
             daily_limit_reached=limit_reached,
-            can_start=not limit_reached and active is None and self.settings.self_improvement_enabled,
+            can_start=(
+                not limit_reached
+                and active is None
+                and active_session is None
+                and self.settings.self_improvement_enabled
+            ),
             last_cycle=SelfImprovementCycleResponse.from_record(last_cycle) if last_cycle else None,
             open_incident_count=self.incident_service.open_count(),
         )
@@ -627,11 +730,48 @@ class SelfImprovementService:
             session.refresh(record)
             return record
 
+    def _create_session_record(
+        self,
+        *,
+        trigger: str,
+        problem_hint: str | None,
+        max_cycles: int,
+    ) -> SelfImprovementSessionRecord:
+        record = SelfImprovementSessionRecord(
+            id=str(uuid4()),
+            status=SessionStatus.RUNNING.value,
+            trigger=trigger,
+            problem_hint=problem_hint,
+            max_cycles=max_cycles,
+            metadata_json={
+                "original_problem_hint": problem_hint,
+                "next_problem_hint": problem_hint,
+                "goal_history": [],
+                "error_history": [],
+            },
+        )
+        with self._session() as session:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record
+
     def _update(self, cycle_id: str, **kwargs: Any) -> SelfImprovementCycleRecord:
         with self._session() as session:
             record = session.get(SelfImprovementCycleRecord, cycle_id)
             if record is None:
                 raise KeyError(f"Cycle {cycle_id} not found.")
+            for key, val in kwargs.items():
+                setattr(record, key, val)
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def _update_session(self, session_id: str, **kwargs: Any) -> SelfImprovementSessionRecord:
+        with self._session() as session:
+            record = session.get(SelfImprovementSessionRecord, session_id)
+            if record is None:
+                raise KeyError(f"Session {session_id} not found.")
             for key, val in kwargs.items():
                 setattr(record, key, val)
             session.commit()
@@ -679,6 +819,50 @@ class SelfImprovementService:
         )
         return SelfImprovementCycleResponse.from_record(record)
 
+    async def start_session(
+        self,
+        *,
+        trigger: str = "overnight",
+        problem_hint: str | None = None,
+        force: bool = False,
+        max_cycles: int | None = None,
+        run_task_fn: TaskRunner | None = None,
+    ) -> SelfImprovementSessionResponse:
+        """Start one unattended repair session that may run several full cycles in sequence."""
+
+        requested_cycles = max(1, min(max_cycles or self.settings.self_improvement_max_session_cycles, 10))
+        if not self.settings.self_improvement_enabled and not force:
+            raise SelfImprovementError(
+                "Self-Improvement ist deaktiviert (SELF_IMPROVEMENT_ENABLED=false). "
+                "Aktiviere es in der Konfiguration oder verwende force=true."
+            )
+        if not force and self.is_daily_limit_reached():
+            raise SelfImprovementError(
+                f"Tageslimit von {self.settings.self_improvement_max_cycles_per_day} Zyklen erreicht."
+            )
+        if self.get_active_session() is not None:
+            raise SelfImprovementError(
+                "Es laeuft bereits eine aktive Selbstreparatur-Session. Stoppe sie zuerst oder warte auf Abschluss."
+            )
+        if self.get_active_cycle() is not None:
+            raise SelfImprovementError(
+                "Es laeuft bereits ein aktiver Self-Improvement-Zyklus. Stoppe ihn zuerst oder warte auf Abschluss."
+            )
+
+        record = self._create_session_record(
+            trigger=trigger,
+            problem_hint=problem_hint,
+            max_cycles=requested_cycles,
+        )
+        asyncio.create_task(
+            self._run_session(
+                session_id=record.id,
+                force=force,
+                run_task_fn=run_task_fn,
+            )
+        )
+        return SelfImprovementSessionResponse.from_record(record)
+
     def stop_cycle(self, cycle_id: str, *, actor: str = "human-operator") -> SelfImprovementCycleResponse:
         """Mark an active cycle as paused/stopped by the operator."""
         record = self._update(
@@ -688,6 +872,28 @@ class SelfImprovementService:
             notes=f"Manuell gestoppt von: {actor}",
         )
         return SelfImprovementCycleResponse.from_record(record)
+
+    def stop_session(
+        self,
+        session_id: str,
+        *,
+        actor: str = "human-operator",
+    ) -> SelfImprovementSessionResponse:
+        """Stop one unattended repair session and pause its current cycle if needed."""
+
+        session_record = self.get_session_record(session_id)
+        if session_record is None:
+            raise KeyError(f"Session {session_id} nicht gefunden.")
+        active_cycle = self.get_cycle(session_record.current_cycle_id) if session_record.current_cycle_id else None
+        if active_cycle is not None and active_cycle.status in {state.value for state in self._ACTIVE}:
+            self.stop_cycle(active_cycle.id, actor=actor)
+        record = self._update_session(
+            session_id,
+            status=SessionStatus.STOPPED.value,
+            completed_at=datetime.now(UTC),
+            stop_reason=f"Manuell gestoppt von: {actor}",
+        )
+        return SelfImprovementSessionResponse.from_record(record)
 
     async def approve_risky_cycle(
         self,
@@ -779,6 +985,251 @@ class SelfImprovementService:
                     "Zyklus war beim Neustart des Orchestrators aktiv. "
                     "Starte einen neuen Zyklus, um fortzufahren."
                 ),
+            )
+
+    def resume_orphaned_sessions(
+        self,
+        run_task_fn: TaskRunner | None = None,
+    ) -> None:
+        """Resume unattended repair sessions after an orchestrator restart."""
+
+        for record in self.list_sessions(limit=50):
+            if record.status != SessionStatus.RUNNING.value:
+                continue
+            metadata = dict(record.metadata_json or {})
+            asyncio.create_task(
+                self._run_session(
+                    session_id=record.id,
+                    force=bool(metadata.get("force")),
+                    run_task_fn=run_task_fn,
+                )
+            )
+
+    @staticmethod
+    def _normalize_history_value(value: str | None) -> str:
+        """Reduce goal and error history to loop-detection fingerprints."""
+
+        return " ".join((value or "").lower().split())[:240]
+
+    def _session_is_stagnating(self, metadata: dict[str, Any]) -> bool:
+        """Stop unattended sessions before they repeat the same failing idea forever."""
+
+        goals = [self._normalize_history_value(item) for item in metadata.get("goal_history", []) if item]
+        errors = [self._normalize_history_value(item) for item in metadata.get("error_history", []) if item]
+        if len(goals) >= 2 and goals[-1] and goals[-1] == goals[-2]:
+            return True
+        if len(errors) >= 2 and errors[-1] and errors[-1] == errors[-2]:
+            return True
+        return False
+
+    def _build_followup_problem_hint(
+        self,
+        session_record: SelfImprovementSessionRecord,
+        cycle: SelfImprovementCycleRecord,
+    ) -> str:
+        """Carry the latest concrete failure context into the next unattended cycle."""
+
+        original_hint = session_record.problem_hint or (session_record.metadata_json or {}).get("original_problem_hint")
+        parts: list[str] = []
+        if original_hint:
+            parts.append(f"Urspruenglicher Hinweis: {str(original_hint)[:300]}")
+        if cycle.goal:
+            parts.append(f"Voriger Reparaturauftrag: {cycle.goal[:260]}")
+        if cycle.problem_hypothesis:
+            parts.append(f"Analyse des vorigen Zyklus: {cycle.problem_hypothesis[:260]}")
+        if cycle.latest_error:
+            parts.append(f"Letzter Fehler nach dem Reparaturversuch: {cycle.latest_error[:500]}")
+        if not parts:
+            parts.append("Voriger Reparaturversuch war nicht erfolgreich. Analysiere den naechsten kleinsten Fix.")
+        return "\n".join(parts)[:1200]
+
+    async def _run_session(
+        self,
+        *,
+        session_id: str,
+        force: bool,
+        run_task_fn: TaskRunner | None,
+        poll_interval: float = 20.0,
+    ) -> None:
+        """Drive several self-improvement cycles in sequence for unattended overnight repair."""
+        try:
+            while True:
+                session_record = self.get_session_record(session_id)
+                if session_record is None:
+                    return
+                if session_record.status not in {SessionStatus.RUNNING.value, SessionStatus.AWAITING_MANUAL_REVIEW.value}:
+                    return
+                if session_record.status == SessionStatus.AWAITING_MANUAL_REVIEW.value:
+                    return
+
+                current_cycle = (
+                    self.get_cycle(session_record.current_cycle_id)
+                    if session_record.current_cycle_id
+                    else None
+                )
+                if current_cycle is None:
+                    active_cycle = self.get_active_cycle()
+                    if active_cycle is not None:
+                        self._update_session(
+                            session_id,
+                            status=SessionStatus.FAILED.value,
+                            completed_at=datetime.now(UTC),
+                            last_error=active_cycle.latest_error,
+                            stop_reason=(
+                                "Ein anderer Self-Improvement-Zyklus laeuft parallel. "
+                                "Nachtmodus stoppt, um Kollisionen zu vermeiden."
+                            ),
+                        )
+                        return
+                    if not force and self.is_daily_limit_reached():
+                        self._update_session(
+                            session_id,
+                            status=SessionStatus.FAILED.value,
+                            completed_at=datetime.now(UTC),
+                            stop_reason=(
+                                f"Tageslimit von {self.settings.self_improvement_max_cycles_per_day} Zyklen erreicht."
+                            ),
+                        )
+                        return
+                    if session_record.cycles_started >= session_record.max_cycles:
+                        self._update_session(
+                            session_id,
+                            status=(
+                                SessionStatus.COMPLETED.value
+                                if session_record.success_cycles > 0
+                                else SessionStatus.FAILED.value
+                            ),
+                            completed_at=datetime.now(UTC),
+                            stop_reason=(
+                                f"Session-Budget von {session_record.max_cycles} Zyklus/Zyklen erreicht."
+                            ),
+                        )
+                        return
+
+                    metadata = dict(session_record.metadata_json or {})
+                    next_hint = str(metadata.get("next_problem_hint") or session_record.problem_hint or "").strip() or None
+                    cycle = await self.start_cycle(
+                        trigger=f"{session_record.trigger}_session",
+                        problem_hint=next_hint,
+                        force=force,
+                        run_task_fn=run_task_fn,
+                    )
+                    metadata["force"] = force
+                    self._update_session(
+                        session_id,
+                        status=SessionStatus.RUNNING.value,
+                        current_cycle_id=cycle.id,
+                        last_cycle_id=cycle.id,
+                        cycles_started=session_record.cycles_started + 1,
+                        stop_reason=None,
+                        last_error=None,
+                        metadata_json=metadata,
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+
+                if current_cycle.status in {state.value for state in self._ACTIVE}:
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                metadata = dict(session_record.metadata_json or {})
+                goal_history = list(metadata.get("goal_history") or [])
+                error_history = list(metadata.get("error_history") or [])
+                if current_cycle.goal:
+                    goal_history.append(current_cycle.goal)
+                if current_cycle.latest_error:
+                    error_history.append(current_cycle.latest_error)
+                metadata["goal_history"] = goal_history[-4:]
+                metadata["error_history"] = error_history[-4:]
+                metadata["last_cycle_status"] = current_cycle.status
+                metadata["last_cycle_id"] = current_cycle.id
+
+                if current_cycle.status == CycleStatus.AWAITING_MANUAL_REVIEW.value:
+                    self._update_session(
+                        session_id,
+                        status=SessionStatus.AWAITING_MANUAL_REVIEW.value,
+                        current_cycle_id=current_cycle.id,
+                        last_cycle_id=current_cycle.id,
+                        last_error=current_cycle.latest_error,
+                        stop_reason=(
+                            "Ein Reparaturzyklus benoetigt manuelle Freigabe. "
+                            "Nachtmodus pausiert hier bewusst."
+                        ),
+                        metadata_json=metadata,
+                    )
+                    return
+
+                completed_cycles = session_record.completed_cycles + 1
+                base_update: dict[str, Any] = {
+                    "current_cycle_id": None,
+                    "last_cycle_id": current_cycle.id,
+                    "completed_cycles": completed_cycles,
+                    "metadata_json": metadata,
+                }
+
+                if current_cycle.status == CycleStatus.COMPLETED.value:
+                    self._update_session(
+                        session_id,
+                        status=SessionStatus.COMPLETED.value,
+                        completed_at=datetime.now(UTC),
+                        success_cycles=session_record.success_cycles + 1,
+                        last_error=None,
+                        stop_reason=(
+                            "Mindestens ein vollstaendiger Selbstreparaturzyklus wurde erfolgreich abgeschlossen."
+                        ),
+                        **base_update,
+                    )
+                    return
+
+                metadata["next_problem_hint"] = self._build_followup_problem_hint(session_record, current_cycle)
+                stagnating = self._session_is_stagnating(metadata)
+                failed_cycles = session_record.failed_cycles + 1
+
+                if stagnating:
+                    self._update_session(
+                        session_id,
+                        status=SessionStatus.FAILED.value,
+                        completed_at=datetime.now(UTC),
+                        failed_cycles=failed_cycles,
+                        last_error=current_cycle.latest_error,
+                        stop_reason=(
+                            "Zwei aufeinanderfolgende Reparaturzyklen wiederholen denselben Auftrag oder Fehler. "
+                            "Nachtmodus stoppt, um Endlosschleifen zu vermeiden."
+                        ),
+                        **base_update,
+                    )
+                    return
+
+                if completed_cycles >= session_record.max_cycles:
+                    self._update_session(
+                        session_id,
+                        status=SessionStatus.FAILED.value,
+                        completed_at=datetime.now(UTC),
+                        failed_cycles=failed_cycles,
+                        last_error=current_cycle.latest_error,
+                        stop_reason=(
+                            f"Maximale Session-Laenge von {session_record.max_cycles} Zyklus/Zyklen erreicht."
+                        ),
+                        **base_update,
+                    )
+                    return
+
+                self._update_session(
+                    session_id,
+                    status=SessionStatus.RUNNING.value,
+                    failed_cycles=failed_cycles,
+                    last_error=current_cycle.latest_error,
+                    stop_reason="Naechster autonomer Reparaturzyklus wird vorbereitet.",
+                    **base_update,
+                )
+                await asyncio.sleep(1.0)
+        except Exception as exc:
+            self._update_session(
+                session_id,
+                status=SessionStatus.FAILED.value,
+                completed_at=datetime.now(UTC),
+                last_error=f"{type(exc).__name__}: {exc}",
+                stop_reason="Der Nachtmodus ist unerwartet abgestuerzt und wurde sicher beendet.",
             )
 
     def _resume_self_update_watchdog_cycle(self, cycle_id: str) -> bool:

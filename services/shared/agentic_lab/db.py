@@ -143,6 +143,35 @@ class SelfImprovementCycleRecord(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class SelfImprovementSessionRecord(Base):
+    """Tracks one unattended multi-cycle self-repair session across several improvement cycles."""
+
+    __tablename__ = "self_improvement_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="idle")
+    trigger: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    problem_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_cycle_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    last_cycle_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    cycles_started: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stop_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 class SelfImprovementIncidentRecord(Base):
     """Persistent incident audit entries for failed cycles and rollback preparation."""
 

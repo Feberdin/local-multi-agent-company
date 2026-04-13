@@ -67,8 +67,10 @@ from services.shared.agentic_lab.self_improvement import (
     SelfImprovementIncidentResponse,
     SelfImprovementPolicyResponse,
     SelfImprovementService,
+    SelfImprovementSessionResponse,
     SelfImprovementStatusResponse,
     StartCycleRequest,
+    StartSessionRequest,
 )
 from services.shared.agentic_lab.self_improvement_governance import normalize_self_improvement_mode
 from services.shared.agentic_lab.source_router import SourceRouter
@@ -102,6 +104,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
     self_improvement_service.resume_orphaned_cycles()
+    self_improvement_service.resume_orphaned_sessions(run_task_fn=_run_workflow_task)
     worker_probe_service.resume_orphaned_runs()
     if settings.self_improvement_enabled and normalize_self_improvement_mode(settings.self_improvement_mode).value == "automatic":
         asyncio.create_task(_auto_start_self_improvement())
@@ -542,6 +545,20 @@ async def start_self_improvement_cycle(request: StartCycleRequest) -> SelfImprov
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/self-improvement/session/start", response_model=SelfImprovementSessionResponse, status_code=201)
+async def start_self_improvement_session(request: StartSessionRequest) -> SelfImprovementSessionResponse:
+    try:
+        return await self_improvement_service.start_session(
+            trigger=request.trigger,
+            problem_hint=request.problem_hint,
+            force=request.force,
+            max_cycles=request.max_cycles,
+            run_task_fn=_run_workflow_task,
+        )
+    except SelfImprovementError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/self-improvement/stop", response_model=dict)
 async def stop_self_improvement_cycle(actor: str = "human-operator") -> dict:
     active = self_improvement_service.get_active_cycle()
@@ -549,6 +566,15 @@ async def stop_self_improvement_cycle(actor: str = "human-operator") -> dict:
         raise HTTPException(status_code=404, detail="Kein aktiver Self-Improvement-Zyklus gefunden.")
     result = self_improvement_service.stop_cycle(active.id, actor=actor)
     return {"status": "stopped", "cycle_id": result.id}
+
+
+@app.post("/api/self-improvement/session/stop", response_model=dict)
+async def stop_self_improvement_session(actor: str = "human-operator") -> dict:
+    active = self_improvement_service.get_active_session()
+    if active is None:
+        raise HTTPException(status_code=404, detail="Keine aktive Selbstreparatur-Session gefunden.")
+    result = self_improvement_service.stop_session(active.id, actor=actor)
+    return {"status": "stopped", "session_id": result.id}
 
 
 @app.get("/api/self-improvement/status", response_model=SelfImprovementStatusResponse)
@@ -560,6 +586,12 @@ async def get_self_improvement_status() -> SelfImprovementStatusResponse:
 async def list_self_improvement_cycles(limit: int = 20) -> list[SelfImprovementCycleResponse]:
     records = self_improvement_service.list_cycles(limit=limit)
     return [SelfImprovementCycleResponse.from_record(r) for r in records]
+
+
+@app.get("/api/self-improvement/sessions", response_model=list[SelfImprovementSessionResponse])
+async def list_self_improvement_sessions(limit: int = 20) -> list[SelfImprovementSessionResponse]:
+    records = self_improvement_service.list_sessions(limit=limit)
+    return [SelfImprovementSessionResponse.from_record(r) for r in records]
 
 
 @app.get("/api/self-improvement/cycles/{cycle_id}", response_model=SelfImprovementCycleResponse)
@@ -600,6 +632,7 @@ async def get_self_improvement_config() -> SelfImprovementConfigResponse:
         normalized_mode=normalize_self_improvement_mode(settings.self_improvement_mode).value,
         max_auto_fix_attempts=settings.self_improvement_max_auto_fix_attempts,
         max_cycles_per_day=settings.self_improvement_max_cycles_per_day,
+        max_session_cycles=settings.self_improvement_max_session_cycles,
         deploy_after_success=settings.self_improvement_deploy_after_success,
         require_approval_for_risky=settings.self_improvement_require_approval_for_risky,
         preflight_required=settings.self_improvement_preflight_required,

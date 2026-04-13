@@ -17,8 +17,10 @@ from services.shared.agentic_lab.self_improvement import (
     CycleStatus,
     ProblemClass,
     RiskLevel,
+    SelfImprovementCycleResponse,
     SelfImprovementError,
     SelfImprovementService,
+    SessionStatus,
     classify_error_text,
     classify_risk,
 )
@@ -510,3 +512,148 @@ def test_resume_orphaned_cycle_uses_watchdog_rollback_state(
     assert refreshed_cycle.status == CycleStatus.FAILED.value
     assert refreshed_task.status == TaskStatus.FAILED
     assert incidents[0].rollback_status == "rolled_back"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_session_runs_follow_up_cycle_after_failure(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+        SELF_IMPROVEMENT_MAX_SESSION_CYCLES="4",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+    session_record = service._create_session_record(  # noqa: SLF001
+        trigger="overnight",
+        problem_hint="Coding bleibt haengen.",
+        max_cycles=4,
+    )
+
+    seen_hints: list[str | None] = []
+    cycle_counter = {"value": 0}
+
+    async def fake_start_cycle(*, trigger: str, problem_hint: str | None, **kwargs) -> SelfImprovementCycleResponse:
+        del trigger, kwargs
+        cycle_counter["value"] += 1
+        seen_hints.append(problem_hint)
+        cycle = service._create_record(trigger="session", problem_hint=problem_hint)  # noqa: SLF001
+        if cycle_counter["value"] == 1:
+            service._update(  # noqa: SLF001
+                cycle.id,
+                status=CycleStatus.FAILED.value,
+                goal="Fixe den Coding edit_plan Fallback.",
+                latest_error="Model did not return valid JSON for coding.",
+                problem_hypothesis="qwen antwortet ohne content.",
+            )
+        else:
+            service._update(  # noqa: SLF001
+                cycle.id,
+                status=CycleStatus.COMPLETED.value,
+                goal="Haerte den Coding Fallback fuer leere Modellantworten.",
+            )
+        return SelfImprovementCycleResponse.from_record(service.get_cycle(cycle.id))
+
+    async def fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start_cycle", fake_start_cycle)
+    monkeypatch.setattr("services.shared.agentic_lab.self_improvement.asyncio.sleep", fast_sleep)
+
+    await service._run_session(session_id=session_record.id, force=False, run_task_fn=None, poll_interval=0.0)  # noqa: SLF001
+
+    refreshed = service.get_session_record(session_record.id)
+    assert refreshed is not None
+    assert refreshed.status == SessionStatus.COMPLETED.value
+    assert refreshed.cycles_started == 2
+    assert refreshed.completed_cycles == 2
+    assert refreshed.failed_cycles == 1
+    assert refreshed.success_cycles == 1
+    assert seen_hints[0] == "Coding bleibt haengen."
+    assert "Model did not return valid JSON for coding." in (seen_hints[1] or "")
+
+
+@pytest.mark.asyncio
+async def test_autonomous_session_stops_on_repeated_same_failure(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+        SELF_IMPROVEMENT_MAX_SESSION_CYCLES="5",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+    session_record = service._create_session_record(  # noqa: SLF001
+        trigger="overnight",
+        problem_hint="Coding fix laeuft im Kreis.",
+        max_cycles=5,
+    )
+
+    async def fake_start_cycle(*, trigger: str, problem_hint: str | None, **kwargs) -> SelfImprovementCycleResponse:
+        del trigger, problem_hint, kwargs
+        cycle = service._create_record(trigger="session", problem_hint=None)  # noqa: SLF001
+        service._update(  # noqa: SLF001
+            cycle.id,
+            status=CycleStatus.FAILED.value,
+            goal="Fixe den Coding edit_plan Fallback.",
+            latest_error="Model did not return valid JSON for coding.",
+        )
+        return SelfImprovementCycleResponse.from_record(service.get_cycle(cycle.id))
+
+    async def fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start_cycle", fake_start_cycle)
+    monkeypatch.setattr("services.shared.agentic_lab.self_improvement.asyncio.sleep", fast_sleep)
+
+    await service._run_session(session_id=session_record.id, force=False, run_task_fn=None, poll_interval=0.0)  # noqa: SLF001
+
+    refreshed = service.get_session_record(session_record.id)
+    assert refreshed is not None
+    assert refreshed.status == SessionStatus.FAILED.value
+    assert refreshed.cycles_started == 2
+    assert refreshed.failed_cycles == 2
+    assert "Endlosschleifen" in (refreshed.stop_reason or "")
+
+
+def test_stop_session_marks_session_stopped_and_pauses_active_cycle(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+
+    cycle = service._create_record(trigger="session", problem_hint="laufend")  # noqa: SLF001
+    service._update(cycle.id, status=CycleStatus.IMPLEMENTING.value)  # noqa: SLF001
+    session_record = service._create_session_record(trigger="overnight", problem_hint="laufend", max_cycles=3)  # noqa: SLF001
+    service._update_session(  # noqa: SLF001
+        session_record.id,
+        status=SessionStatus.RUNNING.value,
+        current_cycle_id=cycle.id,
+        last_cycle_id=cycle.id,
+    )
+
+    response = service.stop_session(session_record.id, actor="operator@example.com")
+
+    refreshed_cycle = service.get_cycle(cycle.id)
+    assert response.status == SessionStatus.STOPPED.value
+    assert "operator@example.com" in (response.stop_reason or "")
+    assert refreshed_cycle is not None
+    assert refreshed_cycle.status == CycleStatus.PAUSED.value

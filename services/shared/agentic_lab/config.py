@@ -374,6 +374,9 @@ class Settings(BaseSettings):
     self_improvement_max_cycles_per_day: int = Field(
         default=5, alias="SELF_IMPROVEMENT_MAX_CYCLES_PER_DAY"
     )
+    self_improvement_max_session_cycles: int = Field(
+        default=3, alias="SELF_IMPROVEMENT_MAX_SESSION_CYCLES"
+    )
     self_improvement_deploy_after_success: bool = Field(
         default=False, alias="SELF_IMPROVEMENT_DEPLOY_AFTER_SUCCESS"
     )
