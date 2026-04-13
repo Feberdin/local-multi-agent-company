@@ -1112,6 +1112,65 @@ def _is_task_archived(task: dict[str, Any]) -> bool:
     return bool(metadata.get("archived"))
 
 
+async def _load_task_lookup(task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Load a compact task lookup so history views can label archived task references honestly."""
+
+    normalized_ids = sorted({str(task_id).strip() for task_id in task_ids if str(task_id).strip()})
+    if not normalized_ids:
+        return {}
+
+    responses = await asyncio.gather(
+        *[_api_request("GET", f"/api/tasks/{task_id}") for task_id in normalized_ids],
+        return_exceptions=False,
+    )
+    lookup: dict[str, dict[str, Any]] = {}
+    for task_id, response in zip(normalized_ids, responses, strict=False):
+        if response.status_code >= 400:
+            continue
+        payload = _response_json(response, {})
+        if isinstance(payload, dict):
+            lookup[task_id] = _decorate_task(payload)
+    return lookup
+
+
+def _build_task_reference(task_id: Any, task_lookup: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Describe one linked task so templates can distinguish active work from archived history cleanly."""
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return None
+
+    task = task_lookup.get(normalized_task_id)
+    archived = bool(task and task.get("archived"))
+    return {
+        "id": normalized_task_id,
+        "short_id": f"{normalized_task_id[:8]}…",
+        "exists": task is not None,
+        "archived": archived,
+        "status": str(task.get("status") or "") if task else "",
+        "goal": str(task.get("goal") or "") if task else "",
+        "archived_reason": str(task.get("archived_reason") or "") if task else "",
+        "archived_at_display": str(task.get("archived_at_display") or "") if task else "",
+        "href": (
+            f"/archive?task_id={normalized_task_id}#task-{normalized_task_id}"
+            if archived
+            else f"/tasks/{normalized_task_id}"
+        ),
+    }
+
+
+def _attach_task_reference(
+    item: dict[str, Any],
+    *,
+    source_key: str,
+    target_key: str,
+    task_lookup: dict[str, dict[str, Any]],
+) -> None:
+    """Attach one decorated task reference without changing the original task id field."""
+
+    item[target_key] = _build_task_reference(item.get(source_key), task_lookup)
+
+
 def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a deterministic per-worker timeline so slow stages remain readable and explainable."""
 
@@ -2288,6 +2347,37 @@ async def _load_dashboard_context(
     }
 
 
+async def _load_archive_context(
+    error_message: str | None = None,
+    success_message: str | None = None,
+    *,
+    highlight_task_id: str | None = None,
+) -> dict[str, Any]:
+    """Load only archived tasks so the archive becomes a dedicated, predictable operator view."""
+
+    messages = [error_message] if error_message else []
+    archived_tasks_response = await _api_request("GET", "/api/tasks?only_archived=true")
+    archived_tasks = [
+        _decorate_task(task)
+        for task in _as_list(_response_json(archived_tasks_response, []))
+        if isinstance(task, dict) and _is_task_archived(task)
+    ]
+    if archived_tasks_response.status_code >= 400:
+        messages.append(_response_detail(archived_tasks_response, "Die Archivliste konnte nicht geladen werden."))
+
+    normalized_highlight = str(highlight_task_id or "").strip()
+    for task in archived_tasks:
+        task["highlighted"] = bool(normalized_highlight and task.get("id") == normalized_highlight)
+
+    return {
+        "archived_tasks": archived_tasks,
+        "archived_task_count": len(archived_tasks),
+        "highlight_task_id": normalized_highlight or None,
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message,
+    }
+
+
 async def _load_benchmarks_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
     """Collect a readable worker benchmark view from persisted task details without crashing on partial backend issues."""
 
@@ -3440,13 +3530,13 @@ async def restore_task(
             context = await _load_task_detail_context(task_id, error_message=detail)
             return templates.TemplateResponse(request=request, name="task.html", context={"request": request, **context})
         except RuntimeError:
-            dashboard_context = await _load_dashboard_context(error_message=detail, show_archived=True)
+            archive_context = await _load_archive_context(error_message=detail, highlight_task_id=task_id)
             return templates.TemplateResponse(
                 request=request,
-                name="index.html",
-                context={"request": request, **dashboard_context},
+                name="archive.html",
+                context={"request": request, **archive_context},
             )
-    return RedirectResponse(url="/?show_archived=true", status_code=303)
+    return RedirectResponse(url="/archive", status_code=303)
 
 
 @app.post("/tasks/{task_id}/restart-stage")
@@ -3622,25 +3712,55 @@ async def _load_self_improvement_context(
         _as_mapping(item) for item in _as_list(status.get("pending_review_cycles", [])) if isinstance(item, dict)
     ]
 
+    task_ids_to_resolve: list[str] = []
+    for cycle in cycles:
+        if cycle.get("task_id"):
+            task_ids_to_resolve.append(str(cycle["task_id"]))
+    for cycle in pending_review_cycles:
+        if cycle.get("task_id"):
+            task_ids_to_resolve.append(str(cycle["task_id"]))
+    if active_cycle and active_cycle.get("task_id"):
+        task_ids_to_resolve.append(str(active_cycle["task_id"]))
+    if last_cycle and last_cycle.get("task_id"):
+        task_ids_to_resolve.append(str(last_cycle["task_id"]))
+    for incident in incidents:
+        if incident.get("task_id"):
+            task_ids_to_resolve.append(str(incident["task_id"]))
+        if incident.get("rollback_task_id"):
+            task_ids_to_resolve.append(str(incident["rollback_task_id"]))
+
+    task_lookup = await _load_task_lookup(task_ids_to_resolve)
+
     for cycle in cycles:
         cycle["started_at_display"] = _format_timestamp(cycle.get("started_at"))
         cycle["completed_at_display"] = _format_timestamp(cycle.get("completed_at")) if cycle.get("completed_at") else "—"
+        _attach_task_reference(cycle, source_key="task_id", target_key="task_ref", task_lookup=task_lookup)
     for cycle in pending_review_cycles:
         cycle["started_at_display"] = _format_timestamp(cycle.get("started_at"))
         cycle["completed_at_display"] = (
             _format_timestamp(cycle.get("completed_at")) if cycle.get("completed_at") else "—"
         )
+        _attach_task_reference(cycle, source_key="task_id", target_key="task_ref", task_lookup=task_lookup)
     for incident in incidents:
         incident["created_at_display"] = _format_timestamp(incident.get("created_at"))
         incident["updated_at_display"] = _format_timestamp(incident.get("updated_at"))
+        _attach_task_reference(incident, source_key="task_id", target_key="task_ref", task_lookup=task_lookup)
+        _attach_task_reference(
+            incident,
+            source_key="rollback_task_id",
+            target_key="rollback_task_ref",
+            task_lookup=task_lookup,
+        )
 
     if active_cycle:
         active_cycle["started_at_display"] = _format_timestamp(active_cycle.get("started_at"))
+        _attach_task_reference(active_cycle, source_key="task_id", target_key="task_ref", task_lookup=task_lookup)
     if last_cycle and not active_cycle:
         last_cycle["started_at_display"] = _format_timestamp(last_cycle.get("started_at"))
         last_cycle["completed_at_display"] = (
             _format_timestamp(last_cycle.get("completed_at")) if last_cycle.get("completed_at") else "—"
         )
+        _attach_task_reference(last_cycle, source_key="task_id", target_key="task_ref", task_lookup=task_lookup)
 
     return {
         "si_status": status,
@@ -3660,6 +3780,16 @@ async def _load_self_improvement_context(
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }
+
+
+@app.get("/archive", response_class=HTMLResponse)
+async def archive_page(request: Request, task_id: str | None = Query(default=None)) -> HTMLResponse:
+    context = await _load_archive_context(highlight_task_id=task_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="archive.html",
+        context={"request": request, **context},
+    )
 
 
 @app.get("/self-improvement", response_class=HTMLResponse)

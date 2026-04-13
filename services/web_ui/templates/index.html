@@ -16,6 +16,7 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
     <main class="layout">
       <nav class="topnav">
         <a href="/">Dashboard</a>
+        <a href="/archive">Archiv</a>
         <a href="/benchmarks">Benchmarks</a>
         <a href="/worker-guidance">Worker Guidance</a>
         <a href="/suggestions">Mitarbeiterideen</a>
@@ -101,11 +102,7 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
           <h2>Aufgaben</h2>
           <div class="toolbar-inline">
             <span class="muted">{{ tasks|length }} aktive Einträge</span>
-            {% if archived_task_count %}
-            <a class="button-link secondary" href="/?show_archived={{ 'false' if show_archived else 'true' }}">
-              {% if show_archived %}Archiv ausblenden{% else %}Archiv anzeigen ({{ archived_task_count }}){% endif %}
-            </a>
-            {% endif %}
+            <a class="button-link secondary" href="/archive">Archiv öffnen ({{ archived_task_count }})</a>
           </div>
         </div>
         <div class="task-list">
@@ -124,35 +121,6 @@ How to debug: If the page renders without tasks, inspect the orchestrator `/api/
           {% endfor %}
         </div>
       </section>
-
-      {% if show_archived %}
-      <section class="panel panel-note">
-        <div class="panel-header">
-          <h2>Archivierte Aufgaben</h2>
-          <span class="muted">{{ archived_tasks|length }} Einträge</span>
-        </div>
-        <p class="muted">Archivierte Aufgaben erscheinen nicht mehr im normalen Dashboard und fließen auch nicht in die allgemeinen Benchmarks ein.</p>
-        <div class="task-list">
-          {% for task in archived_tasks %}
-          <article class="task-row task-row-archived">
-            <a class="task-card" href="/tasks/{{ task.id }}">
-              <span class="status status-idle">archiviert</span>
-              <strong>{{ task.goal }}</strong>
-              <span class="muted">{{ task.repository }}</span>
-              <span class="muted">Archiviert am: {{ task.archived_at_display }}</span>
-              <span class="muted">Grund: {{ task.archived_reason or "kein Grund hinterlegt" }}</span>
-            </a>
-            <form method="post" action="/tasks/{{ task.id }}/restore" class="task-row-actions">
-              <input type="hidden" name="reason" value="Aus dem Dashboard wiederhergestellt.">
-              <button type="submit">Wiederherstellen</button>
-            </form>
-          </article>
-          {% else %}
-          <p class="muted">Derzeit sind keine Aufgaben archiviert.</p>
-          {% endfor %}
-        </div>
-      </section>
-      {% endif %}
     </main>
   </body>
 </html>

@@ -96,6 +96,7 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
     <main class="layout">
       <nav class="topnav">
         <a href="/">Dashboard</a>
+        <a href="/archive">Archiv</a>
         <a href="/benchmarks">Benchmarks</a>
         <a href="/worker-guidance">Worker Guidance</a>
         <a href="/suggestions">Mitarbeiterideen</a>
@@ -144,8 +145,15 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
             <p><strong>Gate:</strong> {{ cycle.current_gate_name or "self-improvement-risk-review" }}</p>
             <p><strong>Grund:</strong> {{ cycle.current_gate_reason or cycle.risk_reason or "Freigabe erforderlich." }}</p>
             <p><strong>E-Mail:</strong> {{ cycle.approval_email_status or "noch nicht protokolliert" }}</p>
-            {% if cycle.task_id %}
-            <p><strong>Task:</strong> <a href="/tasks/{{ cycle.task_id }}">{{ cycle.task_id[:8] }}…</a></p>
+            {% if cycle.task_ref %}
+            <p>
+              <strong>Task:</strong>
+              {% if cycle.task_ref.archived %}
+              archiviert · <a href="{{ cycle.task_ref.href }}">im Archiv öffnen</a>
+              {% else %}
+              <a href="{{ cycle.task_ref.href }}">{{ cycle.task_ref.short_id }}</a>
+              {% endif %}
+            </p>
             {% endif %}
             <form method="post" action="/self-improvement/cycles/{{ cycle.id }}/approve" class="stack">
               <label>
@@ -217,7 +225,14 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
 
         <div class="muted" style="font-size:0.85rem; margin-top:0.5rem;">
           Gestartet: {{ si_active_cycle.started_at_display }}
-          {% if si_active_cycle.task_id %} · Task: <a href="/tasks/{{ si_active_cycle.task_id }}">{{ si_active_cycle.task_id[:8] }}…</a>{% endif %}
+          {% if si_active_cycle.task_ref %}
+          · Task:
+          {% if si_active_cycle.task_ref.archived %}
+          archiviert · <a href="{{ si_active_cycle.task_ref.href }}">im Archiv öffnen</a>
+          {% else %}
+          <a href="{{ si_active_cycle.task_ref.href }}">{{ si_active_cycle.task_ref.short_id }}</a>
+          {% endif %}
+          {% endif %}
           {% if si_active_cycle.risk_level != "low" %}
           · Risiko: <strong>{{ si_active_cycle.risk_level }}</strong>
           {% if si_active_cycle.risk_reason %} ({{ si_active_cycle.risk_reason }}){% endif %}
@@ -360,8 +375,12 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
                   {% endif %}
                 </td>
                 <td>
-                  {% if cycle.task_id %}
-                  <a href="/tasks/{{ cycle.task_id }}">{{ cycle.task_id[:8] }}…</a>
+                  {% if cycle.task_ref %}
+                    {% if cycle.task_ref.archived %}
+                    archiviert · <a href="{{ cycle.task_ref.href }}">Archiv</a>
+                    {% else %}
+                    <a href="{{ cycle.task_ref.href }}">{{ cycle.task_ref.short_id }}</a>
+                    {% endif %}
                   {% else %}—{% endif %}
                 </td>
                 <td>{{ cycle.retry_count }} / {{ cycle.max_retries }}</td>
@@ -543,12 +562,24 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
                 <td>{{ incident.severity }}</td>
                 <td>
                   {{ incident.summary }}
-                  {% if incident.task_id %}<br><a href="/tasks/{{ incident.task_id }}">{{ incident.task_id[:8] }}…</a>{% endif %}
+                  {% if incident.task_ref %}
+                    {% if incident.task_ref.archived %}
+                    <br>Task archiviert · <a href="{{ incident.task_ref.href }}">im Archiv öffnen</a>
+                    {% else %}
+                    <br><a href="{{ incident.task_ref.href }}">{{ incident.task_ref.short_id }}</a>
+                    {% endif %}
+                  {% endif %}
                 </td>
                 <td>{{ incident.failure_stage or "—" }}</td>
                 <td>
                   {{ incident.rollback_status or "—" }}
-                  {% if incident.rollback_task_id %}<br><a href="/tasks/{{ incident.rollback_task_id }}">{{ incident.rollback_task_id[:8] }}…</a>{% endif %}
+                  {% if incident.rollback_task_ref %}
+                    {% if incident.rollback_task_ref.archived %}
+                    <br>Rollback-Task archiviert · <a href="{{ incident.rollback_task_ref.href }}">im Archiv öffnen</a>
+                    {% else %}
+                    <br><a href="{{ incident.rollback_task_ref.href }}">{{ incident.rollback_task_ref.short_id }}</a>
+                    {% endif %}
+                  {% endif %}
                   {% if incident.metadata.get("watchdog_state", {}).get("status") %}
                   <br><span class="muted">Watchdog: {{ incident.metadata.get("watchdog_state", {}).get("status") }}</span>
                   {% endif %}

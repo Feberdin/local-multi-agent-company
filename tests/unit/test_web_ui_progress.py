@@ -401,7 +401,7 @@ def test_restart_stage_form_posts_selected_worker_name(tmp_path, monkeypatch) ->
     }
 
 
-def test_dashboard_hides_archived_tasks_by_default_and_can_show_restore_section(tmp_path, monkeypatch) -> None:
+def test_dashboard_hides_archived_tasks_by_default_and_links_to_dedicated_archive_page(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     now = datetime.now(UTC).isoformat()
 
@@ -456,15 +456,16 @@ def test_dashboard_hides_archived_tasks_by_default_and_can_show_restore_section(
 
     with TestClient(app_module.app) as client:
         default_response = client.get("/")
-        archived_response = client.get("/?show_archived=true")
+        archive_response = client.get("/archive")
 
     assert default_response.status_code == 200
     assert "Aktive Aufgabe bleibt im Dashboard sichtbar." in default_response.text
     assert "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein." not in default_response.text
-    assert archived_response.status_code == 200
-    assert "Archivierte Aufgaben" in archived_response.text
-    assert "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein." in archived_response.text
-    assert "Wiederherstellen" in archived_response.text
+    assert 'href="/archive"' in default_response.text
+    assert archive_response.status_code == 200
+    assert "Task-Archiv" in archive_response.text
+    assert "Archivierte Aufgabe soll nur auf Wunsch sichtbar sein." in archive_response.text
+    assert "Wiederherstellen" in archive_response.text
 
 
 def test_task_archive_form_posts_dashboard_payload(tmp_path, monkeypatch) -> None:
@@ -516,13 +517,142 @@ def test_task_restore_form_posts_dashboard_payload(tmp_path, monkeypatch) -> Non
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/?show_archived=true"
+    assert response.headers["location"] == "/archive"
     assert captured["method"] == "POST"
     assert captured["path"] == "/api/tasks/task-1/restore"
     assert captured["json_payload"] == {
         "actor": "dashboard",
         "reason": "Bitte wieder sichtbar machen.",
     }
+
+
+def test_archive_page_highlights_requested_archived_task(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks?only_archived=true":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "task-archived",
+                        "goal": "Archivierte Aufgabe fuer den History-Link.",
+                        "repository": "Feberdin/local-multi-agent-company",
+                        "local_repo_path": "/workspace/local-multi-agent-company",
+                        "base_branch": "main",
+                        "branch_name": "feature/task-archived",
+                        "status": "FAILED",
+                        "archived": True,
+                        "archived_at": now,
+                        "archived_reason": "Bereits untersucht",
+                        "metadata": {"archived": True, "archived_at": now, "archived_reason": "Bereits untersucht"},
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                ],
+            )
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/archive?task_id=task-archived")
+
+    assert response.status_code == 200
+    assert "Diese Aufgabe wurde aus einer Historienansicht markiert." in response.text
+
+
+def test_self_improvement_page_marks_archived_task_references_as_archive_links(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/self-improvement/status":
+            return httpx.Response(
+                200,
+                json={
+                    "enabled": True,
+                    "can_start": True,
+                    "daily_cycle_count": 1,
+                    "max_cycles_per_day": 5,
+                    "mode": "assisted",
+                    "open_incident_count": 0,
+                    "active_cycle": None,
+                    "last_cycle": None,
+                    "pending_review_cycles": [],
+                },
+            )
+        if path == "/api/self-improvement/cycles":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "cycle-1",
+                        "cycle_number": 11,
+                        "status": "failed",
+                        "trigger": "manual",
+                        "task_id": "task-archived",
+                        "risk_level": "low",
+                        "retry_count": 0,
+                        "max_retries": 3,
+                        "started_at": now,
+                        "completed_at": now,
+                        "goal": "Historischen Self-Improvement-Lauf anzeigen.",
+                    }
+                ],
+            )
+        if path == "/api/settings/self-improvement":
+            return httpx.Response(200, json={"mode": "assisted", "normalized_mode": "assisted"})
+        if path == "/api/settings/self-improvement/policy":
+            return httpx.Response(200, json={"repository": "Feberdin/local-multi-agent-company", "mode_rules": {}})
+        if path == "/api/self-improvement/incidents":
+            return httpx.Response(200, json=[])
+        if path == "/api/tasks/task-archived":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-archived",
+                    "goal": "Archivierte historische Aufgabe.",
+                    "repository": "Feberdin/local-multi-agent-company",
+                    "local_repo_path": "/workspace/local-multi-agent-company",
+                    "base_branch": "main",
+                    "branch_name": "feature/task-archived",
+                    "status": "FAILED",
+                    "metadata": {"archived": True, "archived_at": now, "archived_reason": "Altlast"},
+                    "archived": True,
+                    "archived_at": now,
+                    "archived_reason": "Altlast",
+                    "created_at": now,
+                    "updated_at": now,
+                    "worker_results": {},
+                    "risk_flags": [],
+                    "events": [],
+                    "approvals": [],
+                    "smoke_checks": [],
+                    "deployment": None,
+                    "resume_target": None,
+                    "current_approval_gate_name": None,
+                    "approval_required": False,
+                    "approval_reason": None,
+                    "allow_repository_modifications": True,
+                    "pull_request_url": None,
+                    "latest_error": None,
+                },
+            )
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/self-improvement")
+
+    assert response.status_code == 200
+    assert "archiviert" in response.text
+    assert '/archive?task_id=task-archived#task-task-archived' in response.text
+    assert '/tasks/task-archived' not in response.text
 
 
 def test_normalize_suggestions_shows_repository_wide_statuses_readably(tmp_path, monkeypatch) -> None:

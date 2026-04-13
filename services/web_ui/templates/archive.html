@@ -1,0 +1,88 @@
+<!--
+Purpose: Dedicated archive view for tasks that were intentionally removed from the normal operator lists.
+Input/Output: Receives only archived task payloads and renders restore actions plus archive metadata.
+Important invariants: Archived tasks stay out of active dashboards, but remain inspectable and restorable here.
+How to debug: If archived tasks are missing, inspect `/api/tasks?only_archived=true` and the archive flag in task metadata.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Archiv</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/archive" class="active">Archiv</a>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug">Debug-Center</a>
+        <a href="/system-check">System-Check</a>
+        <a href="/self-improvement">Self-Improvement</a>
+        <span class="topnav-version" title="{{ ui_build.full_label }}">{{ ui_build.display }}</span>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Feberdin Homelab</p>
+        <h1>Task-Archiv</h1>
+        <p class="lead">Hier liegen bewusst ausgeblendete Aufgaben. Sie tauchen im normalen Dashboard und in aktiven Listen nicht mehr auf, bleiben aber vollständig prüf- und wiederherstellbar.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="panel panel-note">
+        <h2>Archivstatus</h2>
+        <p><strong>Archivierte Aufgaben:</strong> {{ archived_task_count }}</p>
+        <p class="muted">Self-Improvement und andere Historien verlinken archivierte Aufgaben ab jetzt nur noch hierhin, damit alte Einträge nicht wie laufende Arbeit aussehen.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Archivierte Aufgaben</h2>
+          <span class="muted">{{ archived_task_count }} Einträge</span>
+        </div>
+        <div class="task-list">
+          {% for task in archived_tasks %}
+          <article class="task-row task-row-archived" id="task-{{ task.id }}">
+            <a class="task-card" href="/tasks/{{ task.id }}">
+              <span class="status status-idle">archiviert</span>
+              <strong>{{ task.goal }}</strong>
+              <span class="muted">{{ task.repository }}</span>
+              <span class="muted">Status beim Archivieren: {{ task.status }}</span>
+              <span class="muted">Archiviert am: {{ task.archived_at_display }}</span>
+              <span class="muted">Grund: {{ task.archived_reason or "kein Grund hinterlegt" }}</span>
+              {% if task.highlighted %}
+              <span class="muted"><strong>Diese Aufgabe wurde aus einer Historienansicht markiert.</strong></span>
+              {% endif %}
+            </a>
+            <form method="post" action="/tasks/{{ task.id }}/restore" class="task-row-actions">
+              <input type="hidden" name="reason" value="Aus dem Archiv wiederhergestellt.">
+              <button type="submit">Wiederherstellen</button>
+            </form>
+          </article>
+          {% else %}
+          <p class="muted">Derzeit sind keine Aufgaben archiviert.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
