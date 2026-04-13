@@ -621,6 +621,42 @@ def test_extract_relevant_file_excerpt_focuses_git_clone_region(monkeypatch: pyt
     assert settings is not None
 
 
+def test_coding_user_prompt_renders_candidate_scope_as_readable_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+
+    prompt = coding_app._coding_user_prompt(  # pyright: ignore[reportPrivateUsage]
+        "Add error handling to the git clone command in the local patch backend",
+        {"requirements": ["Implement clone error handling."]},
+        {"touched_areas": ["services/shared/agentic_lab/repo_tools.py"]},
+        {"candidate_files": ["services/shared/agentic_lab/repo_tools.py"]},
+        {"file_count": 2},
+        {
+            "services/shared/agentic_lab/repo_tools.py": (
+                "# services/shared/agentic_lab/repo_tools.py\n"
+                "[lines 271-275]\n"
+                "0271:     run_command(\n"
+                "0272:         [\"git\", \"clone\", \"--branch\", base_branch, \"--single-branch\", clone_source, str(repo_path)],\n"
+                "0273:         env=clone_env,\n"
+                "0274:         timeout=900,\n"
+                "0275:     )\n"
+            )
+        },
+        "Symbol index:\n- services/shared/agentic_lab/repo_tools.py:271 _clone_target_from_best_source",
+        ["services/shared/agentic_lab/repo_tools.py", "services/coding_worker/app.py"],
+    )
+
+    assert "Likely implementation targets:" in prompt
+    assert "- services/shared/agentic_lab/repo_tools.py" in prompt
+    assert "Candidate file contents:\n# services/shared/agentic_lab/repo_tools.py" in prompt
+    assert 'Candidate files:\n- services/shared/agentic_lab/repo_tools.py\n- services/coding_worker/app.py' in prompt
+    assert "Do not claim that no target file was provided when candidate files are listed above." in prompt
+    assert "{'services/shared/agentic_lab/repo_tools.py'" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
     tmp_path: Path,

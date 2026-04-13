@@ -7,6 +7,7 @@ How to debug: If generated changes look wrong, inspect the plan, sampled files, 
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from pathlib import Path
@@ -530,16 +531,26 @@ def _coding_noop_retry_user_prompt(
         symbol_index_block,
         candidate_files,
     )
+    target_focus_block = _build_target_focus_block(
+        goal=goal,
+        requirements=requirements,
+        candidate_files=candidate_files,
+        file_context=file_context,
+    )
     retry_block = [
         "Previous coding attempt returned zero file operations even though this task asked for code changes.",
         f"Previous summary: {previous_plan.get('summary', 'keine Zusammenfassung')}",
-        f"Candidate files you may change: {candidate_files or ['keine konkreten Kandidaten sichtbar']}",
+        "Approved candidate files you may change:",
+        _render_string_list_for_prompt(candidate_files, empty_label="<keine konkreten Kandidaten sichtbar>"),
         "Return at least one concrete file operation when a safe change is possible.",
         "If no safe code change is possible, keep operations empty and add a short "
         "blocking_reason field tied to one specific candidate file.",
+        "Do not claim that no target file was provided when candidate files are already listed here.",
         "Do not summarize the repository or offer general help. This is a concrete code-edit task.",
         "Do not answer with prose outside the JSON object.",
     ]
+    if target_focus_block:
+        retry_block.insert(3, target_focus_block)
     return base_prompt + "\n\n" + "\n".join(retry_block)
 
 
@@ -555,22 +566,33 @@ def _coding_contract_recovery_user_prompt(
     """Create one smaller, highly targeted retry prompt after the shared JSON contract path already failed."""
 
     compact_requirements = _compact_requirements_for_prompt(requirements)
+    target_focus_block = _build_target_focus_block(
+        goal=goal,
+        requirements=requirements,
+        candidate_files=candidate_files,
+        file_context=file_context,
+    )
     parts = [
         f"Goal:\n{goal}",
-        f"Requirements:\n{compact_requirements}",
-        f"Candidate files you may change:\n{candidate_files or ['<none>']}",
+        "This is a concrete implementation task with an approved edit scope.",
+        f"Requirements:\n{_render_prompt_json(compact_requirements)}",
+        "Candidate files you may change:\n"
+        + _render_string_list_for_prompt(candidate_files, empty_label="<none>"),
         f"Previous contract failure:\n{_short_text(previous_error, limit=1200)}",
     ]
+    if target_focus_block:
+        parts.append(target_focus_block)
     if symbol_index_block:
         parts.append(symbol_index_block)
     if file_context:
-        parts.append(f"Relevant code excerpts:\n{file_context}")
+        parts.append(f"Relevant code excerpts:\n{_render_file_context_for_prompt(file_context)}")
     parts.append(
         "This is a concrete code-edit recovery attempt after a failed structured output. "
         "Choose one of the listed candidate files. "
         "Return at least one concrete operation when a safe change is possible. "
         "If no safe code change is possible, set operations to [] and provide a blocking_reason that names exactly "
-        "one listed candidate file and explains why changing it there would be unsafe."
+        "one listed candidate file and explains why changing it there would be unsafe. "
+        "Do not claim that no target file was provided when candidate files are listed above."
     )
     return "\n\n".join(parts)
 
@@ -589,26 +611,38 @@ def _coding_user_prompt(
     compact_architecture = _compact_architecture_for_prompt(architecture)
     compact_research = _compact_research_for_prompt(research)
     compact_overview = _compact_repo_overview_for_prompt(overview)
+    target_focus_block = _build_target_focus_block(
+        goal=goal,
+        requirements=requirements,
+        candidate_files=candidate_files,
+        file_context=file_context,
+    )
     parts = [
         f"Goal:\n{goal}",
-        f"Requirements:\n{compact_requirements}",
-        f"Architecture and implementation plan:\n{compact_architecture}",
-        f"Research:\n{compact_research}",
-        f"Repo overview:\n{compact_overview}",
-        f"Candidate files:\n{candidate_files or ['<none>']}",
+        "Approved change scope:\n"
+        "This is a concrete implementation task. The listed candidate files are already approved as the edit scope.",
+        f"Requirements:\n{_render_prompt_json(compact_requirements)}",
+        f"Architecture and implementation plan:\n{_render_prompt_json(compact_architecture)}",
+        f"Research:\n{_render_prompt_json(compact_research)}",
+        f"Repo overview:\n{_render_prompt_json(compact_overview)}",
+        "Candidate files:\n" + _render_string_list_for_prompt(candidate_files, empty_label="<none>"),
     ]
+    if target_focus_block:
+        parts.append(target_focus_block)
     if symbol_index_block:
         parts.append(symbol_index_block)
     if file_context:
-        parts.append(f"Candidate file contents:\n{file_context}")
+        parts.append(f"Candidate file contents:\n{_render_file_context_for_prompt(file_context)}")
     parts.append(
-        "Generate only the minimum changes needed. "
-        "Prefer replace_symbol_body for Python functions. "
-        "Use create_or_update only if a new file is needed or >50% of the file changes. "
-        "This is an implementation task, not a repo summary. "
-        "Do not claim that no changes are needed when the goal clearly asks for a code change unless you include "
-        "a file-specific blocking_reason. "
-        "Do not answer with repository praise, project summaries, or generic help offers."
+        "Important guardrails:\n"
+        "- Generate only the minimum changes needed.\n"
+        "- Prefer replace_symbol_body for Python functions.\n"
+        "- Use create_or_update only if a new file is needed or >50% of the file changes.\n"
+        "- This is an implementation task, not a repo summary.\n"
+        "- Do not claim that no target file was provided when candidate files are listed above.\n"
+        "- Do not claim that no changes are needed when the goal clearly asks for a code change unless you include "
+        "a file-specific blocking_reason.\n"
+        "- Do not answer with repository praise, project summaries, or generic help offers."
     )
     return "\n\n".join(parts)
 
@@ -661,6 +695,106 @@ def _compact_repo_overview_for_prompt(overview: dict[str, Any]) -> dict[str, Any
         "git_status": _limited_string_list(overview.get("git_status"), limit=10),
         "last_commit": overview.get("last_commit"),
     }
+
+
+def _render_prompt_json(value: object) -> str:
+    """Render prompt context as readable JSON instead of Python repr strings."""
+
+    if value in (None, "", [], {}):
+        return "<none>"
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(value)
+
+
+def _render_string_list_for_prompt(items: list[str], *, empty_label: str) -> str:
+    """Render one string list as bullet points so models see real paths instead of Python list reprs."""
+
+    if not items:
+        return f"- {empty_label}"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _render_file_context_for_prompt(file_context: dict[str, str]) -> str:
+    """Join candidate excerpts into a readable prompt block without escaped Python dict newlines."""
+
+    if not file_context:
+        return "<none>"
+    ordered_paths = sorted(file_context)
+    return "\n\n".join(file_context[path] for path in ordered_paths if file_context[path].strip())
+
+
+def _build_target_focus_block(
+    *,
+    goal: str,
+    requirements: object,
+    candidate_files: list[str],
+    file_context: dict[str, str],
+) -> str:
+    """Highlight the likeliest implementation targets so coding models do not drift into generic blockers."""
+
+    hints = _derive_target_focus_hints(
+        goal=goal,
+        requirements=requirements,
+        candidate_files=candidate_files,
+        file_context=file_context,
+    )
+    if not hints:
+        return ""
+
+    lines = ["Likely implementation targets:"]
+    for hint in hints:
+        matched_terms = ", ".join(hint["matched_terms"]) or "excerpt available"
+        lines.append(f"- {hint['file_path']}: {hint['reason']} Matched terms: {matched_terms}.")
+    lines.append("Start with the highest-ranked target unless another listed file is clearly safer.")
+    return "\n".join(lines)
+
+
+def _derive_target_focus_hints(
+    *,
+    goal: str,
+    requirements: object,
+    candidate_files: list[str],
+    file_context: dict[str, str],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Score candidate files against goal keywords so the prompt can name a concrete primary target."""
+
+    keywords = _prompt_focus_keywords(goal, requirements)
+    hints: list[dict[str, Any]] = []
+    for index, path in enumerate(candidate_files):
+        excerpt = file_context.get(path, "")
+        haystack = _normalize_prompt_search_text(f"{path}\n{excerpt}")
+        matched_terms = [keyword for keyword in keywords if keyword in haystack][:8]
+        score = len(matched_terms)
+        if "git" in matched_terms and "clone" in matched_terms:
+            score += 4
+        if "ensure_repository_checkout" in matched_terms:
+            score += 3
+        if "run_command" in matched_terms:
+            score += 2
+        if score == 0 and excerpt:
+            score = 1
+        if score == 0:
+            continue
+        reason = "This file overlaps strongly with the requested change."
+        if "git" in matched_terms and "clone" in matched_terms:
+            reason = "This file already contains the clone path that the goal talks about."
+        elif "ensure_repository_checkout" in matched_terms:
+            reason = "This file contains the checkout helper that likely owns the change."
+        hints.append(
+            {
+                "file_path": path,
+                "matched_terms": matched_terms,
+                "reason": reason,
+                "score": score,
+                "order": index,
+            }
+        )
+
+    hints.sort(key=lambda item: (-int(item["score"]), int(item["order"])))
+    return hints[:limit]
 
 
 def _limited_string_list(raw: object, *, limit: int) -> list[str]:
