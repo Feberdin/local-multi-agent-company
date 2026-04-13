@@ -358,6 +358,26 @@ class LLMClient:
     ) -> str:
         """Return plain text from the configured chat model backend."""
 
+        text, _trace = await self.complete_with_trace(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            worker_name=worker_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return text
+
+    async def complete_with_trace(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        worker_name: str = "default",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return plain text plus provider diagnostics for operator-facing probe flows."""
+
         if not self.settings.has_llm_backend():
             raise LLMError("No LLM backend configured.")
 
@@ -381,7 +401,7 @@ class LLMClient:
         candidates = self._provider_candidates(provider, fallback_provider)
         for index, candidate in enumerate(candidates):
             try:
-                return await self._complete_with_provider(
+                text = await self._complete_with_provider(
                     provider=candidate,
                     route=route,
                     system_prompt=system_prompt,
@@ -390,6 +410,16 @@ class LLMClient:
                     temperature=request_temperature,
                     max_tokens=request_max_tokens,
                 )
+                return text, {
+                    "provider": candidate.name,
+                    "model_name": candidate.model_name,
+                    "base_url": candidate.base_url,
+                    "used_fallback": index > 0,
+                    "repair_pass_used": False,
+                    "output_contract": route.output_contract,
+                    "request_timeout_seconds": route.request_timeout_seconds,
+                    "max_tokens": request_max_tokens,
+                }
             except LLMError as exc:
                 errors.append(str(exc))
                 next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
@@ -414,6 +444,7 @@ class LLMClient:
         *,
         worker_name: str = "default",
         required_keys: list[str] | tuple[str, ...] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Ask the model for JSON and parse the first JSON object found in its reply.
 
@@ -425,6 +456,26 @@ class LLMClient:
         If the first attempt yields no parseable JSON at all, one retry is made with
         a minimal system prompt that asks the model to reformat its previous answer.
         """
+
+        payload, _trace = await self.complete_json_with_trace(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            worker_name=worker_name,
+            required_keys=required_keys,
+            max_tokens=max_tokens,
+        )
+        return payload
+
+    async def complete_json_with_trace(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        worker_name: str = "default",
+        required_keys: list[str] | tuple[str, ...] | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return parsed JSON plus provider diagnostics for structured-model probes."""
 
         # JSON instruction goes first so instruction-tuned models see it before
         # any role description that might pull them toward prose answers.
@@ -448,6 +499,7 @@ class LLMClient:
         errors: list[str] = []
         candidates = self._provider_candidates(provider, fallback_provider)
         required_key_tuple = tuple(required_keys or ())
+        request_max_tokens = max_tokens if max_tokens is not None else route.max_tokens
 
         for index, candidate in enumerate(candidates):
             try:
@@ -458,7 +510,7 @@ class LLMClient:
                     user_prompt=user_prompt,
                     worker_name=worker_name,
                     temperature=0.1,
-                    max_tokens=route.max_tokens,
+                    max_tokens=request_max_tokens,
                     json_mode=True,
                 )
             except LLMError as exc:
@@ -483,7 +535,17 @@ class LLMClient:
                     required_keys=required_key_tuple,
                 )
             if result is not None and validation_error is None:
-                return result
+                return result, {
+                    "provider": candidate.name,
+                    "model_name": candidate.model_name,
+                    "base_url": candidate.base_url,
+                    "used_fallback": index > 0,
+                    "repair_pass_used": False,
+                    "output_contract": route.output_contract,
+                    "request_timeout_seconds": route.request_timeout_seconds,
+                    "max_tokens": request_max_tokens,
+                    "raw_response_text": raw,
+                }
 
             if validation_error is None:
                 LOGGER.warning(
@@ -534,7 +596,7 @@ class LLMClient:
                     user_prompt=retry_input,
                     worker_name=worker_name,
                     temperature=0.0,
-                    max_tokens=route.max_tokens,
+                    max_tokens=request_max_tokens,
                     json_mode=True,
                 )
             except LLMError as exc:
@@ -550,7 +612,17 @@ class LLMClient:
                     required_keys=required_key_tuple,
                 )
             if result is not None and validation_error is None:
-                return result
+                return result, {
+                    "provider": candidate.name,
+                    "model_name": candidate.model_name,
+                    "base_url": candidate.base_url,
+                    "used_fallback": index > 0,
+                    "repair_pass_used": True,
+                    "output_contract": route.output_contract,
+                    "request_timeout_seconds": route.request_timeout_seconds,
+                    "max_tokens": request_max_tokens,
+                    "raw_response_text": retry_raw,
+                }
 
             next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
             if next_candidate is not None:

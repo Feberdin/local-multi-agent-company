@@ -293,6 +293,26 @@ button.secondary-button {
   border-top: 1px dashed var(--line);
 }
 
+.response-details {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem 1rem;
+  background: #fcfaf6;
+}
+
+.response-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.response-block {
+  margin-top: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+
 .download-card,
 .download-row {
   display: grid;
@@ -1218,6 +1238,10 @@ pre {
 
   /* Readiness details background */
   .readiness-details {
+    background: #141a17;
+  }
+
+  .response-details {
     background: #141a17;
   }
 }

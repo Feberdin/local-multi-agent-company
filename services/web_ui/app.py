@@ -37,6 +37,9 @@ settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 READINESS_MODE_QUERY = Query(default=ReadinessMode.QUICK)
 READINESS_MODE_FORM = Form(default=ReadinessMode.QUICK)
+DEFAULT_WORKER_PROBE_GOAL = (
+    "Verbessere Beobachtbarkeit, Fehlermeldungen und Healthchecks einer lokalen Docker-basierten Anwendung."
+)
 
 # Why this exists:
 # The UI should import both inside the container (`/app/...`) and in local tests where the
@@ -1630,6 +1633,103 @@ def _build_worker_benchmark_report(
     }
 
 
+def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
+    """Turn raw worker-probe API payloads into readable benchmark cards and status facts."""
+
+    runs: list[dict[str, Any]] = []
+    for raw_run in _as_list(payload.get("runs")):
+        run = _as_mapping(raw_run)
+        raw_results = [_as_mapping(item) for item in _as_list(run.get("results"))]
+        decorated_results: list[dict[str, Any]] = []
+        for raw_result in raw_results:
+            response_text = str(raw_result.get("response_text") or "").strip()
+            summary = str(raw_result.get("summary") or "Keine Zusammenfassung sichtbar.")
+            status = str(raw_result.get("status") or "unknown")
+            worker_name = str(raw_result.get("worker_name") or "")
+            started_at = raw_result.get("started_at")
+            completed_at = raw_result.get("completed_at")
+            decorated_results.append(
+                {
+                    **raw_result,
+                    "worker_name": worker_name,
+                    "worker_label": str(raw_result.get("worker_label") or WORKER_LABELS.get(worker_name, worker_name)),
+                    "status": status,
+                    "status_label": (
+                        "ok"
+                        if status == "ok"
+                        else "Fehler"
+                        if status == "failed"
+                        else "laeuft"
+                        if status == "running"
+                        else "unbekannt"
+                    ),
+                    "status_tone": "done" if status == "ok" else "failed" if status == "failed" else "blocked",
+                    "summary": summary,
+                    "summary_preview": _clip_text(summary, max_length=180),
+                    "response_text": response_text or "Noch keine Modellantwort sichtbar.",
+                    "response_preview": _clip_text(response_text or summary, max_length=240),
+                    "response_line_count": max(1, len((response_text or summary).splitlines())),
+                    "started_at_display": _format_timestamp(started_at) if started_at else "nicht gestartet",
+                    "completed_at_display": _format_timestamp(completed_at) if completed_at else "noch offen",
+                    "elapsed_display": _format_duration(raw_result.get("elapsed_seconds")),
+                    "model_display": (
+                        f"{raw_result.get('provider')} / {raw_result.get('model_name')}"
+                        if raw_result.get("provider") and raw_result.get("model_name")
+                        else str(raw_result.get("model_name") or raw_result.get("provider") or "unbekannt")
+                    ),
+                }
+            )
+
+        status = str(run.get("status") or "unknown")
+        runs.append(
+            {
+                **run,
+                "status": status,
+                "status_label": {
+                    "queued": "wartet",
+                    "running": "laeuft",
+                    "completed": "abgeschlossen",
+                    "failed": "fehlgeschlagen",
+                }.get(status, status),
+                "status_tone": {
+                    "queued": "idle",
+                    "running": "blocked",
+                    "completed": "done",
+                    "failed": "failed",
+                }.get(status, "idle"),
+                "created_at_display": _format_timestamp(run.get("created_at")) if run.get("created_at") else "unbekannt",
+                "started_at_display": _format_timestamp(run.get("started_at")) if run.get("started_at") else "noch nicht",
+                "updated_at_display": _format_timestamp(run.get("updated_at")) if run.get("updated_at") else "unbekannt",
+                "completed_at_display": _format_timestamp(run.get("completed_at")) if run.get("completed_at") else "noch offen",
+                "probe_goal": str(run.get("probe_goal") or DEFAULT_WORKER_PROBE_GOAL),
+                "probe_goal_preview": _clip_text(str(run.get("probe_goal") or DEFAULT_WORKER_PROBE_GOAL), max_length=180),
+                "active_worker_label": WORKER_LABELS.get(
+                    str(run.get("active_worker_name") or ""),
+                    str(run.get("active_worker_name") or "niemand"),
+                ),
+                "results": decorated_results,
+                "errors": [str(item) for item in _as_list(run.get("errors")) if str(item).strip()],
+            }
+        )
+
+    latest = runs[0] if runs else None
+    latest_results = latest["results"] if latest else []
+    latest_ok = sum(1 for item in latest_results if item["status"] == "ok")
+    latest_failed = sum(1 for item in latest_results if item["status"] == "failed")
+    return {
+        "runs": runs,
+        "latest_run": latest,
+        "latest_results": latest_results,
+        "overview": {
+            "run_count": len(runs),
+            "active_run_count": sum(1 for run in runs if run["status"] in {"queued", "running"}),
+            "latest_completed_workers": latest_ok,
+            "latest_failed_workers": latest_failed,
+            "latest_total_workers": int(latest.get("total_workers") or 0) if latest else 0,
+        },
+    }
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(service="web-ui")
@@ -2137,11 +2237,14 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
     messages = [error_message] if error_message else []
     reset_at = _benchmark_reset_at()
     tasks_response = await _api_request("GET", "/api/tasks?include_archived=true")
+    worker_probe_response = await _api_request("GET", "/api/benchmarks/model-probe")
     all_tasks = [task for task in _as_list(_response_json(tasks_response, [])) if isinstance(task, dict)]
     archived_hidden_count = sum(1 for task in all_tasks if _is_task_archived(task))
     raw_tasks = [task for task in all_tasks if not _is_task_archived(task)]
     if tasks_response.status_code >= 400:
         messages.append(_response_detail(tasks_response, "Die Aufgabenliste konnte nicht für Benchmarks geladen werden."))
+    if worker_probe_response.status_code >= 400:
+        messages.append(_response_detail(worker_probe_response, "Die Modell-Probeläufe konnten nicht geladen werden."))
     hidden_tasks_before_reset = 0
     if reset_at is not None and raw_tasks:
         hidden_tasks_before_reset = sum(1 for task in raw_tasks if not _task_matches_benchmark_window(task, reset_at))
@@ -2175,13 +2278,17 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
         reset_at=reset_at,
         hidden_tasks_before_reset=hidden_tasks_before_reset,
     )
+    worker_probe_report = _decorate_worker_probe_registry(_as_mapping(_response_json(worker_probe_response, {})))
     if skipped_tasks:
         messages.append(
             f"{len(skipped_tasks)} Aufgaben konnten nicht vollständig in die Benchmark-Auswertung aufgenommen werden."
         )
+    benchmark_auto_refresh = 30 if benchmark_report["active_runs"] else 0
+    probe_auto_refresh = 10 if worker_probe_report["overview"]["active_run_count"] else 0
 
     return {
         "benchmark_report": benchmark_report,
+        "worker_probe_report": worker_probe_report,
         "worker_summaries": benchmark_report["worker_summaries"],
         "recent_runs": benchmark_report["recent_runs"],
         "overview": {
@@ -2199,9 +2306,11 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
             "average_duration_display": benchmark_report["average_duration_display"],
             "median_duration_display": benchmark_report["median_duration_display"],
         },
-        "auto_refresh_seconds": 30 if benchmark_report["active_runs"] else 0,
+        "worker_probe_overview": worker_probe_report["overview"],
+        "auto_refresh_seconds": max(benchmark_auto_refresh, probe_auto_refresh),
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
+        "worker_probe_default_goal": DEFAULT_WORKER_PROBE_GOAL,
     }
 
 
@@ -2626,6 +2735,14 @@ async def download_benchmarks_export() -> Response:
     return _download_json_response("worker-benchmarks.json", context["benchmark_report"])
 
 
+@app.get("/benchmarks/model-probe/export.json")
+async def download_worker_probe_export() -> Response:
+    response = await _api_request("GET", "/api/benchmarks/model-probe")
+    payload = _as_mapping(_response_json(response, {}))
+    latest_run = next((item for item in _as_list(payload.get("runs")) if isinstance(item, dict)), {})
+    return _download_json_response("worker-model-probe.json", latest_run)
+
+
 @app.post("/benchmarks/reset", response_class=HTMLResponse)
 async def reset_benchmarks(request: Request) -> HTMLResponse:
     reset_at = datetime.now(UTC).replace(microsecond=0)
@@ -2646,6 +2763,27 @@ async def reset_benchmarks(request: Request) -> HTMLResponse:
         name="benchmarks.html",
         context={"request": request, **context},
     )
+
+
+@app.post("/benchmarks/model-probe/start", response_class=HTMLResponse, response_model=None)
+async def start_worker_model_probe(
+    request: Request,
+    probe_goal: str = Form(DEFAULT_WORKER_PROBE_GOAL),
+) -> Response:
+    response = await _api_request(
+        "POST",
+        "/api/benchmarks/model-probe",
+        json_payload={"probe_goal": probe_goal},
+    )
+    if response.status_code >= 400:
+        detail = _response_detail(response, "Die Modell-Probe konnte nicht gestartet werden.")
+        context = await _load_benchmarks_context(error_message=detail)
+        return templates.TemplateResponse(
+            request=request,
+            name="benchmarks.html",
+            context={"request": request, **context},
+        )
+    return RedirectResponse(url="/benchmarks", status_code=303)
 
 
 @app.get("/trusted-sources", response_class=HTMLResponse)

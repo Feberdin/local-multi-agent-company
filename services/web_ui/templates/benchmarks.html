@@ -93,6 +93,105 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
 
       <section class="panel">
         <div class="panel-header">
+          <div>
+            <h2>Schnelltest Modellantworten</h2>
+            <span class="muted">Startet einen schnellen, rein synthetischen Modell-Probelauf fuer die LLM-gestuetzten Worker. Kein Repository wird geaendert.</span>
+          </div>
+          <div class="toolbar-inline">
+            <a class="button-link secondary" href="/benchmarks/model-probe/export.json">Letzten Probelauf als JSON</a>
+          </div>
+        </div>
+        <form method="post" action="/benchmarks/model-probe/start" class="stack">
+          <label>
+            Probe-Auftrag
+            <textarea name="probe_goal" rows="3" placeholder="{{ worker_probe_default_goal }}">{{ worker_probe_default_goal }}</textarea>
+          </label>
+          <p class="muted">Der Lauf fragt die konfigurierten Worker-Routen mit kurzen Testprompts ab. So siehst du schnell, welches Modell geantwortet hat und ob strukturierte Antworten sauber zurueckkommen.</p>
+          <button type="submit">Schnelltest starten</button>
+        </form>
+
+        <div class="stats-grid">
+          <p><strong>Gespeicherte Probeläufe:</strong> {{ worker_probe_overview.run_count }}</p>
+          <p><strong>Aktiv:</strong> {{ worker_probe_overview.active_run_count }}</p>
+          <p><strong>Letzter Lauf ok:</strong> {{ worker_probe_overview.latest_completed_workers }}</p>
+          <p><strong>Letzter Lauf Fehler:</strong> {{ worker_probe_overview.latest_failed_workers }}</p>
+          <p><strong>Letzter Lauf gesamt:</strong> {{ worker_probe_overview.latest_total_workers }}</p>
+        </div>
+
+        {% if worker_probe_report.latest_run %}
+        <article class="panel panel-note">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Letzter Probelauf</p>
+              <h3>{{ worker_probe_report.latest_run.probe_goal_preview }}</h3>
+            </div>
+            <span class="status status-{{ worker_probe_report.latest_run.status_tone }}">{{ worker_probe_report.latest_run.status_label }}</span>
+          </div>
+          <div class="stats-grid">
+            <p><strong>Erstellt:</strong> {{ worker_probe_report.latest_run.created_at_display }}</p>
+            <p><strong>Gestartet:</strong> {{ worker_probe_report.latest_run.started_at_display }}</p>
+            <p><strong>Zuletzt aktualisiert:</strong> {{ worker_probe_report.latest_run.updated_at_display }}</p>
+            <p><strong>Abgeschlossen:</strong> {{ worker_probe_report.latest_run.completed_at_display }}</p>
+            <p><strong>Aktiver Worker:</strong> {{ worker_probe_report.latest_run.active_worker_label }}</p>
+            <p><strong>Erfolgreich:</strong> {{ worker_probe_report.latest_run.completed_workers }} / {{ worker_probe_report.latest_run.total_workers }}</p>
+            <p><strong>Fehler:</strong> {{ worker_probe_report.latest_run.failed_workers }}</p>
+          </div>
+          {% if worker_probe_report.latest_run.errors %}
+          <div class="timeline">
+            {% for error in worker_probe_report.latest_run.errors %}
+            <article class="event event-warning">
+              <p>{{ error }}</p>
+            </article>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </article>
+
+        <div class="benchmark-grid">
+          {% for result in worker_probe_report.latest_results %}
+          <article class="benchmark-card benchmark-card-{{ 'ok' if result.status == 'ok' else 'error' if result.status == 'failed' else 'warning' }}">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">{{ result.worker_name }}</p>
+                <h3>{{ result.worker_label }}</h3>
+              </div>
+              <span class="status status-{{ result.status_tone }}">{{ result.status_label }}</span>
+            </div>
+            <p class="muted">{{ result.summary_preview }}</p>
+            <div class="stats-grid">
+              <p><strong>Modell:</strong> {{ result.model_display }}</p>
+              <p><strong>Contract:</strong> {{ result.output_contract }}</p>
+              <p><strong>Dauer:</strong> {{ result.elapsed_display }}</p>
+              <p><strong>Gestartet:</strong> {{ result.started_at_display }}</p>
+              <p><strong>Beendet:</strong> {{ result.completed_at_display }}</p>
+              <p><strong>Fallback genutzt:</strong> {{ "Ja" if result.used_fallback else "Nein" }}</p>
+              <p><strong>Repair-Pass:</strong> {{ "Ja" if result.repair_pass_used else "Nein" }}</p>
+              <p><strong>Antwortformat:</strong> {{ result.response_format }}</p>
+            </div>
+            {% if result.notes %}
+            <ul class="simple-list">
+              {% for note in result.notes %}
+              <li>{{ note }}</li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+            {% if result.error_message %}
+            <p><strong>Fehler:</strong> {{ result.error_message }}</p>
+            {% endif %}
+            <details class="response-details" {% if result.status == 'failed' %}open{% endif %}>
+              <summary>Gesammelte Modellantwort anzeigen</summary>
+              <pre class="response-block">{{ result.response_text }}</pre>
+            </details>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">Noch kein Modell-Probelauf vorhanden.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
           <h2>Worker-Übersicht</h2>
           <span class="muted">Alle Worker auf einen Blick, mit Dauer, Stabilität und grober Input-/Outcome-Relation.</span>
         </div>

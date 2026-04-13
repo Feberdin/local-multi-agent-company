@@ -98,6 +98,42 @@ async def test_llm_client_falls_back_when_primary_provider_times_out(
 
 
 @pytest.mark.asyncio
+async def test_complete_with_trace_reports_provider_and_fallback_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  research:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            raise httpx.ReadTimeout("primary timeout", request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "fallback-ok"}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response, trace = await client.complete_with_trace("system", "user", worker_name="research", max_tokens=123)
+
+    assert response == "fallback-ok"
+    assert trace["provider"] == "mistral"
+    assert trace["used_fallback"] is True
+    assert trace["max_tokens"] == 123
+
+
+@pytest.mark.asyncio
 async def test_complete_json_falls_back_when_primary_provider_returns_non_json_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

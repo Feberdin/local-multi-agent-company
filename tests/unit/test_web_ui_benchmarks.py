@@ -33,6 +33,68 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         del method, json_payload
+        if path == "/api/benchmarks/model-probe":
+            return httpx.Response(
+                200,
+                json={
+                    "runs": [
+                        {
+                            "id": "probe-1",
+                            "status": "completed",
+                            "probe_goal": "Teste schnelle Modellantworten fuer observability-orientierte Aufgaben.",
+                            "created_at": now.isoformat(),
+                            "started_at": now.isoformat(),
+                            "updated_at": now.isoformat(),
+                            "completed_at": now.isoformat(),
+                            "active_worker_name": None,
+                            "total_workers": 2,
+                            "completed_workers": 2,
+                            "failed_workers": 0,
+                            "errors": [],
+                            "results": [
+                                {
+                                    "worker_name": "requirements",
+                                    "worker_label": "Anforderungen",
+                                    "status": "ok",
+                                    "output_contract": "json",
+                                    "response_format": "json",
+                                    "summary": "Knappe Requirements-Antwort.",
+                                    "response_text": "{\n  \"summary\": \"Knappe Requirements-Antwort.\"\n}",
+                                    "response_data": {"summary": "Knappe Requirements-Antwort."},
+                                    "provider": "mistral",
+                                    "model_name": "mistral-small3.2:latest",
+                                    "base_url": "http://mistral.local/v1",
+                                    "used_fallback": False,
+                                    "repair_pass_used": False,
+                                    "started_at": now.isoformat(),
+                                    "completed_at": now.isoformat(),
+                                    "elapsed_seconds": 8.0,
+                                    "notes": ["Konfiguriertes Primärmodell: mistral / mistral-small3.2:latest"],
+                                },
+                                {
+                                    "worker_name": "research",
+                                    "worker_label": "Recherche",
+                                    "status": "ok",
+                                    "output_contract": "text",
+                                    "response_format": "text",
+                                    "summary": "Research beschreibt die ersten Prüfschritte.",
+                                    "response_text": "First Checks\\n- README\\n- Healthchecks",
+                                    "response_data": {},
+                                    "provider": "qwen",
+                                    "model_name": "qwen3.5:35b-a3b",
+                                    "base_url": "http://qwen.local/v1",
+                                    "used_fallback": False,
+                                    "repair_pass_used": False,
+                                    "started_at": now.isoformat(),
+                                    "completed_at": now.isoformat(),
+                                    "elapsed_seconds": 12.0,
+                                    "notes": ["Konfiguriertes Primärmodell: qwen / qwen3.5:35b-a3b"],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
         if path == "/api/tasks?include_archived=true":
             return httpx.Response(
                 200,
@@ -220,6 +282,8 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
     assert "mistral / mistral-small3.2:latest" in page_response.text
     assert "qwen / qwen3.5:35b-a3b" in page_response.text
     assert "sichtbarer Input" in page_response.text
+    assert "Schnelltest Modellantworten" in page_response.text
+    assert "Gesammelte Modellantwort anzeigen" in page_response.text
 
     assert export_response.status_code == 200
     payload = export_response.json()
@@ -238,6 +302,8 @@ def test_benchmark_reset_starts_a_new_visible_window(tmp_path, monkeypatch) -> N
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         del method, json_payload
+        if path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
         if path == "/api/tasks?include_archived=true":
             return httpx.Response(
                 200,
@@ -312,6 +378,8 @@ def test_benchmarks_exclude_archived_tasks_from_general_metrics(tmp_path, monkey
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         del method, json_payload
+        if path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
         if path == "/api/tasks?include_archived=true":
             return httpx.Response(
                 200,
@@ -384,3 +452,46 @@ def test_benchmarks_exclude_archived_tasks_from_general_metrics(tmp_path, monkey
     assert payload["total_tasks"] == 1
     assert payload["recent_runs"] == []
     assert payload["worker_summaries"][0]["run_count"] == 0
+
+
+def test_benchmark_page_can_start_worker_probe_from_ui(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if method == "POST" and path == "/api/benchmarks/model-probe":
+            assert json_payload == {
+                "probe_goal": "Teste strukturierten Modell-Output fuer observability-lastige Worker."
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "probe-2",
+                    "status": "queued",
+                    "probe_goal": json_payload["probe_goal"],
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "results": [],
+                    "errors": [],
+                    "total_workers": 8,
+                    "completed_workers": 0,
+                    "failed_workers": 0,
+                },
+            )
+        if method == "GET" and path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
+        if method == "GET" and path == "/api/tasks?include_archived=true":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/benchmarks/model-probe/start",
+            data={"probe_goal": "Teste strukturierten Modell-Output fuer observability-lastige Worker."},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/benchmarks"

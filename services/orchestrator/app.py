@@ -54,6 +54,9 @@ from services.shared.agentic_lab.schemas import (
     TrustedSourceRegistry,
     WorkerGuidancePolicy,
     WorkerGuidanceRegistry,
+    WorkerProbeRegistryResponse,
+    WorkerProbeRunResponse,
+    WorkerProbeStartRequest,
 )
 from services.shared.agentic_lab.search_providers import SearchProviderError, SearchProviderService
 from services.shared.agentic_lab.self_improvement import (
@@ -72,6 +75,7 @@ from services.shared.agentic_lab.source_router import SourceRouter
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.trusted_sources import TrustedSourceError, TrustedSourceService
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceError, WorkerGovernanceService
+from services.shared.agentic_lab.worker_probe_service import WorkerProbeError, WorkerProbeService
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
@@ -90,6 +94,7 @@ workflow = WorkflowOrchestrator(
 llm_client = LLMClient(settings)
 self_improvement_service = SelfImprovementService(task_service, llm_client, settings=settings)
 auto_debug_service = AutoDebugService(task_service, llm_client, settings=settings)
+worker_probe_service = WorkerProbeService(settings=settings, llm=llm_client, governance_service=worker_governance_service)
 
 
 @asynccontextmanager
@@ -97,6 +102,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
     self_improvement_service.resume_orphaned_cycles()
+    worker_probe_service.resume_orphaned_runs()
     if settings.self_improvement_enabled and normalize_self_improvement_mode(settings.self_improvement_mode).value == "automatic":
         asyncio.create_task(_auto_start_self_improvement())
     logger.info("Orchestrator startup completed.")
@@ -252,6 +258,22 @@ async def record_approval(task_id: str, request: ApprovalRequest) -> TaskDetail:
         app.state.running_tasks.add(task_id)
         asyncio.create_task(_run_in_background(task_id))
     return updated
+
+
+@app.get("/api/benchmarks/model-probe", response_model=WorkerProbeRegistryResponse)
+async def get_worker_probe_runs() -> WorkerProbeRegistryResponse:
+    return worker_probe_service.load_registry()
+
+
+@app.post("/api/benchmarks/model-probe", response_model=WorkerProbeRunResponse, status_code=201)
+async def start_worker_probe(request: WorkerProbeStartRequest) -> WorkerProbeRunResponse:
+    try:
+        run = await worker_probe_service.start_run(request)
+    except WorkerProbeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    asyncio.create_task(worker_probe_service.execute_run(run.id))
+    return worker_probe_service.load_registry().runs[0]
 
 
 @app.get("/api/suggestions", response_model=list[ImprovementSuggestion])

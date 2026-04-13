@@ -37,6 +37,13 @@ class TaskStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class WorkerProbeRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class WorkflowWorkerName(StrEnum):
     REQUIREMENTS = "requirements"
     COST = "cost"
@@ -324,6 +331,55 @@ class TaskStageRestartRequest(BaseModel):
 class TaskArchiveRequest(BaseModel):
     actor: str = "human-operator"
     reason: str | None = Field(default=None, max_length=400)
+
+
+class WorkerProbeStartRequest(BaseModel):
+    probe_goal: str = Field(
+        default="Verbessere Beobachtbarkeit, Fehlermeldungen und Healthchecks einer lokalen Docker-basierten Anwendung.",
+        min_length=10,
+        max_length=600,
+    )
+
+
+class WorkerProbeResultResponse(BaseModel):
+    worker_name: str
+    worker_label: str
+    status: str
+    output_contract: str
+    response_format: str
+    summary: str
+    response_text: str = ""
+    response_data: dict[str, Any] = Field(default_factory=dict)
+    provider: str = ""
+    model_name: str = ""
+    base_url: str = ""
+    used_fallback: bool = False
+    repair_pass_used: bool = False
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    elapsed_seconds: float | None = None
+    error_message: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class WorkerProbeRunResponse(BaseModel):
+    id: str
+    status: WorkerProbeRunStatus
+    probe_goal: str
+    created_at: datetime = Field(default_factory=_utc_now)
+    started_at: datetime | None = None
+    updated_at: datetime = Field(default_factory=_utc_now)
+    completed_at: datetime | None = None
+    active_worker_name: str | None = None
+    total_workers: int = 0
+    completed_workers: int = 0
+    failed_workers: int = 0
+    results: list[WorkerProbeResultResponse] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class WorkerProbeRegistryResponse(BaseModel):
+    runs: list[WorkerProbeRunResponse] = Field(default_factory=list)
 
 
 class RepositoryAccessSettings(BaseModel):
