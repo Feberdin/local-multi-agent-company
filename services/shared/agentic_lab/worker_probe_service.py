@@ -554,11 +554,19 @@ class WorkerProbeService:
                 "data_flows, module_boundaries, deployment_strategy, logging_strategy, implementation_plan, test_strategy, "
                 "risks, approval_gates, touched_areas. Use the smallest realistic payload. Set summary to 'OK'. "
                 "Use one tiny example object per structured list and keep every string value as short as possible. "
-                "No prose outside the JSON object."
+                "No prose outside the JSON object. "
+                "Use exactly this minimal shape and keep all keys present: "
+                '{"summary":"OK","components":[{"name":"OK","type":"service","description":"OK"}],'
+                '"responsibilities":{"OK":"OK"},"data_flows":[{"source":"OK","destination":"OK","type":"OK","description":"OK"}],'
+                '"module_boundaries":[{"module":"services/web_ui/app.py","boundary":"OK"}],"deployment_strategy":"OK",'
+                '"logging_strategy":"OK","implementation_plan":[{"step":1,"task":"OK","status":"ok"}],'
+                '"test_strategy":"OK","risks":["OK"],"approval_gates":["OK"],'
+                '"touched_areas":["services/web_ui/app.py"]}'
                 f"{guidance_block}",
                 (
                     f"Contract smoke test:\n{probe_goal}\n\n"
-                    "Use touched_areas ['services/web_ui/app.py'] and one minimal implementation_plan step."
+                    "Return exactly the minimal JSON skeleton from the system prompt with the same keys and the same "
+                    "overall structure. Do not omit any key."
                 ),
             )
         if definition.worker_name == "coding":

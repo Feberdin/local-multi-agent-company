@@ -188,6 +188,9 @@ async def test_worker_probe_service_supports_ok_contract_smoke_runs(tmp_path, mo
     coding_system_prompt, coding_user_prompt = fake_llm.prompt_log["coding"]
     assert "contract smoke test" in coding_user_prompt.lower()
     assert "blocking_reason" in coding_system_prompt
+    architecture_system_prompt, architecture_user_prompt = fake_llm.prompt_log["architecture"]
+    assert '"logging_strategy":"OK"' in architecture_system_prompt
+    assert "do not omit any key" in architecture_user_prompt.lower()
     research_system_prompt, _research_user_prompt = fake_llm.prompt_log["research"]
     assert "reply with exactly `ok`" in research_system_prompt.lower()
 
