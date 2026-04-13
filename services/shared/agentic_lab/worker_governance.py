@@ -48,6 +48,7 @@ GLOBAL_WORKER_MINIMUM_RULES: tuple[str, ...] = (
     "Verwende klare Statuswerte: running, waiting, blocked, complete, failed, idle.",
     "Befuelle waiting_for, blocked_by, next_worker, elapsed_seconds und last_result_summary so konsistent wie moeglich.",
     "Erzeuge standardmaessig deutsche UI-Texte.",
+    "Ein expliziter Umsetzungsauftrag hat Vorrang vor generischer Hilfsprosa oder unnoetiger Analyse.",
     "Gib Vorschlaege ausserhalb des Scopes als Suggestion zurueck statt sie still umzusetzen.",
     "Strukturierte Output-Vertraege haben Vorrang vor freier Prosa.",
 )

@@ -211,6 +211,7 @@ async def _run_local_patch_backend(
                 overview,
                 file_context,
                 symbol_index_block,
+                candidate_files,
             ),
             worker_name="coding",
             required_keys=["summary", "operations"],
@@ -446,8 +447,13 @@ def _coding_system_prompt(guidance_block: str) -> str:
         '   {"action":"create_or_update","file_path":"p.py","new_content":"full file","reason":"..."}\n'
         "RULE: prefer replace_symbol_body for Python changes. "
         "Use create_or_update only as last resort.\n"
+        "If the goal explicitly asks to add, fix, implement, update, change, or handle code, "
+        "you must return at least one concrete file operation whenever the provided candidate files make a safe "
+        "change possible.\n"
         "If the goal requires NO file changes (e.g. analysis, explanation), return:\n"
-        '{"summary": "No code changes needed: <reason>", "operations": []}'
+        '{"summary": "No code changes needed: <reason>", "operations": []}\n'
+        "If you keep operations empty for a concrete coding request, include a short `blocking_reason` that names "
+        "one specific candidate file and explains why the change would be unsafe there."
         f"{guidance_block}"
     )
 
@@ -465,7 +471,16 @@ def _coding_noop_retry_user_prompt(
     previous_plan: dict[str, Any],
 ) -> str:
     """Ask for one stricter second attempt when the first JSON plan returned no operations."""
-    base_prompt = _coding_user_prompt(goal, requirements, architecture, research, overview, file_context, symbol_index_block)
+    base_prompt = _coding_user_prompt(
+        goal,
+        requirements,
+        architecture,
+        research,
+        overview,
+        file_context,
+        symbol_index_block,
+        candidate_files,
+    )
     retry_block = [
         "Previous coding attempt returned zero file operations even though this task asked for code changes.",
         f"Previous summary: {previous_plan.get('summary', 'keine Zusammenfassung')}",
@@ -487,6 +502,7 @@ def _coding_user_prompt(
     overview: dict,
     file_context: dict,
     symbol_index_block: str,
+    candidate_files: list[str],
 ) -> str:
     compact_requirements = _compact_requirements_for_prompt(requirements)
     compact_architecture = _compact_architecture_for_prompt(architecture)
@@ -498,6 +514,7 @@ def _coding_user_prompt(
         f"Architecture and implementation plan:\n{compact_architecture}",
         f"Research:\n{compact_research}",
         f"Repo overview:\n{compact_overview}",
+        f"Candidate files:\n{candidate_files or ['<none>']}",
     ]
     if symbol_index_block:
         parts.append(symbol_index_block)
@@ -507,6 +524,9 @@ def _coding_user_prompt(
         "Generate only the minimum changes needed. "
         "Prefer replace_symbol_body for Python functions. "
         "Use create_or_update only if a new file is needed or >50% of the file changes. "
+        "This is an implementation task, not a repo summary. "
+        "Do not claim that no changes are needed when the goal clearly asks for a code change unless you include "
+        "a file-specific blocking_reason. "
         "Do not answer with repository praise, project summaries, or generic help offers."
     )
     return "\n\n".join(parts)

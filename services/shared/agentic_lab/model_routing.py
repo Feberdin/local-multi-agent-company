@@ -135,9 +135,14 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             output_contract="json",
             routing_note="Bevorzugt tieferes Architekturdenken, toleriert aber strukturierten Fallback.",
         ),
+        # Coding edit-plan generation needs both strict JSON and enough semantic
+        # depth to turn a terse goal plus a few candidate files into one real
+        # patch. In recent local runs qwen has been more reliable at avoiding
+        # generic no-op plans, so coding now prefers the stronger reasoning
+        # model and keeps the more conservative structured model as fallback.
         "coding": _route(
-            structured_provider,
-            secondary_structured_provider,
+            reasoning_provider,
+            secondary_reasoning_provider,
             temperature=0.05,
             max_tokens=2600,
             budget_tokens=12000,
@@ -145,7 +150,10 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             reasoning="medium",
             purpose="Code generation and safe file updates.",
             output_contract="edit_plan",
-            routing_note="Bevorzugt das lokal robustere Modell fuer parsebare Patch- und Dateioperationen.",
+            routing_note=(
+                "Bevorzugt das semantisch staerkere Modell fuer konkrete Patch-Entscheidungen; "
+                "Fallback bleibt auf dem robusten JSON-Modell."
+            ),
         ),
         "rollback": _route(
             structured_provider,

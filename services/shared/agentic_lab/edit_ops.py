@@ -10,6 +10,8 @@ How to debug: If parsing fails, log the raw LLM JSON and compare against EDIT_AC
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from enum import StrEnum
 from typing import Any
 
@@ -54,6 +56,18 @@ _ACTION_REQUIRED_FIELDS: dict[EditAction, tuple[str, ...]] = {
     EditAction.CREATE_OR_UPDATE: ("file_path", "reason", "new_content"),
 }
 
+# Why this exists:
+# Local edit-plan models sometimes return a syntactically valid JSON object with
+# `operations: []`, but the textual summary is just a generic assistant no-op
+# such as "No specific code change requested" or the German equivalents seen in
+# real Unraid runs. Those replies must count as invalid so the shared LLM client
+# can trigger its stricter repair pass and then the provider fallback.
+#
+# Example input:
+#   {"summary":"Keine Dateiänderungen erforderlich: Es wurden keine spezifischen Änderungen bereitgestellt.","operations":[]}
+# Example output:
+#   validation error string that causes `complete_json()` to fall back to the
+#   configured secondary model instead of accepting the empty plan.
 _GENERIC_EMPTY_PLAN_PATTERNS = (
     "no specific code change",
     "no code change requested",
@@ -62,6 +76,15 @@ _GENERIC_EMPTY_PLAN_PATTERNS = (
     "requested analysis or implementation help for specific aspects",
     "shared a comprehensive setup",
     "how can i help",
+    "keine dateianderungen erforderlich",
+    "keine dateianderung erforderlich",
+    "keine spezifischen anderungen",
+    "keine spezifische anderung",
+    "keine spezifischen anforderungen",
+    "keine konkrete codeanderung",
+    "keine konkreten codeanderungen",
+    "keine bearbeitung erfordern",
+    "keine bearbeitung erforderlich",
 )
 
 
@@ -206,7 +229,16 @@ def _field_is_present(payload: dict[str, Any], field_name: str) -> bool:
 def _looks_like_generic_empty_plan(*, summary: str, blocking_reason: str) -> bool:
     """Detect off-task empty edit plans that look like generic assistant replies instead of coding decisions."""
 
-    combined = f"{summary}\n{blocking_reason}".strip().lower()
+    combined = _normalize_text_for_pattern_match(f"{summary}\n{blocking_reason}")
     if not combined:
         return False
     return any(pattern in combined for pattern in _GENERIC_EMPTY_PLAN_PATTERNS)
+
+
+def _normalize_text_for_pattern_match(text: str) -> str:
+    """Lowercase and de-accent free text so German and English empty-plan markers match reliably."""
+
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    collapsed = re.sub(r"\s+", " ", ascii_only).strip().lower()
+    return collapsed

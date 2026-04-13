@@ -228,7 +228,9 @@ class LLMClient:
             "edit_plan": (
                 "Return one parseable JSON object for file-edit operations. "
                 "If a safe code change is possible, provide concrete operations. "
-                "If no safe code change is possible, keep operations empty and include blocking_reason."
+                "If no safe code change is possible, keep operations empty and include blocking_reason. "
+                "For explicit code-change goals, zero operations are only valid when the blocker names one concrete "
+                "candidate file and why changing it would be unsafe."
             ),
             "json": "Return one parseable JSON object that matches the requested schema exactly.",
             "text": "Return one parseable JSON object and nothing else.",

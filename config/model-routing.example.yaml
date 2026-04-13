@@ -2,7 +2,7 @@
 # Input/Output: The shared LLM client reads this file to map worker roles to concrete local models, timeouts, and output contracts.
 # Invariants:
 #   - Strukturierte Worker bevorzugen standardmaessig Mistral fuer robustere parsebare Antworten.
-#   - Analyse- und Architektur-Worker duerfen bevorzugt Qwen nutzen.
+#   - Coding, Research und Architecture duerfen bevorzugt Qwen nutzen, wenn semantische Tiefe fuer die Aufgabe wichtiger ist.
 #   - Fallbacks bleiben explizit und nachvollziehbar statt still implizit.
 # Debugging:
 #   - Wenn ein Worker das falsche Modell nutzt, pruefe zuerst diesen Eintrag und danach die gesetzten Provider-ENV-Werte.
@@ -87,15 +87,15 @@ workers:
     routing_note: Bevorzugt staerkere semantische UX-Bewertung, behaelt aber einen strukturierten Fallback.
 
   coding:
-    primary_provider: mistral
-    fallback_provider: qwen
+    primary_provider: qwen
+    fallback_provider: mistral
     temperature: 0.05
     max_tokens: 2600
     budget_tokens: 12000
     request_timeout_seconds: 1800
     reasoning: medium
     output_contract: edit_plan
-    routing_note: Bevorzugt das lokal robustere Modell fuer parsebare Patch- und Dateioperationen.
+    routing_note: Bevorzugt das semantisch staerkere Modell fuer konkrete Patch-Entscheidungen; Fallback bleibt auf dem robusten JSON-Modell.
 
   rollback:
     primary_provider: mistral

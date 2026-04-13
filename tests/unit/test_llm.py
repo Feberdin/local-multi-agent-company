@@ -388,6 +388,64 @@ async def test_complete_json_falls_back_when_edit_plan_returns_generic_empty_blo
 
 
 @pytest.mark.asyncio
+async def test_complete_json_falls_back_when_edit_plan_returns_german_empty_summary_without_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: mistral\n"
+            "    fallback_provider: qwen\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    call_counter = {"mistral": 0, "qwen": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "mistral.test" in str(request.url):
+            call_counter["mistral"] += 1
+            content = (
+                '{"summary":"Keine Dateiänderungen erforderlich: Es wurden keine spezifischen Änderungen oder Aufgaben '
+                'bereitgestellt, die eine Bearbeitung erfordern.",'
+                '"operations":[]}'
+            )
+        else:
+            call_counter["qwen"] += 1
+            content = (
+                '{"summary":"Recovered concrete coding plan.",'
+                '"operations":['
+                '{"action":"replace_symbol_body","file_path":"worker_target.py","symbol_name":"target_function",'
+                '"reason":"Fallback provider must recover from the German generic empty summary.",'
+                '"new_content":"def target_function():\\n    return \\"qwen-fallback\\"\\n"}'
+                "]}"
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json(
+        "system",
+        "user",
+        worker_name="coding",
+        required_keys=["summary", "operations"],
+    )
+
+    assert response["summary"] == "Recovered concrete coding plan."
+    assert response["operations"][0]["file_path"] == "worker_target.py"
+    assert call_counter["mistral"] == 2
+    assert call_counter["qwen"] == 1
+
+
+@pytest.mark.asyncio
 async def test_complete_accepts_message_content_without_choices_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1,8 +1,8 @@
 """
 Purpose: Verify that worker-to-model routing stays configurable and resolves stable provider defaults.
 Input/Output: Tests load the routing config with temporary overrides and resolve providers for representative workers.
-Important invariants: Strukturierte Worker sollen standardmaessig auf das robustere JSON-Modell gehen.
-Analyse- und Architektur-Worker duerfen weiterhin das staerkere semantische Modell bevorzugen.
+Important invariants: Die meisten strukturierten Worker sollen standardmaessig auf das robustere JSON-Modell gehen.
+Coding sowie Analyse- und Architektur-Worker duerfen weiterhin das staerkere semantische Modell bevorzugen.
 How to debug: If these tests fail, inspect `config/model-routing.example.yaml` and `services/shared/agentic_lab/model_routing.py`.
 """
 
@@ -58,7 +58,7 @@ def test_resolve_worker_route_keeps_research_on_qwen_by_default(monkeypatch) -> 
     assert route.output_contract == "text"
 
 
-def test_resolve_worker_route_prefers_mistral_for_structured_workers(monkeypatch) -> None:
+def test_resolve_worker_route_prefers_qwen_for_coding_but_keeps_mistral_for_other_structured_workers(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_ROUTING_CONFIG", "/tmp/nonexistent-model-routing.yaml")
     settings = Settings()
 
@@ -75,10 +75,10 @@ def test_resolve_worker_route_prefers_mistral_for_structured_workers(monkeypatch
     assert reviewer_route.fallback_provider == "qwen"
     assert reviewer_route.request_timeout_seconds == 1200.0
     assert reviewer_route.output_contract == "json"
-    assert coding_provider.name == "mistral"
-    assert coding_route.fallback_provider == "qwen"
+    assert coding_provider.name == "qwen"
+    assert coding_route.fallback_provider == "mistral"
     assert coding_route.output_contract == "edit_plan"
-    assert "Patch" in coding_route.routing_note or "Dateioperationen" in coding_route.routing_note
+    assert "Patch" in coding_route.routing_note or "Patch-Entscheidungen" in coding_route.routing_note
     assert security_provider.name == "mistral"
     assert security_route.fallback_provider == "qwen"
     assert security_route.output_contract == "json"
