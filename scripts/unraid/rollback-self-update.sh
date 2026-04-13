@@ -45,6 +45,11 @@ SERVICES="\$(services_without_rollback)"
 git -C "${PROJECT_DIR}" fetch origin || true
 git -C "${PROJECT_DIR}" checkout "${GIT_REF}"
 
+BUILD_COMMIT_SHA="\$(git -C "${PROJECT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo "")"
+BUILD_GIT_REF="${GIT_REF}"
+BUILD_BUILT_AT_UTC="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export BUILD_COMMIT_SHA BUILD_GIT_REF BUILD_BUILT_AT_UTC
+
 if [ -n "\${SERVICES}" ]; then
   docker compose -f "${PROJECT_DIR}/${COMPOSE_FILE}" up -d --build \${SERVICES}
 else

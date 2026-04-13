@@ -46,6 +46,7 @@ DEFAULT_WORKER_PROBE_GOAL = (
 # repository lives in a normal workspace path. Resolving from this file keeps the setup portable.
 WEB_UI_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WEB_UI_DIR.parent.parent
+DEFAULT_BUILD_INFO_PATH = Path(os.getenv("FEBERDIN_BUILD_INFO_PATH", "/opt/feberdin/build-info.json"))
 
 
 def _resolve_package_version() -> str:
@@ -87,56 +88,6 @@ def _run_git_metadata_command(repo_path: Path, *args: str) -> str | None:
         return None
     value = completed.stdout.strip()
     return value or None
-
-
-@lru_cache(maxsize=1)
-def _ui_build_info() -> dict[str, str]:
-    """Return one stable, human-readable build label for the whole Web-UI session."""
-
-    candidate_paths: list[Path] = [PROJECT_ROOT]
-    if settings.self_improvement_local_repo_path.strip():
-        candidate_paths.append(Path(settings.self_improvement_local_repo_path))
-
-    seen_paths: set[Path] = set()
-    git_sha: str | None = None
-    git_branch: str | None = None
-    repo_path_display: str | None = None
-
-    for candidate in candidate_paths:
-        if candidate in seen_paths:
-            continue
-        seen_paths.add(candidate)
-        if not candidate.exists():
-            continue
-        if not (candidate / ".git").exists():
-            continue
-        sha = _run_git_metadata_command(candidate, "rev-parse", "--short=12", "HEAD")
-        if not sha:
-            continue
-        git_sha = sha
-        git_branch = _run_git_metadata_command(candidate, "rev-parse", "--abbrev-ref", "HEAD") or "unbekannt"
-        repo_path_display = str(candidate)
-        break
-
-    display = f"Version {APP_VERSION}"
-    full_label = f"Version {APP_VERSION}"
-    if git_sha:
-        display = f"{display} · {git_sha}"
-        full_label = f"{full_label} · Branch {git_branch or 'unbekannt'} · Commit {git_sha}"
-    if repo_path_display:
-        full_label = f"{full_label} · Repo {repo_path_display}"
-
-    return {
-        "app_version": APP_VERSION,
-        "git_sha": git_sha or "",
-        "git_branch": git_branch or "",
-        "repo_path": repo_path_display or "",
-        "display": display,
-        "full_label": full_label,
-    }
-
-
-templates.env.globals["ui_build"] = _ui_build_info()
 
 WORKER_SEQUENCE: tuple[dict[str, str], ...] = (
     {
@@ -722,6 +673,105 @@ def _format_timestamp(value: Any) -> str:
     localized = parsed.astimezone(display_tz)
     timezone_label = localized.tzname() or display_name
     return f"{localized.strftime('%Y-%m-%d %H:%M:%S')} {timezone_label}"
+
+
+def _format_build_timestamp(value: Any) -> str:
+    """Render build timestamps with weekday and local operator timezone for the top navigation."""
+
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return ""
+    display_tz, display_name = _display_timezone()
+    localized = parsed.astimezone(display_tz)
+    timezone_label = localized.tzname() or display_name
+    weekday_names = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+    weekday = weekday_names[localized.weekday()]
+    return f"{weekday} {localized.strftime('%d.%m.%Y %H:%M:%S')} {timezone_label}"
+
+
+def _read_baked_build_info(build_info_path: Path = DEFAULT_BUILD_INFO_PATH) -> dict[str, str]:
+    """Read optional build metadata baked into the container image without depending on the live repo state."""
+
+    try:
+        payload = json.loads(build_info_path.read_text("utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): str(value) for key, value in payload.items() if value not in {None, ""}}
+
+
+@lru_cache(maxsize=1)
+def _ui_build_info() -> dict[str, str]:
+    """Return one stable operator-facing build badge with version, running commit, and build time."""
+
+    candidate_paths: list[Path] = [PROJECT_ROOT]
+    if settings.self_improvement_local_repo_path.strip():
+        candidate_paths.append(Path(settings.self_improvement_local_repo_path))
+
+    seen_paths: set[Path] = set()
+    git_sha: str | None = None
+    git_branch: str | None = None
+    repo_path_display: str | None = None
+
+    for candidate in candidate_paths:
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate in seen_paths:
+            continue
+        seen_paths.add(resolved_candidate)
+        if not resolved_candidate.exists():
+            continue
+        if not (resolved_candidate / ".git").exists():
+            continue
+        sha = _run_git_metadata_command(resolved_candidate, "rev-parse", "--short=12", "HEAD")
+        if not sha:
+            continue
+        git_sha = sha
+        git_branch = _run_git_metadata_command(resolved_candidate, "rev-parse", "--abbrev-ref", "HEAD") or "unbekannt"
+        repo_path_display = str(resolved_candidate)
+        break
+
+    build_info = _read_baked_build_info()
+    build_timestamp_raw = build_info.get("build_timestamp_utc", "")
+    build_timestamp_display = _format_build_timestamp(build_timestamp_raw)
+    build_commit_sha = build_info.get("build_commit_sha", "")
+    build_ref = build_info.get("build_git_ref", "")
+
+    display_parts = [f"Version {APP_VERSION}"]
+    if git_sha:
+        display_parts.append(git_sha)
+    if build_timestamp_display:
+        display_parts.append(f"Build {build_timestamp_display}")
+
+    full_parts = [f"Version {APP_VERSION}"]
+    if git_branch:
+        full_parts.append(f"Branch {git_branch}")
+    if git_sha:
+        full_parts.append(f"Laufender Commit {git_sha}")
+    if build_ref:
+        full_parts.append(f"Build-Ref {build_ref}")
+    if build_commit_sha:
+        full_parts.append(f"Build-Commit {build_commit_sha}")
+    if build_timestamp_display:
+        full_parts.append(f"Gebaut {build_timestamp_display}")
+    if repo_path_display:
+        full_parts.append(f"Repo {repo_path_display}")
+
+    return {
+        "app_version": APP_VERSION,
+        "git_sha": git_sha or "",
+        "git_branch": git_branch or "",
+        "repo_path": repo_path_display or "",
+        "build_timestamp_utc": build_timestamp_raw,
+        "build_timestamp_display": build_timestamp_display,
+        "build_commit_sha": build_commit_sha,
+        "build_git_ref": build_ref,
+        "display": " · ".join(display_parts),
+        "full_label": " · ".join(full_parts),
+    }
+
+
+templates.env.globals["ui_build"] = _ui_build_info()
 
 
 def _format_duration(seconds: float | int | None) -> str:

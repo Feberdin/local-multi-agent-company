@@ -61,10 +61,18 @@ services_without_rollback() {
 
 SERVICES="\$(services_without_rollback)"
 
+export_build_metadata() {
+  BUILD_COMMIT_SHA="\$(git -C "\${PROJECT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo "")"
+  BUILD_GIT_REF="\${BRANCH_NAME}"
+  BUILD_BUILT_AT_UTC="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  export BUILD_COMMIT_SHA BUILD_GIT_REF BUILD_BUILT_AT_UTC
+}
+
 git -C "\${PROJECT_DIR}" fetch origin
 git -C "\${PROJECT_DIR}" checkout "\${BRANCH_NAME}"
 git -C "\${PROJECT_DIR}" pull --ff-only origin "\${BRANCH_NAME}" || true
 echo "self-update: checked out \${BRANCH_NAME}"
+export_build_metadata
 
 if [ -n "\${SERVICES}" ]; then
   # Why this exists: the rollback worker must stay alive while the rest of the stack restarts.

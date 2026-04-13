@@ -15,6 +15,10 @@ x-agent-service: &agent-service
   build:
     context: .
     dockerfile: docker/Dockerfile.agent-service
+    args:
+      BUILD_COMMIT_SHA: ${BUILD_COMMIT_SHA:-}
+      BUILD_GIT_REF: ${BUILD_GIT_REF:-}
+      BUILD_BUILT_AT_UTC: ${BUILD_BUILT_AT_UTC:-}
   env_file: [".env"]
   user: "${PUID:-99}:${PGID:-100}"
   volumes: *agent-runtime-volumes

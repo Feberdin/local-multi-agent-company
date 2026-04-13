@@ -5,6 +5,10 @@
 
 FROM python:3.11-slim
 
+ARG BUILD_COMMIT_SHA=""
+ARG BUILD_GIT_REF=""
+ARG BUILD_BUILT_AT_UTC=""
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -30,6 +34,33 @@ COPY pyproject.toml README.md /app/
 COPY config /app/config
 COPY scripts /app/scripts
 COPY services /app/services
+
+# Why this exists:
+# The running UI should show the image build time even when the mounted repo on
+# the host changes later. Storing this outside `/app` keeps the metadata stable
+# despite the bind mount that overlays the source tree at runtime.
+RUN mkdir -p /opt/feberdin \
+    && python - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+built_at = os.environ.get("BUILD_BUILT_AT_UTC", "").strip()
+if not built_at:
+    built_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+payload = {
+    "build_commit_sha": os.environ.get("BUILD_COMMIT_SHA", "").strip(),
+    "build_git_ref": os.environ.get("BUILD_GIT_REF", "").strip(),
+    "build_timestamp_utc": built_at,
+}
+
+Path("/opt/feberdin/build-info.json").write_text(
+    json.dumps(payload, indent=2, ensure_ascii=True),
+    encoding="utf-8",
+)
+PY
 
 RUN python -m pip install --upgrade pip \
     && python -m pip install .

@@ -8,6 +8,7 @@ How to debug: If this fails, inspect `services/web_ui/app.py` and compare the de
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -112,8 +113,15 @@ def test_dashboard_shows_version_badge_in_top_navigation(tmp_path, monkeypatch) 
         "git_sha": "deadbeefcafe",
         "git_branch": "main",
         "repo_path": "/app",
-        "display": "Version 9.9.9 · deadbeefcafe",
-        "full_label": "Version 9.9.9 · Branch main · Commit deadbeefcafe · Repo /app",
+        "build_timestamp_utc": "2026-04-13T17:02:19Z",
+        "build_timestamp_display": "Mo 13.04.2026 19:02:19 CEST",
+        "build_commit_sha": "deadbeefcafe",
+        "build_git_ref": "main",
+        "display": "Version 9.9.9 · deadbeefcafe · Build Mo 13.04.2026 19:02:19 CEST",
+        "full_label": (
+            "Version 9.9.9 · Branch main · Laufender Commit deadbeefcafe · "
+            "Build-Ref main · Build-Commit deadbeefcafe · Gebaut Mo 13.04.2026 19:02:19 CEST · Repo /app"
+        ),
     }
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
@@ -129,7 +137,42 @@ def test_dashboard_shows_version_badge_in_top_navigation(tmp_path, monkeypatch) 
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "Version 9.9.9 · deadbeefcafe" in response.text
+    assert "Version 9.9.9 · deadbeefcafe · Build Mo 13.04.2026 19:02:19 CEST" in response.text
+
+
+def test_ui_build_info_reads_baked_build_metadata_and_formats_local_time(tmp_path, monkeypatch) -> None:
+    build_info_path = tmp_path / "build-info.json"
+    build_info_path.write_text(
+        json.dumps(
+            {
+                "build_commit_sha": "deadbeefcafe",
+                "build_git_ref": "main",
+                "build_timestamp_utc": "2026-04-13T17:02:19Z",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FEBERDIN_BUILD_INFO_PATH", str(build_info_path))
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    def fake_git_metadata(_repo_path, *args):
+        if args == ("rev-parse", "--short=12", "HEAD"):
+            return "deadbeefcafe"
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main"
+        return None
+
+    monkeypatch.setattr(app_module, "_run_git_metadata_command", fake_git_metadata)
+    app_module._ui_build_info.cache_clear()
+
+    info = app_module._ui_build_info()
+
+    assert info["git_sha"] == "deadbeefcafe"
+    assert info["build_commit_sha"] == "deadbeefcafe"
+    assert info["build_git_ref"] == "main"
+    assert info["build_timestamp_display"] == "Mo 13.04.2026 19:02:19 CEST"
+    assert info["display"] == "Version 0.1.0 · deadbeefcafe · Build Mo 13.04.2026 19:02:19 CEST"
 
 
 def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, monkeypatch) -> None:

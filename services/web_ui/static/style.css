@@ -97,7 +97,7 @@ body {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   padding: 0.65rem 0.9rem;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -105,7 +105,11 @@ body {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 600;
-  white-space: nowrap;
+  white-space: normal;
+  text-align: right;
+  line-height: 1.35;
+  max-width: min(100%, 34rem);
+  overflow-wrap: anywhere;
 }
 
 .topnav a.active {

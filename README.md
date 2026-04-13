@@ -246,6 +246,25 @@ curl http://localhost:18080/health
 curl http://localhost:18088/health
 ```
 
+## Exaktes Commit-Update auf Unraid
+
+Wenn du sicherstellen willst, dass **genau ein bestimmter Commit** ausgerollt wird und nicht versehentlich schon ein neuerer Stand, nutze [scripts/unraid/update-to-commit.sh](/Users/joachim.stiegler/CodingFamily/scripts/unraid/update-to-commit.sh).
+
+Warum:
+
+- das Skript wartet, bis der gewünschte Commit wirklich auf `origin/<branch>` sichtbar ist
+- es bewegt den lokalen Branch nur per Fast-Forward auf genau diesen Commit
+- es exportiert Build-Metadaten für Docker, damit die Web-UI danach Commit **und** Build-Zeit klar anzeigen kann
+
+Beispiel:
+
+```bash
+cd /mnt/user/appdata/feberdin-agent-team/repo
+./scripts/unraid/update-to-commit.sh dbc485262814 main
+```
+
+Wenn der Commit noch nicht auf GitHub angekommen ist, wartet das Skript automatisch weiter und bricht erst nach dem konfigurierbaren Timeout sauber mit einer lesbaren Fehlermeldung ab.
+
 ## Debug-Center
 
 Unter [services/web_ui/templates/debug.html](/Users/joachim.stiegler/CodingFamily/services/web_ui/templates/debug.html) bietet die Web-UI jetzt ein eigenes `Debug-Center`:
