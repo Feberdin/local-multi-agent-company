@@ -73,6 +73,33 @@ class LLMClient:
         return compact[: max_length - 1].rstrip() + "…"
 
     @staticmethod
+    def _missing_required_json_keys(payload: dict[str, Any], required_keys: tuple[str, ...]) -> list[str]:
+        """Return missing top-level keys for operator-facing contract validation."""
+
+        return [key for key in required_keys if key not in payload]
+
+    @classmethod
+    def _validate_json_contract(
+        cls,
+        payload: dict[str, Any],
+        *,
+        output_contract: str,
+        required_keys: tuple[str, ...],
+    ) -> str | None:
+        """Return a human-readable validation error when parsed JSON is still semantically unusable."""
+
+        missing_keys = cls._missing_required_json_keys(payload, required_keys)
+        if missing_keys:
+            return "Missing required JSON keys: " + ", ".join(missing_keys)
+
+        if output_contract == "edit_plan":
+            operations = payload.get("operations")
+            if not isinstance(operations, list):
+                return "The `operations` field must be a list for the edit_plan contract."
+
+        return None
+
+    @staticmethod
     def _content_to_text(value: Any) -> str:
         """Normalize string or structured content parts into one plain assistant text payload."""
 
@@ -386,6 +413,7 @@ class LLMClient:
         user_prompt: str,
         *,
         worker_name: str = "default",
+        required_keys: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Ask the model for JSON and parse the first JSON object found in its reply.
 
@@ -419,6 +447,7 @@ class LLMClient:
         )
         errors: list[str] = []
         candidates = self._provider_candidates(provider, fallback_provider)
+        required_key_tuple = tuple(required_keys or ())
 
         for index, candidate in enumerate(candidates):
             try:
@@ -446,21 +475,44 @@ class LLMClient:
                 continue
 
             result = self._extract_json(raw)
+            validation_error = None
             if result is not None:
+                validation_error = self._validate_json_contract(
+                    result,
+                    output_contract=route.output_contract,
+                    required_keys=required_key_tuple,
+                )
+            if result is not None and validation_error is None:
                 return result
 
-            LOGGER.warning(
-                "Structured output from provider `%s` for worker `%s` was not valid JSON. "
-                "Trying one stricter repair pass. Preview: %s",
-                candidate.name,
-                worker_name,
-                self._response_preview(raw),
-            )
-            errors.append(
-                "Provider "
-                f"`{candidate.name}` with model `{candidate.model_name}` returned non-JSON text: "
-                f"{self._response_preview(raw)}"
-            )
+            if validation_error is None:
+                LOGGER.warning(
+                    "Structured output from provider `%s` for worker `%s` was not valid JSON. "
+                    "Trying one stricter repair pass. Preview: %s",
+                    candidate.name,
+                    worker_name,
+                    self._response_preview(raw),
+                )
+                errors.append(
+                    "Provider "
+                    f"`{candidate.name}` with model `{candidate.model_name}` returned non-JSON text: "
+                    f"{self._response_preview(raw)}"
+                )
+            else:
+                LOGGER.warning(
+                    "Structured output from provider `%s` for worker `%s` failed JSON contract validation. "
+                    "Issue: %s. Trying one stricter repair pass. Preview: %s",
+                    candidate.name,
+                    worker_name,
+                    validation_error,
+                    self._response_preview(raw),
+                )
+                errors.append(
+                    "Provider "
+                    f"`{candidate.name}` with model `{candidate.model_name}` returned JSON that did not satisfy the "
+                    f"`{route.output_contract}` contract: {validation_error}. "
+                    f"Preview: {self._response_preview(raw)}"
+                )
 
             retry_input = raw[:3000] + ("..." if len(raw) > 3000 else "")
             try:
@@ -469,10 +521,15 @@ class LLMClient:
                     route=route,
                     system_prompt=(
                         "You must output a valid JSON object and nothing else. "
-                        "No prose, no markdown, no explanation. "
-                        "Start your reply with '{' and end with '}'. "
-                        f"{self._json_contract_instruction(route.output_contract)} "
-                        "Convert the following text into a JSON object that captures its key information."
+                        + "No prose, no markdown, no explanation. "
+                        + "Start your reply with '{' and end with '}'. "
+                        + f"{self._json_contract_instruction(route.output_contract)} "
+                        + (
+                            f"The previous reply failed this validation rule: {validation_error}. "
+                            if validation_error
+                            else ""
+                        )
+                        + "Convert the following text into a JSON object that captures its key information."
                     ),
                     user_prompt=retry_input,
                     worker_name=worker_name,
@@ -485,7 +542,14 @@ class LLMClient:
                 continue
 
             result = self._extract_json(retry_raw)
+            validation_error = None
             if result is not None:
+                validation_error = self._validate_json_contract(
+                    result,
+                    output_contract=route.output_contract,
+                    required_keys=required_key_tuple,
+                )
+            if result is not None and validation_error is None:
                 return result
 
             next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
@@ -499,7 +563,11 @@ class LLMClient:
             errors.append(
                 "Provider "
                 f"`{candidate.name}` JSON-repair attempt still returned no valid JSON: "
-                f"{self._response_preview(retry_raw)}"
+                + (
+                    f"{validation_error}. Preview: {self._response_preview(retry_raw)}"
+                    if validation_error
+                    else self._response_preview(retry_raw)
+                )
             )
 
         raise LLMError(

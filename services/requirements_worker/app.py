@@ -47,6 +47,16 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                     "Separate hard requirements, optional wishes, assumptions, and risks clearly."
                 ),
                 worker_name="requirements",
+                required_keys=[
+                    "summary",
+                    "requirements",
+                    "wishes",
+                    "assumptions",
+                    "risks",
+                    "acceptance_criteria",
+                    "open_questions",
+                    "recommended_workers",
+                ],
             )
         except LLMError as exc:
             task_logger.warning("LLM requirements extraction unavailable: %s", exc)

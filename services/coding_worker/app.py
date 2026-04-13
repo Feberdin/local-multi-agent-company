@@ -213,6 +213,7 @@ async def _run_local_patch_backend(
                 symbol_index_block,
             ),
             worker_name="coding",
+            required_keys=["summary", "operations"],
         )
         plan_attempts.append(_patch_plan_attempt_snapshot("initial", patch_plan))
     except LLMError as exc:
@@ -246,6 +247,7 @@ async def _run_local_patch_backend(
                     previous_plan=patch_plan,
                 ),
                 worker_name="coding",
+                required_keys=["summary", "operations"],
             )
             plan_attempts.append(_patch_plan_attempt_snapshot("retry_after_no_operations", patch_plan))
         except LLMError as exc:

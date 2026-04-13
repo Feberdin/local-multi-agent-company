@@ -72,6 +72,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 f"Diff stat:\n{diff['diff_stat']}\n"
             ),
             worker_name="security",
+            required_keys=["findings", "residual_risks", "requires_human_approval", "approval_reason"],
         )
         ai_findings = ai_summary.get("findings", [])
         if ai_summary.get("requires_human_approval"):

@@ -188,6 +188,56 @@ async def test_complete_json_accepts_ollama_generate_style_response_field(
 
 
 @pytest.mark.asyncio
+async def test_complete_json_falls_back_when_json_is_missing_required_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            content = '{"response":"wrapped answer instead of direct contract"}'
+        else:
+            call_counter["mistral"] += 1
+            content = '{"summary":"Recovered JSON plan","operations":[],"blocking_reason":"No safe patch."}'
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json(
+        "system",
+        "user",
+        worker_name="coding",
+        required_keys=["summary", "operations"],
+    )
+
+    assert response == {
+        "summary": "Recovered JSON plan",
+        "operations": [],
+        "blocking_reason": "No safe patch.",
+    }
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+
+
+@pytest.mark.asyncio
 async def test_complete_accepts_message_content_without_choices_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

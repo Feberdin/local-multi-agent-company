@@ -227,6 +227,73 @@ async def test_local_patch_backend_recovers_when_primary_model_returns_prose(
 
 
 @pytest.mark.asyncio
+async def test_local_patch_backend_recovers_when_primary_model_returns_response_wrapper_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            content = '{"response":"wrapped answer instead of direct edit_plan"}'
+        else:
+            call_counter["mistral"] += 1
+            content = (
+                '{"summary":"Recover from wrapped response JSON.",'
+                '"operations":['
+                '{"action":"replace_symbol_body",'
+                '"file_path":"worker_target.py",'
+                '"symbol_name":"target_function",'
+                '"reason":"Fallback model must return the real edit plan contract.",'
+                '"new_content":"def target_function():\\n    return \\"wrapped-recovered\\"\\n"}'
+                "]}"
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-response-wrapper",
+        goal="Add error handling to the git clone command in the local patch backend",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-response-wrapper",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Implement clone error handling."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-response-wrapper",
+    )
+
+    assert response.success is True
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+    assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith('return "wrapped-recovered"\n')
+
+
+@pytest.mark.asyncio
 async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

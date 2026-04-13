@@ -57,6 +57,20 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 "For touched_areas, look at the research results and list the specific source files to edit."
             ),
             worker_name="architecture",
+            required_keys=[
+                "summary",
+                "components",
+                "responsibilities",
+                "data_flows",
+                "module_boundaries",
+                "deployment_strategy",
+                "logging_strategy",
+                "implementation_plan",
+                "test_strategy",
+                "risks",
+                "approval_gates",
+                "touched_areas",
+            ],
         )
     except LLMError as exc:
         task_logger.warning("LLM architecture design unavailable: %s", exc)

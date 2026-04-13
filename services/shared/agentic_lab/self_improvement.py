@@ -255,6 +255,7 @@ async def analyze_problems(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             worker_name="self_improvement",
+            required_keys=["goal", "problem_class", "hypothesis"],
         )
         goal = str(result.get("goal", "")).strip()[:3990]
         raw_class = str(result.get("problem_class", "unknown")).lower().strip()

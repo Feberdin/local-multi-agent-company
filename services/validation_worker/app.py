@@ -53,6 +53,14 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 "Be strict and separate evidence-backed completion from assumptions."
             ),
             worker_name="validation",
+            required_keys=[
+                "fulfilled",
+                "partially_verified",
+                "unverified",
+                "residual_risks",
+                "release_readiness",
+                "recommendation",
+            ],
         )
     except LLMError as exc:
         task_logger.warning("LLM validation unavailable: %s", exc)

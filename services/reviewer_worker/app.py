@@ -115,4 +115,9 @@ async def _review_with_llm(goal: str, diff: dict, guidance_block: str) -> dict:
         f"Unified diff:\n{diff['diff_text'][:12000]}\n\n"
         "List only important findings."
     )
-    return await llm.complete_json(system_prompt, user_prompt, worker_name="reviewer")
+    return await llm.complete_json(
+        system_prompt,
+        user_prompt,
+        worker_name="reviewer",
+        required_keys=["findings", "warnings"],
+    )
