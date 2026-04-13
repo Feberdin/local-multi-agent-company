@@ -503,6 +503,102 @@ async def test_local_patch_backend_recovers_when_primary_model_returns_german_em
 
 
 @pytest.mark.asyncio
+async def test_local_patch_backend_retries_with_focused_contract_recovery_after_llm_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+
+    class _StubLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json(self, system_prompt: str, user_prompt: str, **_kwargs) -> dict[str, object]:
+            self.calls += 1
+            if self.calls == 1:
+                raise coding_app.LLMError("Model did not return valid JSON for `coding`.")
+            assert "Relevant code excerpts:" in user_prompt
+            assert "Previous contract failure:" in user_prompt
+            return {
+                "summary": "Recover after contract failure with one concrete edit.",
+                "operations": [
+                    {
+                        "action": "replace_symbol_body",
+                        "file_path": "worker_target.py",
+                        "symbol_name": "target_function",
+                        "reason": "The focused contract-recovery prompt should produce one valid edit.",
+                        "new_content": 'def target_function():\n    return "recovered-after-error"\n',
+                    }
+                ],
+            }
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", _StubLLM())
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-contract-recovery",
+        goal="Add error handling to the git clone command in the local patch backend",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-contract-recovery",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Handle git clone failures clearly."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-contract-recovery",
+    )
+
+    assert response.success is True
+    assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith('return "recovered-after-error"\n')
+
+
+def test_extract_relevant_file_excerpt_focuses_git_clone_region(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+
+    content = "\n".join(
+        [
+            "def helper():",
+            "    return 'ignore'",
+            "",
+            "def ensure_repository_checkout(repo_url, repo_dir):",
+            "    subprocess.run(['git', 'clone', repo_url, repo_dir])",
+            "    return repo_dir",
+            "",
+            "def tail():",
+            "    return 'done'",
+        ]
+    )
+
+    excerpt = coding_app._extract_relevant_file_excerpt(  # pyright: ignore[reportPrivateUsage]
+        "services/shared/agentic_lab/repo_tools.py",
+        content,
+        keywords=["git", "clone", "ensure_repository_checkout"],
+        file_index=None,
+    )
+
+    assert "git', 'clone'" in excerpt
+    assert "ensure_repository_checkout" in excerpt
+    assert "# services/shared/agentic_lab/repo_tools.py" in excerpt
+    assert settings is not None
+
+
+@pytest.mark.asyncio
 async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

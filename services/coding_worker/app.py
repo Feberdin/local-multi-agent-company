@@ -7,6 +7,8 @@ How to debug: If generated changes look wrong, inspect the plan, sampled files, 
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -192,12 +194,17 @@ async def _run_local_patch_backend(
     if not candidate_files:
         candidate_files = _grep_for_candidates(repo_path, request.goal)
 
-    file_context = {path: read_text_file(repo_path, path) for path in candidate_files}
-
     # Build a lightweight symbol index for Python candidate files so the LLM can
     # use targeted replace_symbol_body operations instead of full file rewrites.
     code_index = build_index(repo_path, candidate_files)
     symbol_index_block = code_index.format_for_prompt()
+    file_context = _build_prompt_file_context(
+        repo_path=repo_path,
+        candidate_files=candidate_files,
+        goal=request.goal,
+        requirements=requirements,
+        code_index=code_index,
+    )
     plan_attempts: list[dict[str, Any]] = []
 
     try:
@@ -218,18 +225,40 @@ async def _run_local_patch_backend(
         )
         plan_attempts.append(_patch_plan_attempt_snapshot("initial", patch_plan))
     except LLMError as exc:
-        return _coding_failure_response(
-            request=request,
-            repo_path=repo_path,
-            summary="Coding plan generation failed.",
-            errors=[str(exc)],
-            candidate_files=candidate_files,
-            arch_touched=arch_touched,
-            research=research,
-            file_context=file_context,
-            symbol_index_block=symbol_index_block,
-            plan_attempts=plan_attempts,
+        plan_attempts.append(
+            {
+                "attempt": "initial_contract_failure",
+                "error": _short_text(str(exc), limit=900),
+            }
         )
+        try:
+            patch_plan = await llm.complete_json(
+                system_prompt=_coding_system_prompt(guidance_block),
+                user_prompt=_coding_contract_recovery_user_prompt(
+                    goal=request.goal,
+                    requirements=requirements,
+                    candidate_files=candidate_files,
+                    file_context=file_context,
+                    symbol_index_block=symbol_index_block,
+                    previous_error=str(exc),
+                ),
+                worker_name="coding",
+                required_keys=["summary", "operations"],
+            )
+            plan_attempts.append(_patch_plan_attempt_snapshot("retry_after_contract_failure", patch_plan))
+        except LLMError as retry_exc:
+            return _coding_failure_response(
+                request=request,
+                repo_path=repo_path,
+                summary="Coding plan generation failed.",
+                errors=[str(exc), str(retry_exc)],
+                candidate_files=candidate_files,
+                arch_touched=arch_touched,
+                research=research,
+                file_context=file_context,
+                symbol_index_block=symbol_index_block,
+                plan_attempts=plan_attempts,
+            )
 
     raw_operations = _raw_operations_from_plan(patch_plan)
     if not raw_operations:
@@ -494,6 +523,38 @@ def _coding_noop_retry_user_prompt(
     return base_prompt + "\n\n" + "\n".join(retry_block)
 
 
+def _coding_contract_recovery_user_prompt(
+    *,
+    goal: str,
+    requirements: object,
+    candidate_files: list[str],
+    file_context: dict[str, str],
+    symbol_index_block: str,
+    previous_error: str,
+) -> str:
+    """Create one smaller, highly targeted retry prompt after the shared JSON contract path already failed."""
+
+    compact_requirements = _compact_requirements_for_prompt(requirements)
+    parts = [
+        f"Goal:\n{goal}",
+        f"Requirements:\n{compact_requirements}",
+        f"Candidate files you may change:\n{candidate_files or ['<none>']}",
+        f"Previous contract failure:\n{_short_text(previous_error, limit=1200)}",
+    ]
+    if symbol_index_block:
+        parts.append(symbol_index_block)
+    if file_context:
+        parts.append(f"Relevant code excerpts:\n{file_context}")
+    parts.append(
+        "This is a concrete code-edit recovery attempt after a failed structured output. "
+        "Choose one of the listed candidate files. "
+        "Return at least one concrete operation when a safe change is possible. "
+        "If no safe code change is possible, set operations to [] and provide a blocking_reason that names exactly "
+        "one listed candidate file and explains why changing it there would be unsafe."
+    )
+    return "\n\n".join(parts)
+
+
 def _coding_user_prompt(
     goal: str,
     requirements: object,
@@ -631,6 +692,150 @@ def _short_text(value: object, *, limit: int) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1].rstrip() + "…"
+
+
+def _build_prompt_file_context(
+    *,
+    repo_path: Path,
+    candidate_files: list[str],
+    goal: str,
+    requirements: object,
+    code_index: Any,
+) -> dict[str, str]:
+    """Build compact file excerpts so coding models see relevant lines instead of whole large files."""
+
+    keywords = _prompt_focus_keywords(goal, requirements)
+    excerpts: dict[str, str] = {}
+    for path in candidate_files:
+        raw_content = read_text_file(repo_path, path, max_bytes=32_000)
+        if not raw_content:
+            continue
+        file_index = code_index.get_file(path) if hasattr(code_index, "get_file") else None
+        excerpts[path] = _extract_relevant_file_excerpt(path, raw_content, keywords=keywords, file_index=file_index)
+    return excerpts
+
+
+def _prompt_focus_keywords(goal: str, requirements: object) -> list[str]:
+    """Derive stable search terms from the coding goal so prompt excerpts target the real edit location."""
+
+    keywords = {
+        "git",
+        "clone",
+        "checkout",
+        "repository",
+        "repo",
+        "subprocess",
+        "error",
+        "errors",
+        "exception",
+        "commanderror",
+        "ensure_repository_checkout",
+        "run_command",
+        "local",
+        "patch",
+        "backend",
+    }
+
+    def _collect(text: str) -> None:
+        normalized = _normalize_prompt_search_text(text)
+        for token in re.split(r"[^a-z0-9_]+", normalized):
+            if token == "git" or len(token) >= 4:
+                keywords.add(token)
+
+    _collect(goal)
+    if isinstance(requirements, dict):
+        for item in requirements.get("requirements", []):
+            if isinstance(item, str):
+                _collect(item)
+    return sorted(keywords)
+
+
+def _extract_relevant_file_excerpt(
+    path: str,
+    content: str,
+    *,
+    keywords: list[str],
+    file_index: Any,
+    max_excerpt_lines: int = 140,
+) -> str:
+    """Return line-numbered excerpts around keyword and symbol hits to keep coding prompts focused."""
+
+    lines = content.splitlines()
+    if not lines:
+        return ""
+
+    normalized_lines = [_normalize_prompt_search_text(line) for line in lines]
+    matched_line_numbers = [
+        index + 1
+        for index, normalized in enumerate(normalized_lines)
+        if any(keyword in normalized for keyword in keywords)
+    ]
+
+    windows: list[tuple[int, int]] = []
+    covered_lines: set[int] = set()
+
+    if file_index is not None and matched_line_numbers:
+        for symbol in getattr(file_index, "symbols", []):
+            if any(symbol.start_line <= line_no <= symbol.end_line for line_no in matched_line_numbers):
+                start = max(1, symbol.start_line - 2)
+                end = min(len(lines), symbol.end_line + 2)
+                windows.append((start, end))
+                covered_lines.update(range(start, end + 1))
+                if len(windows) >= 3:
+                    break
+
+    for line_no in matched_line_numbers:
+        if line_no in covered_lines:
+            continue
+        start = max(1, line_no - 4)
+        end = min(len(lines), line_no + 6)
+        windows.append((start, end))
+        covered_lines.update(range(start, end + 1))
+        if len(windows) >= 6:
+            break
+
+    if not windows:
+        if len(lines) <= 120:
+            windows = [(1, len(lines))]
+        else:
+            windows = [(1, min(len(lines), 90))]
+
+    merged = _merge_line_windows(windows)
+    excerpt_parts = [f"# {path}"]
+    consumed_lines = 0
+    for start, end in merged:
+        excerpt_parts.append(f"[lines {start}-{end}]")
+        for line_no in range(start, end + 1):
+            excerpt_parts.append(f"{line_no:04d}: {lines[line_no - 1]}")
+            consumed_lines += 1
+            if consumed_lines >= max_excerpt_lines:
+                excerpt_parts.append("... excerpt truncated ...")
+                return "\n".join(excerpt_parts)
+    return "\n".join(excerpt_parts)
+
+
+def _merge_line_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping line windows so prompt excerpts stay compact and readable."""
+
+    if not windows:
+        return []
+    ordered = sorted(windows)
+    merged: list[tuple[int, int]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        current_start, current_end = merged[-1]
+        if start <= current_end + 1:
+            merged[-1] = (current_start, max(current_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _normalize_prompt_search_text(text: str) -> str:
+    """Normalize free text so prompt keyword matching works for English and German snippets alike."""
+
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_only.lower()
 
 
 def _raw_operations_from_plan(patch_plan: dict[str, Any]) -> list[dict[str, Any]]:
