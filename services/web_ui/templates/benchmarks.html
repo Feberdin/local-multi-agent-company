@@ -107,8 +107,15 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
             Probe-Auftrag
             <textarea name="probe_goal" rows="3" placeholder="{{ worker_probe_default_goal }}">{{ worker_probe_default_goal }}</textarea>
           </label>
+          <input type="hidden" name="probe_mode" value="full">
           <p class="muted">Der Lauf fragt die konfigurierten Worker-Routen mit kurzen Testprompts ab. So siehst du schnell, welches Modell geantwortet hat und ob strukturierte Antworten sauber zurueckkommen.</p>
           <button type="submit">Schnelltest starten</button>
+        </form>
+        <form method="post" action="/benchmarks/model-probe/start" class="stack probe-smoke-form">
+          <input type="hidden" name="probe_mode" value="ok_contract">
+          <input type="hidden" name="probe_goal" value="{{ worker_probe_ok_goal }}">
+          <p class="muted">Leerer Kurztest fuer alle Worker-Vertraege. Jeder Worker soll nur eine minimale `OK`-Antwort im passenden Format liefern.</p>
+          <button type="submit" class="secondary-button">OK-Kurztest starten</button>
         </form>
 
         <div class="stats-grid">
@@ -129,6 +136,7 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
             <span class="status status-{{ worker_probe_report.latest_run.status_tone }}">{{ worker_probe_report.latest_run.status_label }}</span>
           </div>
           <div class="stats-grid">
+            <p><strong>Typ:</strong> {{ worker_probe_report.latest_run.probe_mode_label }}</p>
             <p><strong>Erstellt:</strong> {{ worker_probe_report.latest_run.created_at_display }}</p>
             <p><strong>Gestartet:</strong> {{ worker_probe_report.latest_run.started_at_display }}</p>
             <p><strong>Zuletzt aktualisiert:</strong> {{ worker_probe_report.latest_run.updated_at_display }}</p>

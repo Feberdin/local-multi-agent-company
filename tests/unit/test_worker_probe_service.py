@@ -14,11 +14,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from services.shared.agentic_lab.config import get_settings
-from services.shared.agentic_lab.schemas import WorkerProbeRunStatus, WorkerProbeStartRequest
+from services.shared.agentic_lab.schemas import WorkerProbeMode, WorkerProbeRunStatus, WorkerProbeStartRequest
 from services.shared.agentic_lab.worker_probe_service import PROBE_WORKERS, WorkerProbeService
 
 
 class _FakeLLM:
+    def __init__(self) -> None:
+        self.prompt_log: dict[str, tuple[str, str]] = {}
+
     async def complete_json_with_trace(
         self,
         *,
@@ -28,7 +31,8 @@ class _FakeLLM:
         required_keys=None,
         max_tokens=None,
     ):
-        del system_prompt, user_prompt, required_keys, max_tokens
+        del required_keys, max_tokens
+        self.prompt_log[worker_name] = (system_prompt, user_prompt)
         base_payload = {"summary": f"{worker_name} summary"}
         if worker_name == "requirements":
             base_payload.update(
@@ -114,7 +118,8 @@ class _FakeLLM:
         max_tokens=None,
         temperature=None,
     ):
-        del system_prompt, user_prompt, max_tokens, temperature
+        del max_tokens, temperature
+        self.prompt_log[worker_name] = (system_prompt, user_prompt)
         return (
             f"{worker_name} antwortet mit einer kurzen, lesbaren Probe.",
             {
@@ -143,7 +148,8 @@ def _prepare_settings(tmp_path: Path, monkeypatch):
 async def test_worker_probe_service_executes_and_persists_results(tmp_path, monkeypatch) -> None:
     settings = _prepare_settings(tmp_path, monkeypatch)
     storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
-    service = WorkerProbeService(settings=settings, llm=_FakeLLM(), storage_path=storage_path)
+    fake_llm = _FakeLLM()
+    service = WorkerProbeService(settings=settings, llm=fake_llm, storage_path=storage_path)
 
     run = await service.start_run(
         WorkerProbeStartRequest(probe_goal="Teste kurze Modellantworten fuer eine observability-lastige Aufgabe.")
@@ -151,6 +157,7 @@ async def test_worker_probe_service_executes_and_persists_results(tmp_path, monk
     finished = await service.execute_run(run.id)
 
     assert finished.status == WorkerProbeRunStatus.COMPLETED
+    assert finished.probe_mode is WorkerProbeMode.FULL
     assert finished.total_workers == len(PROBE_WORKERS)
     assert finished.completed_workers == len(PROBE_WORKERS)
     assert finished.failed_workers == 0
@@ -159,6 +166,30 @@ async def test_worker_probe_service_executes_and_persists_results(tmp_path, monk
     assert coding_result.used_fallback is True
     assert coding_result.repair_pass_used is True
     assert storage_path.exists() is True
+
+
+async def test_worker_probe_service_supports_ok_contract_smoke_runs(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    fake_llm = _FakeLLM()
+    service = WorkerProbeService(settings=settings, llm=fake_llm, storage_path=storage_path)
+
+    run = await service.start_run(
+        WorkerProbeStartRequest(
+            probe_goal="Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen.",
+            probe_mode=WorkerProbeMode.OK_CONTRACT,
+        )
+    )
+    finished = await service.execute_run(run.id)
+
+    assert finished.status == WorkerProbeRunStatus.COMPLETED
+    assert finished.probe_mode is WorkerProbeMode.OK_CONTRACT
+    assert all(item.status == "ok" for item in finished.results)
+    coding_system_prompt, coding_user_prompt = fake_llm.prompt_log["coding"]
+    assert "contract smoke test" in coding_user_prompt.lower()
+    assert "blocking_reason" in coding_system_prompt
+    research_system_prompt, _research_user_prompt = fake_llm.prompt_log["research"]
+    assert "reply with exactly `ok`" in research_system_prompt.lower()
 
 
 async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_path, monkeypatch) -> None:

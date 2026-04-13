@@ -334,6 +334,11 @@ def _collect_runtime_insights(task_service: Any | None) -> dict[str, Any]:
     for record in records:
         metadata = dict(record.metadata_json or {})
         worker_progress = dict(metadata.get("worker_progress") or {})
+        worker_results = {
+            worker_name: result
+            for worker_name, result in dict(record.worker_results_json or {}).items()
+            if isinstance(result, dict)
+        }
 
         if record.status in ACTIVE_TASK_STATUSES:
             active_tasks.append(
@@ -349,6 +354,14 @@ def _collect_runtime_insights(task_service: Any | None) -> dict[str, Any]:
         for worker_name, progress in worker_progress.items():
             if not isinstance(progress, dict):
                 continue
+            worker_result = worker_results.get(worker_name, {})
+            worker_errors = [str(item) for item in worker_result.get("errors", []) if str(item).strip()]
+            progress_state = str(progress.get("state") or "idle")
+            stage_last_error = str(progress.get("last_error") or "").strip()
+            if not stage_last_error and worker_errors and worker_result.get("success") is False:
+                stage_last_error = " | ".join(worker_errors[:3])
+            if not stage_last_error and progress_state == "failed":
+                stage_last_error = str(record.latest_error or "").strip()
             updated_at = _parse_any_timestamp(progress.get("updated_at")) or record.updated_at
             previous = worker_snapshot.get(worker_name)
             previous_updated = _parse_any_timestamp(previous.get("updated_at")) if previous else None
@@ -360,7 +373,7 @@ def _collect_runtime_insights(task_service: Any | None) -> dict[str, Any]:
                 "repository": record.repository,
                 "goal": _trim_text(record.goal, 160),
                 "task_status": record.status,
-                "state": str(progress.get("state") or "idle"),
+                "state": progress_state,
                 "current_action": str(progress.get("current_action") or ""),
                 "current_instruction": str(
                     progress.get("current_instruction")
@@ -373,7 +386,7 @@ def _collect_runtime_insights(task_service: Any | None) -> dict[str, Any]:
                 "next_worker": str(progress.get("next_worker") or ""),
                 "last_result_summary": str(progress.get("last_result_summary") or ""),
                 "progress_message": str(progress.get("progress_message") or ""),
-                "last_error": str(progress.get("last_error") or record.latest_error or ""),
+                "last_error": stage_last_error,
                 "updated_at": updated_at.isoformat(),
                 "started_at": str(progress.get("started_at") or ""),
                 "elapsed_seconds": progress.get("elapsed_seconds"),
@@ -382,13 +395,11 @@ def _collect_runtime_insights(task_service: Any | None) -> dict[str, Any]:
                 "model_route": str(progress.get("model_route") or ""),
             }
 
-        for worker_name, result in dict(record.worker_results_json or {}).items():
-            if not isinstance(result, dict):
-                continue
+        for worker_name, result in worker_results.items():
             errors = [str(item) for item in result.get("errors", []) if str(item).strip()]
-            if errors:
+            if errors or result.get("success") is False:
                 failure_counts[worker_name] += 1
-            joined = " ".join(errors + [str(record.latest_error or "")]).lower()
+            joined = " ".join(errors + ([str(record.latest_error or "")] if result.get("success") is False else [])).lower()
             if "timeout" in joined or "timed out" in joined:
                 timeout_counts[worker_name] += 1
             if "http 500" in joined or "internal server error" in joined:

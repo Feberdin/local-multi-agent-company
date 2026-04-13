@@ -31,15 +31,17 @@ from fastapi.templating import Jinja2Templates
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.readiness import ReadinessMode, build_catastrophic_readiness_report
-from services.shared.agentic_lab.schemas import HealthResponse, TaskStatus
+from services.shared.agentic_lab.schemas import HealthResponse, TaskStatus, WorkerProbeMode
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
 READINESS_MODE_QUERY = Query(default=ReadinessMode.QUICK)
 READINESS_MODE_FORM = Form(default=ReadinessMode.QUICK)
+WORKER_PROBE_MODE_FORM = Form(default=WorkerProbeMode.FULL)
 DEFAULT_WORKER_PROBE_GOAL = (
     "Verbessere Beobachtbarkeit, Fehlermeldungen und Healthchecks einer lokalen Docker-basierten Anwendung."
 )
+DEFAULT_OK_WORKER_PROBE_GOAL = "Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen."
 
 # Why this exists:
 # The UI should import both inside the container (`/app/...`) and in local tests where the
@@ -1869,10 +1871,16 @@ def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
         status = str(run.get("status") or "unknown")
+        probe_mode = str(run.get("probe_mode") or WorkerProbeMode.FULL.value)
         runs.append(
             {
                 **run,
                 "status": status,
+                "probe_mode": probe_mode,
+                "probe_mode_label": {
+                    WorkerProbeMode.FULL.value: "Normaler Probelauf",
+                    WorkerProbeMode.OK_CONTRACT.value: "OK-Kurztest",
+                }.get(probe_mode, probe_mode),
                 "status_label": {
                     "queued": "wartet",
                     "running": "laeuft",
@@ -2530,6 +2538,7 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
         "worker_probe_default_goal": DEFAULT_WORKER_PROBE_GOAL,
+        "worker_probe_ok_goal": DEFAULT_OK_WORKER_PROBE_GOAL,
     }
 
 
@@ -2998,11 +3007,15 @@ async def reset_benchmarks(request: Request) -> HTMLResponse:
 async def start_worker_model_probe(
     request: Request,
     probe_goal: str = Form(DEFAULT_WORKER_PROBE_GOAL),
+    probe_mode: WorkerProbeMode = WORKER_PROBE_MODE_FORM,
 ) -> Response:
+    normalized_goal = probe_goal.strip() or (
+        DEFAULT_OK_WORKER_PROBE_GOAL if probe_mode == WorkerProbeMode.OK_CONTRACT else DEFAULT_WORKER_PROBE_GOAL
+    )
     response = await _api_request(
         "POST",
         "/api/benchmarks/model-probe",
-        json_payload={"probe_goal": probe_goal},
+        json_payload={"probe_goal": normalized_goal, "probe_mode": probe_mode.value},
     )
     if response.status_code >= 400:
         detail = _response_detail(response, "Die Modell-Probe konnte nicht gestartet werden.")

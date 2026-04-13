@@ -146,6 +146,11 @@ body {
   flex-wrap: wrap;
 }
 
+.probe-smoke-form {
+  padding-top: 0.25rem;
+  border-top: 1px dashed var(--line);
+}
+
 .view-switch {
   display: inline-flex;
   gap: 0.35rem;

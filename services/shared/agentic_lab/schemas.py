@@ -44,6 +44,11 @@ class WorkerProbeRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class WorkerProbeMode(StrEnum):
+    FULL = "full"
+    OK_CONTRACT = "ok_contract"
+
+
 class WorkflowWorkerName(StrEnum):
     REQUIREMENTS = "requirements"
     COST = "cost"
@@ -339,6 +344,7 @@ class WorkerProbeStartRequest(BaseModel):
         min_length=10,
         max_length=600,
     )
+    probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
 
 
 class WorkerProbeResultResponse(BaseModel):
@@ -366,6 +372,7 @@ class WorkerProbeRunResponse(BaseModel):
     id: str
     status: WorkerProbeRunStatus
     probe_goal: str
+    probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
     created_at: datetime = Field(default_factory=_utc_now)
     started_at: datetime | None = None
     updated_at: datetime = Field(default_factory=_utc_now)

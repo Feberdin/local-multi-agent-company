@@ -461,7 +461,8 @@ def test_benchmark_page_can_start_worker_probe_from_ui(tmp_path, monkeypatch) ->
     async def fake_api_request(method: str, path: str, *, json_payload=None):
         if method == "POST" and path == "/api/benchmarks/model-probe":
             assert json_payload == {
-                "probe_goal": "Teste strukturierten Modell-Output fuer observability-lastige Worker."
+                "probe_goal": "Teste strukturierten Modell-Output fuer observability-lastige Worker.",
+                "probe_mode": "full",
             }
             return httpx.Response(
                 201,
@@ -469,6 +470,7 @@ def test_benchmark_page_can_start_worker_probe_from_ui(tmp_path, monkeypatch) ->
                     "id": "probe-2",
                     "status": "queued",
                     "probe_goal": json_payload["probe_goal"],
+                    "probe_mode": json_payload["probe_mode"],
                     "created_at": now.isoformat(),
                     "updated_at": now.isoformat(),
                     "results": [],
@@ -490,6 +492,54 @@ def test_benchmark_page_can_start_worker_probe_from_ui(tmp_path, monkeypatch) ->
         response = client.post(
             "/benchmarks/model-probe/start",
             data={"probe_goal": "Teste strukturierten Modell-Output fuer observability-lastige Worker."},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/benchmarks"
+
+
+def test_benchmark_page_can_start_ok_contract_probe_from_ui(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if method == "POST" and path == "/api/benchmarks/model-probe":
+            assert json_payload == {
+                "probe_goal": "Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen.",
+                "probe_mode": "ok_contract",
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "probe-ok",
+                    "status": "queued",
+                    "probe_goal": json_payload["probe_goal"],
+                    "probe_mode": json_payload["probe_mode"],
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "results": [],
+                    "errors": [],
+                    "total_workers": 8,
+                    "completed_workers": 0,
+                    "failed_workers": 0,
+                },
+            )
+        if method == "GET" and path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
+        if method == "GET" and path == "/api/tasks?include_archived=true":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/benchmarks/model-probe/start",
+            data={
+                "probe_goal": "Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen.",
+                "probe_mode": "ok_contract",
+            },
             follow_redirects=False,
         )
 

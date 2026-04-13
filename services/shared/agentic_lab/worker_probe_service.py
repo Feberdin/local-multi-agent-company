@@ -23,6 +23,7 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.model_routing import resolve_fallback_provider, resolve_worker_route
 from services.shared.agentic_lab.schemas import (
+    WorkerProbeMode,
     WorkerProbeRegistryResponse,
     WorkerProbeResultResponse,
     WorkerProbeRunResponse,
@@ -222,6 +223,7 @@ class WorkerProbeService:
                 id=str(uuid4()),
                 status=WorkerProbeRunStatus.QUEUED,
                 probe_goal=request.probe_goal.strip(),
+                probe_mode=request.probe_mode,
                 total_workers=len(PROBE_WORKERS),
             )
             registry.runs.insert(0, run)
@@ -284,16 +286,20 @@ class WorkerProbeService:
         """Ask one configured worker route for a tiny synthetic answer and capture readable diagnostics."""
 
         definition = PROBE_DEFINITIONS[worker_name]
+        probe_run = self._find_run(run_id)
         synthetic_request = self._synthetic_request(run_id, worker_name)
         guidance_block = self.governance_service.guidance_prompt_block(synthetic_request, worker_name)
         primary_provider, route = resolve_worker_route(self.settings, worker_name)
         fallback_provider = resolve_fallback_provider(self.settings, worker_name)
         started_at = _utc_now()
 
+        request_max_tokens = 160 if probe_run.probe_mode == WorkerProbeMode.OK_CONTRACT else PROBE_MAX_TOKENS
+
         try:
             system_prompt, user_prompt = self._probe_prompts(
                 definition=definition,
-                probe_goal=synthetic_request.goal,
+                probe_goal=probe_run.probe_goal,
+                probe_mode=probe_run.probe_mode,
                 guidance_block=guidance_block,
             )
             if definition.response_format in {"json"}:
@@ -302,7 +308,7 @@ class WorkerProbeService:
                     user_prompt=user_prompt,
                     worker_name=worker_name,
                     required_keys=definition.required_keys,
-                    max_tokens=PROBE_MAX_TOKENS,
+                    max_tokens=request_max_tokens,
                 )
                 response_text = json.dumps(payload, indent=2, ensure_ascii=False)
                 summary = str(payload.get("summary") or payload.get("recommendation") or "Strukturierte Modellantwort erhalten.")
@@ -312,7 +318,7 @@ class WorkerProbeService:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     worker_name=worker_name,
-                    max_tokens=PROBE_MAX_TOKENS,
+                    max_tokens=request_max_tokens,
                 )
                 response_text = text
                 response_data = {}
@@ -379,9 +385,17 @@ class WorkerProbeService:
         *,
         definition: WorkerProbeDefinition,
         probe_goal: str,
+        probe_mode: WorkerProbeMode,
         guidance_block: str,
     ) -> tuple[str, str]:
         """Return a compact prompt pair that exercises the same route contract without touching a real repo."""
+
+        if probe_mode == WorkerProbeMode.OK_CONTRACT:
+            return self._ok_contract_probe_prompts(
+                definition=definition,
+                probe_goal=probe_goal,
+                guidance_block=guidance_block,
+            )
 
         candidate_files = [
             "services/web_ui/app.py",
@@ -504,6 +518,90 @@ class WorkerProbeService:
                 f"Validation:\n{validation_input}\n\n"
                 f"Security:\n{security_input}\n\n"
                 "Write a short operator handoff that is easy to skim in a benchmark UI."
+            ),
+        )
+
+    def _ok_contract_probe_prompts(
+        self,
+        *,
+        definition: WorkerProbeDefinition,
+        probe_goal: str,
+        guidance_block: str,
+    ) -> tuple[str, str]:
+        """Return the smallest contract-valid prompt set so operators can run one empty smoke test quickly."""
+
+        if definition.worker_name == "requirements":
+            return (
+                "You are a requirements engineer. Return a single JSON object with keys summary, requirements, wishes, "
+                "assumptions, risks, acceptance_criteria, open_questions, recommended_workers. "
+                "Use the smallest valid payload. Set summary to 'OK'. Use short 'OK' entries where a list is required. "
+                "No prose outside the JSON object."
+                f"{guidance_block}",
+                (
+                    f"Contract smoke test:\n{probe_goal}\n\n"
+                    "Return only the smallest valid JSON payload that proves the requirements contract works."
+                ),
+            )
+        if definition.worker_name == "research":
+            return (
+                "You are a research lead. Return plain text only. Reply with exactly `OK` and nothing else."
+                f"{guidance_block}",
+                "This is an empty contract smoke test. Do not add sections, explanations, or markdown fences.",
+            )
+        if definition.worker_name == "architecture":
+            return (
+                "You are a staff-plus architect. Return a single JSON object with keys summary, components, responsibilities, "
+                "data_flows, module_boundaries, deployment_strategy, logging_strategy, implementation_plan, test_strategy, "
+                "risks, approval_gates, touched_areas. Use the smallest realistic payload. Set summary to 'OK'. "
+                "Use one tiny example object per structured list and keep every string value as short as possible. "
+                "No prose outside the JSON object."
+                f"{guidance_block}",
+                (
+                    f"Contract smoke test:\n{probe_goal}\n\n"
+                    "Use touched_areas ['services/web_ui/app.py'] and one minimal implementation_plan step."
+                ),
+            )
+        if definition.worker_name == "coding":
+            return (
+                "You are a careful coding worker. Return a single JSON object with keys summary, operations, and blocking_reason. "
+                "This is a contract smoke test without repository access. Return summary 'OK', operations [], and a short "
+                "blocking_reason 'OK'. No prose outside the JSON object."
+                f"{guidance_block}",
+                (
+                    f"Contract smoke test:\n{probe_goal}\n\n"
+                    "Do not invent file operations. Prove only that the edit_plan contract can be emitted cleanly."
+                ),
+            )
+        if definition.worker_name == "reviewer":
+            return (
+                "You are a strict reviewer. Return a single JSON object with keys findings and warnings. "
+                "Use the smallest valid payload with 'OK' content. No prose outside the JSON object."
+                f"{guidance_block}",
+                f"Contract smoke test:\n{probe_goal}",
+            )
+        if definition.worker_name == "security":
+            return (
+                "You are a security reviewer. Return a single JSON object with keys findings, residual_risks, "
+                "requires_human_approval, approval_reason. Use the smallest valid payload with 'OK' content and "
+                "requires_human_approval false. No prose outside the JSON object."
+                f"{guidance_block}",
+                f"Contract smoke test:\n{probe_goal}",
+            )
+        if definition.worker_name == "validation":
+            return (
+                "You are a validation lead. Return a single JSON object with keys fulfilled, partially_verified, unverified, "
+                "residual_risks, release_readiness, recommendation. Use the smallest valid payload with 'OK' content. "
+                "No prose outside the JSON object."
+                f"{guidance_block}",
+                f"Contract smoke test:\n{probe_goal}",
+            )
+        return (
+            "You are a documentation lead. Return markdown only with these sections: Summary, Validation, Risks, Deployment Notes, "
+            "Next Steps. Every section should contain only `OK`."
+            f"{guidance_block}",
+            (
+                f"Contract smoke test:\n{probe_goal}\n\n"
+                "Return the smallest valid markdown handoff with exactly the requested headings."
             ),
         )
 

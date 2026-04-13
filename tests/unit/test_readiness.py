@@ -4,20 +4,24 @@ fail, are skipped, or raise exceptions internally.
 Input/Output: Tests patch the check definition list so report aggregation can be exercised without
 real network, Git, or model traffic.
 Important invariants: One broken check must not crash the report, category summaries stay
-consistent, and timing fields remain plausible.
+consistent, successful early worker stages must not inherit later task-level errors, and timing
+fields remain plausible.
 How to debug: If these tests fail, inspect `services/shared/agentic_lab/readiness_checks.py`
 because that module now owns the aggregation and safety net behavior.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from services.shared.agentic_lab.config import Settings
 from services.shared.agentic_lab.readiness_checks import (
     ReadinessCheckDefinition,
     ReadinessContext,
     ReadinessServices,
+    _collect_runtime_insights,
     _secrets_files,
     build_catastrophic_readiness_report,
     build_readiness_report,
@@ -173,3 +177,56 @@ async def test_secrets_files_check_reports_directory_path_as_failure(tmp_path, m
     assert payload["status"] is ReadinessCheckStatus.FAIL
     assert payload["raw_value"]["mistral_api_key_file"]["state"] == "directory"
     assert "Verzeichnis" in payload["detail"]
+
+
+def test_collect_runtime_insights_keeps_task_level_failure_on_the_failed_worker_only(monkeypatch) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    task_record = SimpleNamespace(
+        id="task-1",
+        repository="Feberdin/local-multi-agent-company",
+        goal="Add error handling to the git clone command in the local patch backend",
+        status="FAILED",
+        latest_error=(
+            "The local patch backend did not generate any file operations.; "
+            "Blocking reason: Keine Ziel-Datei oder Änderungsauftrag im Input vorhanden."
+        ),
+        updated_at=now,
+        metadata_json={
+            "worker_progress": {
+                "research": {
+                    "state": "complete",
+                    "current_action": "Repo-Kontext wird ausgewertet.",
+                    "updated_at": now.isoformat(),
+                },
+                "coding": {
+                    "state": "failed",
+                    "current_action": "Codeaenderungen werden vorbereitet oder umgesetzt.",
+                    "updated_at": now.isoformat(),
+                },
+            }
+        },
+        worker_results_json={
+            "research": {
+                "success": True,
+                "errors": [],
+            },
+            "coding": {
+                "success": False,
+                "errors": [
+                    "The local patch backend did not generate any file operations.",
+                    "Blocking reason: Keine Ziel-Datei oder Änderungsauftrag im Input vorhanden.",
+                ],
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "services.shared.agentic_lab.readiness_checks._recent_task_records",
+        lambda _task_service: [task_record],
+    )
+
+    insights = _collect_runtime_insights(task_service=object())
+
+    assert insights["worker_snapshot"]["research"]["last_error"] == ""
+    assert "Keine Ziel-Datei" in insights["worker_snapshot"]["coding"]["last_error"]
+    assert insights["failure_counts"] == {"coding": 1}
