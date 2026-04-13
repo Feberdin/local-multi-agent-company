@@ -15,7 +15,7 @@ from fastapi import FastAPI
 
 from services.shared.agentic_lab.code_index import build_index
 from services.shared.agentic_lab.config import get_settings
-from services.shared.agentic_lab.edit_ops import EditOperation, normalize_raw_operation
+from services.shared.agentic_lab.edit_ops import EditOperation, normalize_raw_operation, validate_raw_operation
 from services.shared.agentic_lab.guardrails import detect_risk_flags
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
@@ -616,8 +616,9 @@ def _parse_operations(raw_ops: list) -> tuple[list[EditOperation], list[str]]:
     ops: list[EditOperation] = []
     errors: list[str] = []
     for i, raw in enumerate(raw_ops):
-        if not isinstance(raw, dict):
-            errors.append(f"Operation {i} is not a dict: {type(raw).__name__}")
+        validation_error = validate_raw_operation(raw, index=i)
+        if validation_error:
+            errors.append(validation_error)
             continue
         try:
             normalized = normalize_raw_operation(raw)

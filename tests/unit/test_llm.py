@@ -274,6 +274,61 @@ async def test_complete_json_falls_back_when_json_is_missing_required_keys(
 
 
 @pytest.mark.asyncio
+async def test_complete_json_falls_back_when_edit_plan_operations_are_semantically_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            content = '{"summary":"Broken plan","operations":[{"action":"create_or_update"}]}'
+        else:
+            call_counter["mistral"] += 1
+            content = (
+                '{"summary":"Recovered JSON plan",'
+                '"operations":['
+                '{"action":"replace_lines","file_path":"worker_target.py","start_line":2,"end_line":2,'
+                '"reason":"Fallback provider returned one complete operation.",'
+                '"new_content":"    return \\"ok\\""}'
+                "],"
+                '"blocking_reason":""}'
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json(
+        "system",
+        "user",
+        worker_name="coding",
+        required_keys=["summary", "operations"],
+    )
+
+    assert response["summary"] == "Recovered JSON plan"
+    assert response["operations"][0]["file_path"] == "worker_target.py"
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+
+
+@pytest.mark.asyncio
 async def test_complete_accepts_message_content_without_choices_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -417,7 +472,10 @@ async def test_thinking_blocks_stripped_before_json_extraction(
                         "message": {
                             "content": (
                                 '<think>\n{"fake": "json inside thinking block"}\n</think>\n\n'
-                                '{"summary": "real answer", "operations": [{"action": "create_file"}]}'
+                                '{"summary": "real answer", "operations": ['
+                                '{"action": "create_file", "file_path": "worker_target.py", '
+                                '"reason": "Create a tiny file in the valid visible JSON payload.", '
+                                '"new_content": "print(\\"ok\\")\\n"}]}'
                             )
                         }
                     }

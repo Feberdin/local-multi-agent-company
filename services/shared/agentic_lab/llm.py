@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from services.shared.agentic_lab.config import Settings
+from services.shared.agentic_lab.edit_ops import validate_edit_plan_payload
 from services.shared.agentic_lab.guardrails import sanitize_untrusted_text
 from services.shared.agentic_lab.model_routing import (
     ModelProvider,
@@ -93,9 +94,7 @@ class LLMClient:
             return "Missing required JSON keys: " + ", ".join(missing_keys)
 
         if output_contract == "edit_plan":
-            operations = payload.get("operations")
-            if not isinstance(operations, list):
-                return "The `operations` field must be a list for the edit_plan contract."
+            return validate_edit_plan_payload(payload)
 
         return None
 
