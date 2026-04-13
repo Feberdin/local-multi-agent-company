@@ -1171,6 +1171,44 @@ def _attach_task_reference(
     item[target_key] = _build_task_reference(item.get(source_key), task_lookup)
 
 
+def _is_active_worker_heartbeat(
+    *,
+    task_status: str,
+    worker_name: str,
+    current_worker: str | None,
+    progress: dict[str, Any],
+    latest_details: dict[str, Any],
+) -> bool:
+    """Treat heartbeat updates for the current active worker as active work, not passive waiting."""
+
+    if task_status not in ACTIVE_TASK_STATUSES:
+        return False
+    if worker_name != current_worker:
+        return False
+    return bool(latest_details.get("heartbeat") or progress.get("event_kind") == "stage_heartbeat")
+
+
+def _normalize_active_worker_message(message: str, worker_label: str) -> str:
+    """Rewrite older 'waiting' heartbeat texts into clearer 'working' language for operators."""
+
+    normalized = str(message or "")
+    waiting_prefix = f"{worker_label} wartet seit "
+    if waiting_prefix in normalized and "auf Modell- oder Worker-Antwort." in normalized:
+        normalized = normalized.replace(waiting_prefix, f"{worker_label} arbeitet seit ", 1)
+        normalized = normalized.replace(
+            " auf Modell- oder Worker-Antwort.",
+            " im Hintergrund. Modell- oder Worker-Antwort steht noch aus.",
+            1,
+        )
+    normalized = normalized.replace(" warten auf Modellantwort.", " arbeiten gerade mit lokalem Modell.")
+    normalized = normalized.replace(" wartet auf Modellantwort.", " arbeitet gerade mit lokalem Modell.")
+    normalized = normalized.replace(
+        "Der Worker wartet noch auf eine Antwort aus dem Worker-Service oder vom lokalen Modell.",
+        "Der Worker arbeitet weiter. Die Antwort aus dem Worker-Service oder vom lokalen Modell steht noch aus.",
+    )
+    return normalized
+
+
 def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a deterministic per-worker timeline so slow stages remain readable and explainable."""
 
@@ -1190,6 +1228,13 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
         latest_details = _as_mapping(latest_event.get("details")) if latest_event else {}
         progress = worker_progress.get(worker_name, {})
         result = worker_results.get(worker_name, {})
+        active_heartbeat = _is_active_worker_heartbeat(
+            task_status=task_status,
+            worker_name=worker_name,
+            current_worker=current_worker,
+            progress=progress,
+            latest_details=latest_details,
+        )
         state = "waiting"
         if progress.get("state") in WORKER_STATE_LABELS:
             state = str(progress["state"])
@@ -1199,8 +1244,8 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
             state = "failed"
         elif task_status == TaskStatus.APPROVAL_REQUIRED.value and worker_name == current_worker:
             state = "blocked"
-        elif task_status in ACTIVE_TASK_STATUSES and worker_name == current_worker and bool(latest_details.get("heartbeat")):
-            state = "waiting"
+        elif active_heartbeat:
+            state = "running"
         elif task_status in ACTIVE_TASK_STATUSES and worker_name == current_worker:
             state = "running"
         elif current_index >= 0 and WORKER_SEQUENCE_INDEX[worker_name] > current_index:
@@ -1209,6 +1254,9 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
             state = "skipped"
         else:
             state = "idle"
+
+        if active_heartbeat and state == "waiting":
+            state = "running"
 
         running_since = _running_since(task, worker_name)
         waiting_for = str(progress.get("waiting_for") or "")
@@ -1222,6 +1270,8 @@ def _build_worker_timeline(task: dict[str, Any]) -> list[dict[str, Any]]:
         last_result_summary = str(progress.get("last_result_summary") or result.get("summary") or "")
         last_error = str(progress.get("last_error") or ("; ".join(result.get("errors", [])) if result.get("errors") else ""))
         progress_message = str(progress.get("progress_message") or (latest_event.get("message") if latest_event else step["description"]))
+        if active_heartbeat:
+            progress_message = _normalize_active_worker_message(progress_message, step["label"])
         current_instruction = str(
             progress.get("current_instruction")
             or progress.get("current_prompt_summary")
@@ -1260,17 +1310,23 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
     for event in _normalize_events(task.get("events")):
         details = _as_mapping(event.get("details"))
         state = str(details.get("state") or "note")
+        if bool(details.get("heartbeat")) and state in {"waiting", "note"}:
+            state = "running"
         waiting_for = str(details.get("waiting_for") or "")
+        progress_message = str(details.get("progress_message") or event.get("message") or "")
+        worker_label = WORKER_LABELS.get(str(details.get("worker_name")), str(details.get("worker_name", "")))
+        if bool(details.get("heartbeat")) and state == "running" and worker_label:
+            progress_message = _normalize_active_worker_message(progress_message, worker_label)
         decorated.append(
             {
                 **event,
                 "created_at_display": _format_timestamp(event.get("created_at")),
                 "level_lower": str(event.get("level", "info")).lower(),
-                "worker_label": WORKER_LABELS.get(str(details.get("worker_name")), str(details.get("worker_name", ""))),
+                "worker_label": worker_label,
                 "is_heartbeat": bool(details.get("heartbeat")),
                 "event_kind": str(details.get("event_kind") or "note"),
                 "state_label": WORKER_STATE_LABELS.get(state, ""),
-                "progress_message": str(details.get("progress_message") or event.get("message") or ""),
+                "progress_message": progress_message,
                 "waiting_for_display": WORKER_LABELS.get(waiting_for, waiting_for) if waiting_for else "",
             }
         )
@@ -1420,6 +1476,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
     current_worker = _current_worker_name(decorated)
     current_progress = decorated["worker_progress"].get(current_worker or "", {})
     last_event = decorated["events"][-1] if decorated.get("events") else None
+    last_event_details = _as_mapping(last_event.get("details")) if last_event else {}
     running_since = _running_since(decorated, current_worker)
     if running_since is not None:
         running_for_seconds = round((datetime.now(UTC) - running_since).total_seconds(), 1)
@@ -1445,7 +1502,7 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         current_worker or "",
         "Der Workflow wartet auf den naechsten sinnvollen Arbeitsschritt.",
     )
-    decorated["current_stage_state"] = str(
+    current_stage_state = str(
         current_progress.get("state")
         or (
             "blocked"
@@ -1459,9 +1516,18 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
             else "waiting"
         )
     )
+    if _is_active_worker_heartbeat(
+        task_status=str(decorated.get("status") or ""),
+        worker_name=current_worker or "",
+        current_worker=current_worker,
+        progress=current_progress,
+        latest_details=last_event_details,
+    ) and current_stage_state == "waiting":
+        current_stage_state = "running"
+    decorated["current_stage_state"] = current_stage_state
     decorated["current_stage_state_label"] = WORKER_STATE_LABELS.get(
-        decorated["current_stage_state"],
-        decorated["current_stage_state"],
+        current_stage_state,
+        current_stage_state,
     )
     decorated["running_since_display"] = _format_timestamp(running_since) if running_since else "noch nicht sichtbar"
     decorated["running_for_display"] = current_progress.get("elapsed_display") or _format_duration(running_for_seconds)
@@ -1470,9 +1536,15 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         or current_progress.get("current_prompt_summary")
         or decorated["current_stage_description"]
     )
-    decorated["current_progress_message"] = str(
+    current_progress_message = str(
         current_progress.get("progress_message") or (last_event.get("message") if last_event else "Noch keine Detailmeldung sichtbar.")
     )
+    if current_worker and decorated["current_stage_state"] == "running":
+        current_progress_message = _normalize_active_worker_message(
+            current_progress_message,
+            decorated["current_stage_label"],
+        )
+    decorated["current_progress_message"] = current_progress_message
     decorated["current_waiting_for_display"] = WORKER_LABELS.get(
         str(current_progress.get("waiting_for") or ""),
         str(current_progress.get("waiting_for") or ""),

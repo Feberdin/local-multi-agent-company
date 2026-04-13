@@ -596,8 +596,8 @@ class WorkflowOrchestrator:
                 task_id,
                 stage=stage_status.value,
                 message=(
-                    f"{stage_meta['label']} laeuft weiter. "
-                    "Der Worker wartet noch auf eine Antwort aus dem Worker-Service oder vom lokalen Modell."
+                    f"{stage_meta['label']} arbeitet weiter. "
+                    "Die Antwort aus dem Worker-Service oder vom lokalen Modell steht noch aus."
                 ),
                 details={
                     **self._progress_details(
@@ -605,7 +605,7 @@ class WorkflowOrchestrator:
                         worker_name=worker_name,
                         stage_meta=stage_meta,
                         event_kind="stage_heartbeat",
-                        worker_state="waiting",
+                        worker_state="running",
                         service_url=service_url,
                         route_summary=route_summary,
                         started_at_iso=started_at_iso,
@@ -616,7 +616,8 @@ class WorkflowOrchestrator:
                             else "Antwort des Worker-Services"
                         ),
                         progress_message=(
-                            f"{stage_meta['label']} wartet seit {elapsed_seconds:.1f}s auf Modell- oder Worker-Antwort."
+                            f"{stage_meta['label']} arbeitet seit {elapsed_seconds:.1f}s im Hintergrund. "
+                            "Modell- oder Worker-Antwort steht noch aus."
                         ),
                     ),
                     "heartbeat": True,

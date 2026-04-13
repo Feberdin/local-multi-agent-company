@@ -95,12 +95,14 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
     assert decorated["current_worker_name"] == "requirements"
     assert decorated["current_worker_label"] == "Anforderungen"
     assert decorated["current_stage_label"] == "Anforderungen"
-    assert decorated["current_stage_state"] == "waiting"
-    assert decorated["worker_timeline"][0]["state"] == "waiting"
-    assert decorated["worker_cast"][0]["bubble_kind"] == "coffee"
-    assert decorated["worker_cast_groups"][1]["workers"][0]["worker_name"] == "requirements"
+    assert decorated["current_stage_state"] == "running"
+    assert decorated["worker_timeline"][0]["state"] == "running"
+    assert decorated["worker_cast"][0]["bubble_kind"] == "thought"
+    assert decorated["worker_cast_groups"][0]["workers"][0]["worker_name"] == "requirements"
     assert decorated["current_instruction"] == "Strukturiere Anforderungen und warte auf das lokale Modell."
+    assert "arbeiten" in decorated["current_progress_message"]
     assert decorated["events"][-1]["is_heartbeat"] is True
+    assert decorated["events"][-1]["state_label"] == "arbeitet"
     assert decorated["auto_refresh_seconds"] > 0
     assert decorated["can_restart_partially"] is True
     assert decorated["restartable_stage_options"][0]["worker_name"] == "requirements"
