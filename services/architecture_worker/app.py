@@ -7,6 +7,8 @@ How to debug: If coding changes feel unstructured, inspect the component map and
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from services.shared.agentic_lab.config import get_settings
@@ -31,6 +33,7 @@ async def health() -> HealthResponse:
 @app.post("/run", response_model=WorkerResponse)
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "architecture-worker", "task_id": request.task_id})
+    repo_path = Path(request.local_repo_path)
     requirements = request.prior_results.get("requirements", {}).get("outputs", {})
     research = request.prior_results.get("research", {}).get("outputs", {})
     cost_plan = request.prior_results.get("cost", {}).get("outputs", {})
@@ -75,6 +78,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     except LLMError as exc:
         task_logger.warning("LLM architecture design unavailable: %s", exc)
         outputs = _heuristic_architecture(request.goal)
+
+    outputs = _normalize_architecture_outputs(outputs, repo_path, research)
 
     report_path = write_report(settings.task_report_dir(request.task_id), "architecture.json", outputs)
     return WorkerResponse(
@@ -122,3 +127,49 @@ def _heuristic_architecture(goal: str) -> dict:
             "Production deployment",
         ],
     }
+
+
+def _normalize_architecture_outputs(outputs: dict, repo_path: Path, research: object) -> dict:
+    """
+    Keep touched_areas grounded in real files so downstream workers do not inherit hallucinated paths.
+
+    Example:
+      Input touched_areas:
+        ["services/coding_worker/app.py", "services/coding_worker/task_dispatcher.py"]
+      Output touched_areas:
+        ["services/coding_worker/app.py", "services/shared/agentic_lab/repo_tools.py"]
+      when only the first file exists and research suggested the second one.
+    """
+
+    normalized = dict(outputs)
+    raw_touched = normalized.get("touched_areas", [])
+    research_outputs = research if isinstance(research, dict) else {}
+    research_candidates = [
+        item
+        for item in research_outputs.get("candidate_files", [])
+        if isinstance(item, str) and (repo_path / item).exists() and (repo_path / item).is_file()
+    ]
+
+    existing_touched: list[str] = []
+    if isinstance(raw_touched, list):
+        for item in raw_touched:
+            if not isinstance(item, str):
+                continue
+            candidate = item.strip()
+            if not candidate:
+                continue
+            full_path = repo_path / candidate
+            if full_path.exists() and full_path.is_file() and candidate not in existing_touched:
+                existing_touched.append(candidate)
+
+    if len(existing_touched) < 2:
+        for candidate in research_candidates:
+            if candidate not in existing_touched:
+                existing_touched.append(candidate)
+            if len(existing_touched) >= 6:
+                break
+
+    if existing_touched:
+        normalized["touched_areas"] = existing_touched
+
+    return normalized

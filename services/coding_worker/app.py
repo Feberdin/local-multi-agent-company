@@ -465,22 +465,15 @@ def _coding_noop_retry_user_prompt(
     previous_plan: dict[str, Any],
 ) -> str:
     """Ask for one stricter second attempt when the first JSON plan returned no operations."""
-
-    base_prompt = _coding_user_prompt(
-        goal,
-        requirements,
-        architecture,
-        research,
-        overview,
-        file_context,
-        symbol_index_block,
-    )
+    base_prompt = _coding_user_prompt(goal, requirements, architecture, research, overview, file_context, symbol_index_block)
     retry_block = [
         "Previous coding attempt returned zero file operations even though this task asked for code changes.",
         f"Previous summary: {previous_plan.get('summary', 'keine Zusammenfassung')}",
         f"Candidate files you may change: {candidate_files or ['keine konkreten Kandidaten sichtbar']}",
         "Return at least one concrete file operation when a safe change is possible.",
-        "If no safe code change is possible, keep operations empty and add a short blocking_reason field.",
+        "If no safe code change is possible, keep operations empty and add a short "
+        "blocking_reason field tied to one specific candidate file.",
+        "Do not summarize the repository or offer general help. This is a concrete code-edit task.",
         "Do not answer with prose outside the JSON object.",
     ]
     return base_prompt + "\n\n" + "\n".join(retry_block)
@@ -495,12 +488,16 @@ def _coding_user_prompt(
     file_context: dict,
     symbol_index_block: str,
 ) -> str:
+    compact_requirements = _compact_requirements_for_prompt(requirements)
+    compact_architecture = _compact_architecture_for_prompt(architecture)
+    compact_research = _compact_research_for_prompt(research)
+    compact_overview = _compact_repo_overview_for_prompt(overview)
     parts = [
         f"Goal:\n{goal}",
-        f"Requirements:\n{requirements}",
-        f"Architecture and implementation plan:\n{architecture}",
-        f"Research:\n{research}",
-        f"Repo overview:\n{overview}",
+        f"Requirements:\n{compact_requirements}",
+        f"Architecture and implementation plan:\n{compact_architecture}",
+        f"Research:\n{compact_research}",
+        f"Repo overview:\n{compact_overview}",
     ]
     if symbol_index_block:
         parts.append(symbol_index_block)
@@ -509,9 +506,111 @@ def _coding_user_prompt(
     parts.append(
         "Generate only the minimum changes needed. "
         "Prefer replace_symbol_body for Python functions. "
-        "Use create_or_update only if a new file is needed or >50% of the file changes."
+        "Use create_or_update only if a new file is needed or >50% of the file changes. "
+        "Do not answer with repository praise, project summaries, or generic help offers."
     )
     return "\n\n".join(parts)
+
+
+def _compact_requirements_for_prompt(requirements: object) -> dict[str, Any] | object:
+    """Keep only the requirement fields that help coding make a concrete file change."""
+
+    if not isinstance(requirements, dict):
+        return requirements
+    return {
+        "summary": str(requirements.get("summary") or "").strip(),
+        "requirements": _limited_string_list(requirements.get("requirements"), limit=8),
+        "acceptance_criteria": _limited_string_list(requirements.get("acceptance_criteria"), limit=6),
+        "risks": _limited_string_list(requirements.get("risks"), limit=5),
+    }
+
+
+def _compact_architecture_for_prompt(architecture: object) -> dict[str, Any] | object:
+    """Keep architecture context concrete and close to the edit surface."""
+
+    if not isinstance(architecture, dict):
+        return architecture
+    return {
+        "summary": str(architecture.get("summary") or "").strip(),
+        "touched_areas": _limited_string_list(architecture.get("touched_areas"), limit=8),
+        "implementation_plan": _limited_step_list(architecture.get("implementation_plan"), limit=5),
+        "risks": _limited_string_list(architecture.get("risks"), limit=5),
+    }
+
+
+def _compact_research_for_prompt(research: object) -> dict[str, Any] | object:
+    """Drop bulky source-routing payloads and keep only actionable research signals for coding."""
+
+    if not isinstance(research, dict):
+        return research
+    return {
+        "candidate_files": _limited_string_list(research.get("candidate_files"), limit=10),
+        "research_notes_excerpt": _short_text(research.get("research_notes"), limit=1400),
+        "uncertainties": _limited_string_list(research.get("uncertainties"), limit=6),
+    }
+
+
+def _compact_repo_overview_for_prompt(overview: dict[str, Any]) -> dict[str, Any]:
+    """Keep repo overview compact so code context stays more important than metadata."""
+
+    return {
+        "file_count": overview.get("file_count"),
+        "important_files": _limited_string_list(overview.get("important_files"), limit=10),
+        "sample_files": _limited_string_list(overview.get("sample_files"), limit=10),
+        "git_status": _limited_string_list(overview.get("git_status"), limit=10),
+        "last_commit": overview.get("last_commit"),
+    }
+
+
+def _limited_string_list(raw: object, *, limit: int) -> list[str]:
+    """Normalize unknown list-like input into a bounded list of short strings."""
+
+    if not isinstance(raw, list):
+        return []
+    values: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        stripped = item.strip()
+        if not stripped:
+            continue
+        values.append(stripped)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _limited_step_list(raw: object, *, limit: int) -> list[dict[str, Any]]:
+    """Keep only a few compact implementation-plan steps in the coding prompt."""
+
+    if not isinstance(raw, list):
+        return []
+    values: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            values.append(
+                {
+                    "step": item.get("step"),
+                    "task": _short_text(item.get("task"), limit=160),
+                    "status": item.get("status"),
+                }
+            )
+        elif isinstance(item, str):
+            values.append({"task": item.strip()})
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _short_text(value: object, *, limit: int) -> str:
+    """Trim long free-text blocks so the prompt stays focused on editable code."""
+
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
 
 
 def _raw_operations_from_plan(patch_plan: dict[str, Any]) -> list[dict[str, Any]]:

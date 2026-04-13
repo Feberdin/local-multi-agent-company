@@ -54,6 +54,16 @@ _ACTION_REQUIRED_FIELDS: dict[EditAction, tuple[str, ...]] = {
     EditAction.CREATE_OR_UPDATE: ("file_path", "reason", "new_content"),
 }
 
+_GENERIC_EMPTY_PLAN_PATTERNS = (
+    "no specific code change",
+    "no code change requested",
+    "no specific operation requested",
+    "seeking assistance with specific aspects",
+    "requested analysis or implementation help for specific aspects",
+    "shared a comprehensive setup",
+    "how can i help",
+)
+
 
 class EditOperation(BaseModel):
     """One targeted file-edit operation applied by the patch engine."""
@@ -158,6 +168,15 @@ def validate_edit_plan_payload(payload: dict[str, Any]) -> str | None:
     if not isinstance(operations, list):
         return "The `operations` field must be a list for the edit_plan contract."
 
+    if not operations:
+        blocking_reason = str(payload.get("blocking_reason") or "").strip()
+        summary = str(payload.get("summary") or "").strip()
+        if _looks_like_generic_empty_plan(summary=summary, blocking_reason=blocking_reason):
+            return (
+                "The edit plan returned zero operations together with a generic blocker that ignores the concrete "
+                "coding goal. Return either a concrete file operation or a blocker tied to a specific candidate file."
+            )
+
     errors: list[str] = []
     for index, raw in enumerate(operations):
         validation_error = validate_raw_operation(raw, index=index)
@@ -182,3 +201,12 @@ def _field_is_present(payload: dict[str, Any], field_name: str) -> bool:
     if field_name == "new_content":
         return isinstance(value, str)
     return value is not None
+
+
+def _looks_like_generic_empty_plan(*, summary: str, blocking_reason: str) -> bool:
+    """Detect off-task empty edit plans that look like generic assistant replies instead of coding decisions."""
+
+    combined = f"{summary}\n{blocking_reason}".strip().lower()
+    if not combined:
+        return False
+    return any(pattern in combined for pattern in _GENERIC_EMPTY_PLAN_PATTERNS)

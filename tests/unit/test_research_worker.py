@@ -124,3 +124,44 @@ def test_research_worker_returns_structured_failure_instead_of_http_500(tmp_path
     assert payload["success"] is False
     assert payload["summary"] == "Repository research failed before the report could be completed."
     assert "RuntimeError: boom" in payload["errors"][0]
+
+
+def test_research_worker_falls_back_when_llm_returns_generic_helpful_prose(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_research_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "workspace" / "local-multi-agent-company"
+    (repo_path / ".git").mkdir(parents=True, exist_ok=True)
+    (repo_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    async def generic_summary(*args, **kwargs):
+        del args, kwargs
+        return (
+            "Danke fuer das Teilen der umfassenden Dokumentation!\n\n"
+            "Wie kann ich dir helfen?\n"
+            "1. Fehleranalyse\n"
+            "2. Erweiterung\n"
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "collect_repo_overview",
+        lambda _: {
+            "file_count": 1,
+            "important_files": ["README.md"],
+            "sample_files": ["README.md"],
+            "git_status": [],
+            "last_commit": "abc123 demo",
+        },
+    )
+    monkeypatch.setattr(app_module, "read_text_file", lambda *_args, **_kwargs: "# Demo\n")
+    monkeypatch.setattr(app_module.source_router, "route", lambda *_args, **_kwargs: _FakeSourcePlan())
+    monkeypatch.setattr(app_module.worker_governance, "guidance_prompt_block", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(app_module, "_summarize_with_llm", generic_summary)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/run", json=_worker_payload(repo_path))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert any("Using the deterministic fallback summary instead" in warning for warning in payload["warnings"])
+    assert payload["outputs"]["research_notes"].startswith("## Architecture")

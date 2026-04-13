@@ -8,6 +8,7 @@ How to debug: If research notes look incomplete, inspect the collected repo over
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -140,6 +141,13 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 web_results,
                 guidance_block,
             )
+            validation_error = _validate_research_notes(research_notes)
+            if validation_error:
+                warnings.append(
+                    "LLM research notes were too generic or did not follow the required section format. "
+                    f"Using the deterministic fallback summary instead. Cause: {validation_error}"
+                )
+                research_notes = _heuristic_summary(request.goal, overview, file_samples, source_plan, web_results)
         except LLMError as exc:
             warnings.append(f"LLM summary unavailable, using heuristic research notes instead: {exc}")
             research_notes = _heuristic_summary(request.goal, overview, file_samples, source_plan, web_results)
@@ -303,6 +311,49 @@ def _heuristic_summary(
         f"- Goal-specific dependencies, deployment contracts, and test expectations should be confirmed during planning.\n"
         f"- Requested change: {goal}\n"
     )
+
+
+def _validate_research_notes(notes: str) -> str | None:
+    """
+    Reject generic assistant-style research notes so downstream workers only see actionable repo analysis.
+
+    Why this exists:
+    Some local models respond to the research prompt with greetings, help menus, or project praise
+    instead of the required five markdown sections. That noise later pollutes architecture and coding.
+    """
+
+    stripped = notes.strip()
+    required_sections = [
+        "## Architecture",
+        "## Likely Change Points",
+        "## Trusted Sources",
+        "## Risks",
+        "## Unknowns",
+    ]
+    missing_sections = [section for section in required_sections if section not in stripped]
+    if missing_sections:
+        return "Missing required markdown sections: " + ", ".join(missing_sections)
+
+    if not stripped.startswith("## Architecture"):
+        return "Research notes must start directly with `## Architecture`."
+
+    lowered = stripped.lower()
+    generic_patterns = [
+        r"wie kann ich dir helfen",
+        r"how can i help",
+        r"lass mich wissen",
+        r"let me know",
+        r"hast du ein spezifisches problem",
+        r"möchtest du",
+        r"moechtest du",
+        r"planst du neue features",
+        r"brauchst du hilfe",
+    ]
+    for pattern in generic_patterns:
+        if re.search(pattern, lowered):
+            return "Research notes drifted into a generic assistant/help-offer response."
+
+    return None
 
 
 def _build_report(
