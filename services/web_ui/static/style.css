@@ -151,6 +151,28 @@ body {
   border-top: 1px dashed var(--line);
 }
 
+.checkbox-pill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.checkbox-pill {
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+}
+
+.checkbox-pill input {
+  margin: 0;
+}
+
 .view-switch {
   display: inline-flex;
   gap: 0.35rem;
@@ -286,6 +308,53 @@ button.secondary-button {
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.worker-test-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.worker-test-card {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: white;
+}
+
+.worker-test-card h3 {
+  margin: 0;
+}
+
+.worker-test-meta {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.worker-test-meta p,
+.worker-test-compact-summary p {
+  margin: 0;
+}
+
+.worker-test-actions {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.worker-test-actions form {
+  gap: 0.6rem;
+}
+
+.worker-test-compact-summary {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.9rem 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: #fcfaf6;
 }
 
 .task-focus-grid {

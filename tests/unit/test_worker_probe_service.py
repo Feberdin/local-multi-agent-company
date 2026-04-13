@@ -195,6 +195,28 @@ async def test_worker_probe_service_supports_ok_contract_smoke_runs(tmp_path, mo
     assert "reply with exactly `ok`" in research_system_prompt.lower()
 
 
+async def test_worker_probe_service_runs_only_selected_workers_in_canonical_order(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    fake_llm = _FakeLLM()
+    service = WorkerProbeService(settings=settings, llm=fake_llm, storage_path=storage_path)
+
+    run = await service.start_run(
+        WorkerProbeStartRequest(
+            probe_goal="Pruefe nur Architektur und Code nach einem gezielten Fix.",
+            selected_workers=["coding", "architecture", "coding"],
+        )
+    )
+    finished = await service.execute_run(run.id)
+
+    assert finished.status == WorkerProbeRunStatus.COMPLETED
+    assert finished.selected_workers == ["architecture", "coding"]
+    assert finished.total_workers == 2
+    assert finished.completed_workers == 2
+    assert [item.worker_name for item in finished.results] == ["architecture", "coding"]
+    assert set(fake_llm.prompt_log) == {"architecture", "coding"}
+
+
 async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_path, monkeypatch) -> None:
     settings = _prepare_settings(tmp_path, monkeypatch)
     storage_path = Path(settings.data_dir) / "worker_probe_runs.json"

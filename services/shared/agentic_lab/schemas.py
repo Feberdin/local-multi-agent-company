@@ -345,6 +345,7 @@ class WorkerProbeStartRequest(BaseModel):
         max_length=600,
     )
     probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
+    selected_workers: list[str] = Field(default_factory=list)
 
 
 class WorkerProbeResultResponse(BaseModel):
@@ -373,6 +374,7 @@ class WorkerProbeRunResponse(BaseModel):
     status: WorkerProbeRunStatus
     probe_goal: str
     probe_mode: WorkerProbeMode = Field(default=WorkerProbeMode.FULL)
+    selected_workers: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utc_now)
     started_at: datetime | None = None
     updated_at: datetime = Field(default_factory=_utc_now)

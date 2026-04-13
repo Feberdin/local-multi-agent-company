@@ -1,0 +1,219 @@
+<!--
+Purpose: Focused operator page for short worker-specific probe runs after a targeted fix.
+Input/Output: Receives persisted probe history plus worker choices and renders small subset tests without touching repositories.
+Important invariants: All tests stay synthetic, side-effect free, and clearly show which worker subset was selected.
+How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-probe` and the generated `selected_workers` payload.
+-->
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if auto_refresh_seconds %}
+    <meta http-equiv="refresh" content="{{ auto_refresh_seconds }}">
+    {% endif %}
+    <title>Teiltests</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <nav class="topnav">
+        <a href="/">Dashboard</a>
+        <a href="/archive">Archiv</a>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/worker-tests" class="active">Teiltests</a>
+        <a href="/worker-guidance">Worker Guidance</a>
+        <a href="/suggestions">Mitarbeiterideen</a>
+        <a href="/trusted-sources">Trusted Sources</a>
+        <a href="/web-search">Web Search Providers</a>
+        <a href="/debug">Debug-Center</a>
+        <a href="/system-check">System-Check</a>
+        <a href="/self-improvement">Self-Improvement</a>
+        <span class="topnav-version" title="{{ ui_build.full_label }}">{{ ui_build.display }}</span>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Gezielte Verifikation</p>
+        <h1>Teiltests pro Worker</h1>
+        <p class="lead">Nach einem Fix testen wir nur den betroffenen Punkt, statt immer wieder den kompletten Probe-Durchlauf abzuwarten.</p>
+      </section>
+
+      <section class="panel panel-note">
+        <h2>Wofür diese Ansicht da ist</h2>
+        <p>Nutze diese Seite, wenn du zum Beispiel nur <strong>Code</strong>, <strong>Architektur</strong> oder <strong>Recherche</strong> nach einem Fix schnell gegen das aktuelle Modell-Routing prüfen willst. Kein Repository wird dabei geändert.</p>
+      </section>
+
+      {% if error_message %}
+      <section class="panel panel-alert">
+        <h2>Hinweis</h2>
+        <p>{{ error_message }}</p>
+      </section>
+      {% endif %}
+
+      {% if success_message %}
+      <section class="panel panel-success">
+        <h2>Erfolg</h2>
+        <p>{{ success_message }}</p>
+      </section>
+      {% endif %}
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Gezielten Test starten</h2>
+              <span class="muted">Mehrere Worker sind möglich, Standard ist <strong>Code</strong>.</span>
+            </div>
+            <div class="toolbar-inline">
+              <a class="button-link secondary" href="/benchmarks/model-probe/export.json">Letzten Lauf als JSON</a>
+            </div>
+          </div>
+          <form method="post" action="/worker-tests/start" class="stack">
+            <div class="checkbox-pill-list">
+              {% for choice in probe_worker_choices %}
+              <label class="checkbox-pill">
+                <input type="checkbox" name="selected_workers" value="{{ choice.worker_name }}" {% if choice.checked %}checked{% endif %}>
+                <span>{{ choice.label }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            <label>
+              Teiltest-Auftrag
+              <textarea name="probe_goal" rows="3" placeholder="{{ worker_probe_default_goal }}">{{ worker_probe_default_goal }}</textarea>
+            </label>
+            <p class="muted">Der Auftrag bleibt absichtlich kurz. Wir wollen hier schnell sehen, ob genau der gefixte Worker wieder saubere Antworten liefert.</p>
+            <div class="toolbar-inline">
+              <button type="submit">Ausgewaehlte Worker testen</button>
+              <button type="submit" name="probe_mode" value="ok_contract" class="secondary-button">Nur OK-Contract testen</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Letzter Teiltest</h2>
+          <div class="stats-grid">
+            <p><strong>Gespeicherte Läufe:</strong> {{ worker_probe_overview.run_count }}</p>
+            <p><strong>Aktiv:</strong> {{ worker_probe_overview.active_run_count }}</p>
+            <p><strong>Letzter Lauf ok:</strong> {{ worker_probe_overview.latest_completed_workers }}</p>
+            <p><strong>Letzter Lauf Fehler:</strong> {{ worker_probe_overview.latest_failed_workers }}</p>
+            <p><strong>Letzter Lauf gesamt:</strong> {{ worker_probe_overview.latest_total_workers }}</p>
+          </div>
+          {% if worker_probe_report.latest_run %}
+          <div class="worker-test-compact-summary">
+            <p><strong>Typ:</strong> {{ worker_probe_report.latest_run.probe_mode_label }}</p>
+            <p><strong>Worker:</strong> {{ worker_probe_report.latest_run.selected_worker_summary }}</p>
+            <p><strong>Status:</strong> {{ worker_probe_report.latest_run.status_label }}</p>
+            <p><strong>Aktualisiert:</strong> {{ worker_probe_report.latest_run.updated_at_display }}</p>
+          </div>
+          {% else %}
+          <p class="muted">Noch kein Teiltest vorhanden.</p>
+          {% endif %}
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Schnellaktionen pro Worker</h2>
+            <span class="muted">Ein Klick für den typischen „nur diesen Worker nochmal prüfen“-Fall.</span>
+          </div>
+        </div>
+        <div class="worker-test-grid">
+          {% for choice in probe_worker_choices %}
+          <article class="worker-test-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">{{ choice.worker_name }}</p>
+                <h3>{{ choice.label }}</h3>
+              </div>
+              <span class="status status-info">{{ choice.output_contract }}</span>
+            </div>
+            <p class="muted">{{ choice.description }}</p>
+            <div class="worker-test-meta">
+              <p><strong>Antwortformat:</strong> {{ choice.response_format }}</p>
+              <p><strong>Primär:</strong> {{ choice.primary_model }}</p>
+              <p><strong>Fallback:</strong> {{ choice.fallback_model }}</p>
+            </div>
+            <div class="worker-test-actions">
+              <form method="post" action="/worker-tests/start" class="stack">
+                <input type="hidden" name="selected_workers" value="{{ choice.worker_name }}">
+                <input type="hidden" name="probe_goal" value="{{ choice.quick_full_goal }}">
+                <input type="hidden" name="probe_mode" value="full">
+                <button type="submit">Diesen Worker testen</button>
+              </form>
+              <form method="post" action="/worker-tests/start" class="stack">
+                <input type="hidden" name="selected_workers" value="{{ choice.worker_name }}">
+                <input type="hidden" name="probe_goal" value="{{ choice.quick_ok_goal }}">
+                <input type="hidden" name="probe_mode" value="ok_contract">
+                <button type="submit" class="secondary-button">Nur OK pruefen</button>
+              </form>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Letzte Ergebnisse</h2>
+            <span class="muted">So sehen wir sofort, ob genau der gefixte Bereich wieder sauber antwortet.</span>
+          </div>
+        </div>
+        {% if worker_probe_report.latest_run %}
+        <article class="panel panel-note">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Letzter Probelauf</p>
+              <h3>{{ worker_probe_report.latest_run.probe_goal_preview }}</h3>
+            </div>
+            <span class="status status-{{ worker_probe_report.latest_run.status_tone }}">{{ worker_probe_report.latest_run.status_label }}</span>
+          </div>
+          <div class="stats-grid">
+            <p><strong>Typ:</strong> {{ worker_probe_report.latest_run.probe_mode_label }}</p>
+            <p><strong>Getestete Worker:</strong> {{ worker_probe_report.latest_run.selected_worker_summary }}</p>
+            <p><strong>Erstellt:</strong> {{ worker_probe_report.latest_run.created_at_display }}</p>
+            <p><strong>Gestartet:</strong> {{ worker_probe_report.latest_run.started_at_display }}</p>
+            <p><strong>Abgeschlossen:</strong> {{ worker_probe_report.latest_run.completed_at_display }}</p>
+            <p><strong>Aktiver Worker:</strong> {{ worker_probe_report.latest_run.active_worker_label }}</p>
+            <p><strong>Erfolgreich:</strong> {{ worker_probe_report.latest_run.completed_workers }} / {{ worker_probe_report.latest_run.total_workers }}</p>
+            <p><strong>Fehler:</strong> {{ worker_probe_report.latest_run.failed_workers }}</p>
+          </div>
+        </article>
+
+        <div class="benchmark-grid">
+          {% for result in worker_probe_report.latest_results %}
+          <article class="benchmark-card benchmark-card-{{ 'ok' if result.status == 'ok' else 'error' if result.status == 'failed' else 'warning' }}">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">{{ result.worker_name }}</p>
+                <h3>{{ result.worker_label }}</h3>
+              </div>
+              <span class="status status-{{ result.status_tone }}">{{ result.status_label }}</span>
+            </div>
+            <p class="muted">{{ result.summary_preview }}</p>
+            <div class="stats-grid">
+              <p><strong>Modell:</strong> {{ result.model_display }}</p>
+              <p><strong>Contract:</strong> {{ result.output_contract }}</p>
+              <p><strong>Dauer:</strong> {{ result.elapsed_display }}</p>
+              <p><strong>Fallback genutzt:</strong> {{ "Ja" if result.used_fallback else "Nein" }}</p>
+              <p><strong>Repair-Pass:</strong> {{ "Ja" if result.repair_pass_used else "Nein" }}</p>
+              <p><strong>Antwortformat:</strong> {{ result.response_format }}</p>
+            </div>
+            {% if result.error_message %}
+            <p><strong>Fehler:</strong> {{ result.error_message }}</p>
+            {% endif %}
+            <details class="response-details" {% if result.status == 'failed' %}open{% endif %}>
+              <summary>Gesammelte Modellantwort anzeigen</summary>
+              <pre class="response-block">{{ result.response_text }}</pre>
+            </details>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">Noch kein Teiltest vorhanden.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

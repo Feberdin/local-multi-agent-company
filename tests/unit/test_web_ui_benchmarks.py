@@ -32,7 +32,7 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
     now = datetime.now(UTC).replace(microsecond=0)
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
-        del method, json_payload
+        del json_payload
         if path == "/api/benchmarks/model-probe":
             return httpx.Response(
                 200,
@@ -301,7 +301,7 @@ def test_benchmark_reset_starts_a_new_visible_window(tmp_path, monkeypatch) -> N
     older = (now - timedelta(minutes=2)).isoformat()
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
-        del method, json_payload
+        del json_payload
         if path == "/api/benchmarks/model-probe":
             return httpx.Response(200, json={"runs": []})
         if path == "/api/tasks?include_archived=true":
@@ -377,7 +377,7 @@ def test_benchmarks_exclude_archived_tasks_from_general_metrics(tmp_path, monkey
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
 
     async def fake_api_request(method: str, path: str, *, json_payload=None):
-        del method, json_payload
+        del json_payload
         if path == "/api/benchmarks/model-probe":
             return httpx.Response(200, json={"runs": []})
         if path == "/api/tasks?include_archived=true":
@@ -484,7 +484,7 @@ def test_benchmark_page_can_start_worker_probe_from_ui(tmp_path, monkeypatch) ->
             return httpx.Response(200, json={"runs": []})
         if method == "GET" and path == "/api/tasks?include_archived=true":
             return httpx.Response(200, json=[])
-        raise AssertionError(f"Unexpected call: {method} {path}")
+        raise AssertionError(f"Unexpected call: {path}")
 
     app_module._api_request = fake_api_request
 
@@ -529,7 +529,7 @@ def test_benchmark_page_can_start_ok_contract_probe_from_ui(tmp_path, monkeypatc
             return httpx.Response(200, json={"runs": []})
         if method == "GET" and path == "/api/tasks?include_archived=true":
             return httpx.Response(200, json=[])
-        raise AssertionError(f"Unexpected call: {method} {path}")
+        raise AssertionError(f"Unexpected call: {path}")
 
     app_module._api_request = fake_api_request
 
@@ -545,3 +545,96 @@ def test_benchmark_page_can_start_ok_contract_probe_from_ui(tmp_path, monkeypatc
 
     assert response.status_code == 303
     assert response.headers["location"] == "/benchmarks"
+
+
+def test_worker_tests_page_renders_targeted_actions_and_latest_run(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/benchmarks/model-probe":
+            return httpx.Response(
+                200,
+                json={
+                    "runs": [
+                        {
+                            "id": "probe-targeted",
+                            "status": "completed",
+                            "probe_goal": "Pruefe nur Code und Architektur nach einem Fix.",
+                            "probe_mode": "full",
+                            "selected_workers": ["architecture", "coding"],
+                            "created_at": now.isoformat(),
+                            "started_at": now.isoformat(),
+                            "updated_at": now.isoformat(),
+                            "completed_at": now.isoformat(),
+                            "active_worker_name": None,
+                            "total_workers": 2,
+                            "completed_workers": 2,
+                            "failed_workers": 0,
+                            "errors": [],
+                            "results": [],
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected call: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/worker-tests")
+
+    assert response.status_code == 200
+    assert "Teiltests pro Worker" in response.text
+    assert "Diesen Worker testen" in response.text
+    assert "Nur OK pruefen" in response.text
+    assert "Architektur, Code" in response.text
+
+
+def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if method == "POST" and path == "/api/benchmarks/model-probe":
+            assert json_payload == {
+                "probe_goal": "Pruefe nur Code und Architektur nach dem Fix.",
+                "probe_mode": "full",
+                "selected_workers": ["architecture", "coding"],
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "probe-targeted",
+                    "status": "queued",
+                    "probe_goal": json_payload["probe_goal"],
+                    "probe_mode": json_payload["probe_mode"],
+                    "selected_workers": json_payload["selected_workers"],
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "results": [],
+                    "errors": [],
+                    "total_workers": 2,
+                    "completed_workers": 0,
+                    "failed_workers": 0,
+                },
+            )
+        if method == "GET" and path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/worker-tests/start",
+            data={
+                "probe_goal": "Pruefe nur Code und Architektur nach dem Fix.",
+                "selected_workers": ["architecture", "coding"],
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/worker-tests"

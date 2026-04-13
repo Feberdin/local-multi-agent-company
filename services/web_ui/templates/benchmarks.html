@@ -21,6 +21,7 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
         <a href="/">Dashboard</a>
         <a href="/archive">Archiv</a>
         <a href="/benchmarks" class="active">Benchmarks</a>
+        <a href="/worker-tests">Teiltests</a>
         <a href="/worker-guidance">Worker Guidance</a>
         <a href="/suggestions">Mitarbeiterideen</a>
         <a href="/trusted-sources">Trusted Sources</a>
@@ -99,6 +100,7 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
             <span class="muted">Startet einen schnellen, rein synthetischen Modell-Probelauf fuer die LLM-gestuetzten Worker. Kein Repository wird geaendert.</span>
           </div>
           <div class="toolbar-inline">
+            <a class="button-link secondary" href="/worker-tests">Teiltests oeffnen</a>
             <a class="button-link secondary" href="/benchmarks/model-probe/export.json">Letzten Probelauf als JSON</a>
           </div>
         </div>
@@ -137,6 +139,7 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
           </div>
           <div class="stats-grid">
             <p><strong>Typ:</strong> {{ worker_probe_report.latest_run.probe_mode_label }}</p>
+            <p><strong>Getestete Worker:</strong> {{ worker_probe_report.latest_run.selected_worker_summary }}</p>
             <p><strong>Erstellt:</strong> {{ worker_probe_report.latest_run.created_at_display }}</p>
             <p><strong>Gestartet:</strong> {{ worker_probe_report.latest_run.started_at_display }}</p>
             <p><strong>Zuletzt aktualisiert:</strong> {{ worker_probe_report.latest_run.updated_at_display }}</p>

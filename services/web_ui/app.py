@@ -30,8 +30,10 @@ from fastapi.templating import Jinja2Templates
 
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.logging_utils import configure_logging
+from services.shared.agentic_lab.model_routing import resolve_fallback_provider, resolve_worker_route
 from services.shared.agentic_lab.readiness import ReadinessMode, build_catastrophic_readiness_report
 from services.shared.agentic_lab.schemas import HealthResponse, TaskStatus, WorkerProbeMode
+from services.shared.agentic_lab.worker_probe_service import PROBE_DEFINITIONS, PROBE_WORKER_LABELS, PROBE_WORKERS
 
 settings = get_settings()
 logger = configure_logging(settings.service_name, settings.log_level)
@@ -42,6 +44,9 @@ DEFAULT_WORKER_PROBE_GOAL = (
     "Verbessere Beobachtbarkeit, Fehlermeldungen und Healthchecks einer lokalen Docker-basierten Anwendung."
 )
 DEFAULT_OK_WORKER_PROBE_GOAL = "Leerer OK-Kurztest fuer alle Worker-Vertraege ohne Repository-Aenderungen."
+DEFAULT_TARGETED_WORKER_PROBE_GOAL = (
+    "Pruefe nur den ausgewaehlten Worker mit einem kurzen, synthetischen Teiltest ohne Repository-Aenderungen."
+)
 
 # Why this exists:
 # The UI should import both inside the container (`/app/...`) and in local tests where the
@@ -1872,11 +1877,24 @@ def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
 
         status = str(run.get("status") or "unknown")
         probe_mode = str(run.get("probe_mode") or WorkerProbeMode.FULL.value)
+        selected_workers = [
+            worker_name
+            for worker_name in _as_list(run.get("selected_workers"))
+            if isinstance(worker_name, str) and worker_name.strip()
+        ] or list(PROBE_WORKERS)
+        selected_worker_labels = [
+            PROBE_WORKER_LABELS.get(worker_name, WORKER_LABELS.get(worker_name, worker_name))
+            for worker_name in selected_workers
+        ]
         runs.append(
             {
                 **run,
                 "status": status,
                 "probe_mode": probe_mode,
+                "selected_workers": selected_workers,
+                "selected_worker_labels": selected_worker_labels,
+                "selected_worker_count": len(selected_workers),
+                "selected_worker_summary": ", ".join(selected_worker_labels),
                 "probe_mode_label": {
                     WorkerProbeMode.FULL.value: "Normaler Probelauf",
                     WorkerProbeMode.OK_CONTRACT.value: "OK-Kurztest",
@@ -1924,6 +1942,42 @@ def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
             "latest_total_workers": int(latest.get("total_workers") or 0) if latest else 0,
         },
     }
+
+
+def _build_worker_test_choices(*, selected_workers: list[str] | None = None) -> list[dict[str, Any]]:
+    """Describe the available targeted worker tests for the dedicated UI page."""
+
+    selected = set(selected_workers or ["coding"])
+    choices: list[dict[str, Any]] = []
+    for worker_name in PROBE_WORKERS:
+        definition = PROBE_DEFINITIONS[worker_name]
+        provider, _route = resolve_worker_route(settings, worker_name)
+        fallback_provider = resolve_fallback_provider(settings, worker_name)
+        label = PROBE_WORKER_LABELS.get(worker_name, WORKER_LABELS.get(worker_name, worker_name))
+        quick_goal = (
+            f"Leerer OK-Kurztest nur fuer den Worker {label} ohne Repository-Aenderungen."
+        )
+        focused_goal = (
+            f"Kurzer Teiltest nur fuer den Worker {label}. "
+            "Pruefe den zuletzt geaenderten Bereich ohne Repository-Aenderungen."
+        )
+        choices.append(
+            {
+                "worker_name": worker_name,
+                "label": label,
+                "description": WORKER_DESCRIPTIONS.get(worker_name, label),
+                "output_contract": definition.output_contract,
+                "response_format": definition.response_format,
+                "primary_model": f"{provider.name} / {provider.model_name}",
+                "fallback_model": (
+                    f"{fallback_provider.name} / {fallback_provider.model_name}" if fallback_provider else "kein Fallback"
+                ),
+                "quick_ok_goal": quick_goal,
+                "quick_full_goal": focused_goal,
+                "checked": worker_name in selected,
+            }
+        )
+    return choices
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -2458,9 +2512,15 @@ async def _load_archive_context(
     }
 
 
-async def _load_benchmarks_context(error_message: str | None = None, success_message: str | None = None) -> dict[str, Any]:
+async def _load_benchmarks_context(
+    error_message: str | None = None,
+    success_message: str | None = None,
+    selected_workers: list[str] | None = None,
+    probe_goal: str | None = None,
+) -> dict[str, Any]:
     """Collect a readable worker benchmark view from persisted task details without crashing on partial backend issues."""
 
+    del selected_workers, probe_goal
     messages = [error_message] if error_message else []
     reset_at = _benchmark_reset_at()
     tasks_response = await _api_request("GET", "/api/tasks?include_archived=true")
@@ -2539,6 +2599,39 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
         "success_message": success_message,
         "worker_probe_default_goal": DEFAULT_WORKER_PROBE_GOAL,
         "worker_probe_ok_goal": DEFAULT_OK_WORKER_PROBE_GOAL,
+    }
+
+
+async def _load_worker_tests_context(
+    *,
+    error_message: str | None = None,
+    success_message: str | None = None,
+    selected_workers: list[str] | None = None,
+    probe_goal: str | None = None,
+) -> dict[str, Any]:
+    """Render a dedicated operator page for quick single-worker or small subset model probes."""
+
+    messages = [error_message] if error_message else []
+    worker_probe_response = await _api_request("GET", "/api/benchmarks/model-probe")
+    if worker_probe_response.status_code >= 400:
+        messages.append(_response_detail(worker_probe_response, "Die Teiltests konnten nicht geladen werden."))
+
+    worker_probe_report = _decorate_worker_probe_registry(_as_mapping(_response_json(worker_probe_response, {})))
+    probe_auto_refresh = 10 if worker_probe_report["overview"]["active_run_count"] else 0
+    normalized_selected_workers = [
+        worker_name for worker_name in (selected_workers or ["coding"]) if worker_name in PROBE_WORKERS
+    ] or ["coding"]
+
+    return {
+        "worker_probe_report": worker_probe_report,
+        "worker_probe_overview": worker_probe_report["overview"],
+        "probe_worker_choices": _build_worker_test_choices(selected_workers=normalized_selected_workers),
+        "worker_probe_default_goal": probe_goal or DEFAULT_TARGETED_WORKER_PROBE_GOAL,
+        "worker_probe_ok_goal": DEFAULT_OK_WORKER_PROBE_GOAL,
+        "selected_workers": normalized_selected_workers,
+        "auto_refresh_seconds": probe_auto_refresh,
+        "error_message": " ".join(item for item in messages if item) or None,
+        "success_message": success_message,
     }
 
 
@@ -2967,6 +3060,16 @@ async def benchmarks_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/worker-tests", response_class=HTMLResponse)
+async def worker_tests_page(request: Request) -> HTMLResponse:
+    context = await _load_worker_tests_context()
+    return templates.TemplateResponse(
+        request=request,
+        name="worker_tests.html",
+        context={"request": request, **context},
+    )
+
+
 @app.get("/benchmarks/export.json")
 async def download_benchmarks_export() -> Response:
     context = await _load_benchmarks_context()
@@ -3009,23 +3112,76 @@ async def start_worker_model_probe(
     probe_goal: str = Form(DEFAULT_WORKER_PROBE_GOAL),
     probe_mode: WorkerProbeMode = WORKER_PROBE_MODE_FORM,
 ) -> Response:
-    normalized_goal = probe_goal.strip() or (
+    return await _submit_worker_probe_form(
+        request=request,
+        fallback_goal=probe_goal,
+        probe_mode=probe_mode,
+        redirect_url="/benchmarks",
+        on_error_loader=_load_benchmarks_context,
+        template_name="benchmarks.html",
+        default_selected_workers=None,
+    )
+
+
+@app.post("/worker-tests/start", response_class=HTMLResponse, response_model=None)
+async def start_targeted_worker_probe(
+    request: Request,
+    probe_goal: str = Form(DEFAULT_TARGETED_WORKER_PROBE_GOAL),
+    probe_mode: WorkerProbeMode = WORKER_PROBE_MODE_FORM,
+) -> Response:
+    return await _submit_worker_probe_form(
+        request=request,
+        fallback_goal=probe_goal,
+        probe_mode=probe_mode,
+        redirect_url="/worker-tests",
+        on_error_loader=_load_worker_tests_context,
+        template_name="worker_tests.html",
+        default_selected_workers=["coding"],
+    )
+
+
+async def _submit_worker_probe_form(
+    *,
+    request: Request,
+    fallback_goal: str,
+    probe_mode: WorkerProbeMode,
+    redirect_url: str,
+    on_error_loader,
+    template_name: str,
+    default_selected_workers: list[str] | None,
+) -> Response:
+    """Parse one worker-probe form once so benchmark and targeted-test pages stay behavior-identical."""
+
+    form = await request.form()
+    selected_workers = [
+        str(value).strip()
+        for value in form.getlist("selected_workers")
+        if str(value).strip()
+    ]
+    if default_selected_workers and not selected_workers:
+        selected_workers = list(default_selected_workers)
+
+    normalized_goal = str(form.get("probe_goal") or fallback_goal or "").strip() or (
         DEFAULT_OK_WORKER_PROBE_GOAL if probe_mode == WorkerProbeMode.OK_CONTRACT else DEFAULT_WORKER_PROBE_GOAL
     )
-    response = await _api_request(
-        "POST",
-        "/api/benchmarks/model-probe",
-        json_payload={"probe_goal": normalized_goal, "probe_mode": probe_mode.value},
-    )
+    payload: dict[str, Any] = {"probe_goal": normalized_goal, "probe_mode": probe_mode.value}
+    if selected_workers:
+        payload["selected_workers"] = selected_workers
+
+    response = await _api_request("POST", "/api/benchmarks/model-probe", json_payload=payload)
     if response.status_code >= 400:
         detail = _response_detail(response, "Die Modell-Probe konnte nicht gestartet werden.")
-        context = await _load_benchmarks_context(error_message=detail)
+        context = await on_error_loader(
+            error_message=detail,
+            selected_workers=selected_workers or default_selected_workers,
+            probe_goal=normalized_goal,
+        )
         return templates.TemplateResponse(
             request=request,
-            name="benchmarks.html",
+            name=template_name,
             context={"request": request, **context},
         )
-    return RedirectResponse(url="/benchmarks", status_code=303)
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @app.get("/trusted-sources", response_class=HTMLResponse)

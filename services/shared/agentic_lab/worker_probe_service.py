@@ -219,12 +219,14 @@ class WorkerProbeService:
                     "Es laeuft bereits eine Modell-Probe. Warte auf deren Abschluss, bevor du einen neuen Schnelltest startest."
                 )
 
+            selected_workers = list(_normalize_probe_workers(request.selected_workers))
             run = WorkerProbeRunResponse(
                 id=str(uuid4()),
                 status=WorkerProbeRunStatus.QUEUED,
                 probe_goal=request.probe_goal.strip(),
                 probe_mode=request.probe_mode,
-                total_workers=len(PROBE_WORKERS),
+                selected_workers=selected_workers,
+                total_workers=len(selected_workers),
             )
             registry.runs.insert(0, run)
             registry.runs = registry.runs[:PROBE_HISTORY_LIMIT]
@@ -234,29 +236,30 @@ class WorkerProbeService:
     async def execute_run(self, run_id: str) -> WorkerProbeRunResponse:
         """Execute the queued probe run in the background and persist progress after every worker."""
 
+        ordered_workers = _normalize_probe_workers(self._find_run(run_id).selected_workers)
         await self._update_run(
             run_id,
             status=WorkerProbeRunStatus.RUNNING,
             started_at=_utc_now(),
             updated_at=_utc_now(),
-            active_worker_name=PROBE_WORKERS[0],
+            active_worker_name=ordered_workers[0],
         )
         try:
-            for worker_name in PROBE_WORKERS:
+            for worker_name in ordered_workers:
                 result = await self._probe_one_worker(run_id, worker_name)
                 current = self._find_run(run_id)
                 results = [item for item in current.results if item.worker_name != worker_name]
                 results.append(result)
-                results.sort(key=lambda item: PROBE_WORKERS.index(item.worker_name))
+                results.sort(key=lambda item: ordered_workers.index(item.worker_name))
                 completed_workers = sum(1 for item in results if item.status == "ok")
                 failed_workers = sum(1 for item in results if item.status == "failed")
-                next_index = PROBE_WORKERS.index(worker_name) + 1
+                next_index = ordered_workers.index(worker_name) + 1
                 await self._update_run(
                     run_id,
                     results=results,
                     completed_workers=completed_workers,
                     failed_workers=failed_workers,
-                    active_worker_name=PROBE_WORKERS[next_index] if next_index < len(PROBE_WORKERS) else None,
+                    active_worker_name=ordered_workers[next_index] if next_index < len(ordered_workers) else None,
                     updated_at=_utc_now(),
                 )
         except Exception as exc:  # pragma: no cover - defensive top-level guard.
@@ -657,6 +660,33 @@ class WorkerProbeService:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
+
+
+def _normalize_probe_workers(raw_workers: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """Return a validated, de-duplicated worker order for full or targeted probe runs."""
+
+    if not raw_workers:
+        return PROBE_WORKERS
+
+    selected: set[str] = set()
+    for raw in raw_workers:
+        worker_name = str(raw or "").strip()
+        if not worker_name:
+            continue
+        if worker_name not in PROBE_DEFINITIONS:
+            raise WorkerProbeError(
+                f"Der Worker-Probelauf kennt den Worker `{worker_name}` nicht. "
+                "Waehle einen bekannten Worker aus der Teiltest-Liste."
+            )
+        selected.add(worker_name)
+
+    if not selected:
+        raise WorkerProbeError(
+            "Es wurde kein gueltiger Worker fuer den Teiltest uebergeben. "
+            "Waehle mindestens einen Worker aus."
+        )
+
+    return tuple(worker_name for worker_name in PROBE_WORKERS if worker_name in selected)
 
 
 def _clip_text(value: str, *, max_length: int = 180) -> str:
