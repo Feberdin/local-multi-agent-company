@@ -283,9 +283,65 @@ def test_task_detail_page_handles_sparse_runtime_payloads_without_500(tmp_path, 
         response = client.get("/tasks/task-1")
 
     assert response.status_code == 200
+    assert "Kompaktansicht" in response.text
+    assert "ruhige Live-Übersicht ohne Aufklappen" in response.text
     assert "Worker-Theater" in response.text
     assert "Requirements laeuft noch." in response.text
     assert "Repo-Walkthrough zuerst sichern" in response.text
+
+
+def test_active_task_defaults_to_compact_view_and_full_view_can_be_requested(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks/task-1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-1",
+                    "goal": "Zeige eine ruhige Live-Ansicht fuer laufende Tasks.",
+                    "repository": "Feberdin/local-multi-agent-company",
+                    "repo_url": None,
+                    "local_repo_path": "/workspace/local-multi-agent-company",
+                    "base_branch": "main",
+                    "branch_name": "feature/task-1",
+                    "status": "ARCHITECTING",
+                    "resume_target": None,
+                    "current_approval_gate_name": None,
+                    "approval_required": False,
+                    "approval_reason": None,
+                    "allow_repository_modifications": False,
+                    "pull_request_url": None,
+                    "latest_error": None,
+                    "metadata": {},
+                    "created_at": now,
+                    "updated_at": now,
+                    "worker_results": {},
+                    "risk_flags": [],
+                    "events": [],
+                    "approvals": [],
+                    "smoke_checks": [],
+                    "deployment": None,
+                },
+            )
+        if path == "/api/suggestions/registry":
+            return httpx.Response(200, json={"suggestions": []})
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        compact_response = client.get("/tasks/task-1")
+        full_response = client.get("/tasks/task-1?view=full")
+
+    assert compact_response.status_code == 200
+    assert "Kompaktansicht" in compact_response.text
+    assert "/tasks/task-1?view=full" in compact_response.text
+    assert full_response.status_code == 200
+    assert "Aktueller Lauf" in full_response.text
+    assert "ruhige Live-Übersicht ohne Aufklappen" not in full_response.text
 
 
 def test_decorate_task_normalizes_naive_timestamps_from_older_rows(tmp_path, monkeypatch) -> None:
@@ -342,6 +398,12 @@ def test_format_timestamp_uses_configured_ui_timezone(tmp_path, monkeypatch) -> 
     formatted = app_module._format_timestamp("2026-04-12T19:51:00+00:00")
 
     assert formatted == "2026-04-12 21:51:00 CEST"
+
+
+def test_idle_worker_uses_sleep_emoji_instead_of_textual_zzz(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    assert app_module.WORKER_STATE_ICONS["idle"] == "💤"
 
 
 def test_task_detail_fallback_surfaces_exception_details(tmp_path, monkeypatch) -> None:

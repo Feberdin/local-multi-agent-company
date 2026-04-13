@@ -253,7 +253,7 @@ WORKER_STATE_ICONS = {
     "complete": "💬",
     "failed": "⚠",
     "queued": "⌛",
-    "idle": "zzz",
+    "idle": "💤",
     "skipped": "↷",
 }
 READINESS_STATUS_LABELS = {
@@ -2464,6 +2464,7 @@ async def _load_benchmarks_context(error_message: str | None = None, success_mes
 async def _load_task_detail_context(
     task_id: str,
     *,
+    view: str | None = None,
     error_message: str | None = None,
     success_message: str | None = None,
 ) -> dict[str, Any]:
@@ -2473,6 +2474,15 @@ async def _load_task_detail_context(
     if response.status_code >= 400:
         raise RuntimeError(_response_detail(response, f"Die Aufgabe `{task_id}` konnte nicht geladen werden."))
     task = _decorate_task(_as_mapping(_response_json(response, {})))
+    normalized_view = str(view or "").strip().lower()
+    if normalized_view not in {"compact", "full"}:
+        normalized_view = "compact" if task.get("is_active") else "full"
+    task["layout_mode"] = normalized_view
+    task["is_compact_view"] = normalized_view == "compact"
+    task["is_full_view"] = normalized_view == "full"
+    task["task_detail_href"] = f"/tasks/{task_id}"
+    task["compact_view_href"] = f"/tasks/{task_id}?view=compact"
+    task["full_view_href"] = f"/tasks/{task_id}?view=full"
     suggestion_context = await _load_suggestions_context(task_id=task_id)
     messages = [error_message, suggestion_context.get("error_message")]
     cleaned_suggestion_context = {
@@ -3038,9 +3048,9 @@ async def download_combined_debug_bundle(task_id: str | None = Query(default=Non
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
-async def task_detail(request: Request, task_id: str) -> HTMLResponse:
+async def task_detail(request: Request, task_id: str, view: str | None = Query(default=None)) -> HTMLResponse:
     try:
-        context = await _load_task_detail_context(task_id)
+        context = await _load_task_detail_context(task_id, view=view)
     except RuntimeError as exc:
         context = await _load_dashboard_context(
             error_message=str(exc),

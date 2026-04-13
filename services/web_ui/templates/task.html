@@ -165,6 +165,94 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
       </section>
       {% endif %}
 
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>Ansicht</h2>
+          <div class="view-switch" role="tablist" aria-label="Task-Ansicht">
+            <a href="{{ task.compact_view_href }}" class="view-switch-link {% if task.is_compact_view %}is-active{% endif %}">Kompakt</a>
+            <a href="{{ task.full_view_href }}" class="view-switch-link {% if task.is_full_view %}is-active{% endif %}">Vollansicht</a>
+          </div>
+        </div>
+        <p class="muted">
+          Die Kompaktansicht bleibt bei Auto-Refresh ruhiger und zeigt nur die wichtigsten Live-Informationen.
+        </p>
+      </section>
+
+      {% if task.is_compact_view %}
+      <section class="grid task-focus-grid">
+        <article class="panel task-focus-panel">
+          <div class="panel-header">
+            <h2>Kompaktansicht</h2>
+            <span class="status status-{{ task.current_stage_state }}">{{ task.current_stage_state_label }}</span>
+          </div>
+          <div class="compact-kpi-grid">
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Schritt</span>
+              <strong>{{ task.current_stage_label }}</strong>
+            </div>
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Worker</span>
+              <strong>{{ task.current_worker_label }}</strong>
+            </div>
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Laufzeit</span>
+              <strong>{{ task.running_for_display }}</strong>
+            </div>
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Letzte Aktivitaet</span>
+              <strong>{{ task.last_activity_at_display }}</strong>
+            </div>
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Wartet auf</span>
+              <strong>{{ task.current_waiting_for_display }}</strong>
+            </div>
+            <div class="compact-kpi">
+              <span class="compact-kpi-label">Refresh</span>
+              <strong>{{ task.auto_refresh_seconds ~ "s" if task.auto_refresh_seconds else "aus" }}</strong>
+            </div>
+          </div>
+          <div class="compact-live-stack">
+            <p><strong>Beschreibung:</strong> {{ task.current_stage_description }}</p>
+            <p><strong>Auftrag:</strong> {{ task.current_instruction }}</p>
+            <p><strong>Fortschritt:</strong> {{ task.current_progress_message }}</p>
+            <p><strong>Zwischenergebnis:</strong> {{ task.current_last_result_summary }}</p>
+            {% if task.current_last_error %}
+            <p><strong>Letzter Fehler:</strong> {{ task.current_last_error }}</p>
+            {% endif %}
+          </div>
+        </article>
+
+        <article class="panel task-flow-panel">
+          <div class="panel-header">
+            <h2>Ablauf</h2>
+            <span class="muted">ruhige Live-Übersicht ohne Aufklappen</span>
+          </div>
+          <div class="compact-stage-list">
+            {% for step in task.worker_timeline %}
+            <article class="compact-stage-row compact-stage-row-{{ step.state }}">
+              <div class="compact-stage-main">
+                <div class="compact-stage-title">
+                  <strong>{{ step.state_icon }} {{ step.label }}</strong>
+                  <span class="status status-{{ step.state }}">{{ step.state_label }}</span>
+                </div>
+                <p class="muted">
+                  {% if step.state in ["running", "waiting", "failed", "blocked", "complete"] %}
+                  {{ step.progress_message }}
+                  {% else %}
+                  {{ step.description }}
+                  {% endif %}
+                </p>
+              </div>
+              <div class="compact-stage-meta">
+                <span>{{ step.elapsed_display }}</span>
+                <span>{{ step.last_event_at_display }}</span>
+              </div>
+            </article>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+      {% else %}
       <section class="grid">
         <article class="panel">
           <h2>Aktueller Lauf</h2>
@@ -210,11 +298,12 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
           </div>
         </article>
       </section>
+      {% endif %}
 
       <section class="panel">
         <div class="panel-header">
           <h2>Worker-Theater</h2>
-          <span class="muted">💭 arbeitet · ☕ wartet · 💬 meldet Ergebnis · zzz derzeit ungenutzt</span>
+          <span class="muted">💭 arbeitet · ☕ wartet · 💬 meldet Ergebnis · 💤 derzeit ungenutzt</span>
         </div>
         {% for group in task.worker_cast_groups %}
           {% if group.workers %}
