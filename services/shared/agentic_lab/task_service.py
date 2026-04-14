@@ -680,6 +680,7 @@ class TaskService:
             "started_at",
             "updated_at",
             "elapsed_seconds",
+            "slow_warning_seconds",
             "event_kind",
             "stage_label",
             "stage_description",

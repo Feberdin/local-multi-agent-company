@@ -108,6 +108,88 @@ def test_decorate_task_marks_long_running_requirements_stage_as_active(tmp_path,
     assert decorated["restartable_stage_options"][0]["worker_name"] == "requirements"
 
 
+def test_decorate_task_marks_slow_heartbeat_as_slow_instead_of_normal_running(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    now = datetime.now(UTC)
+    task = {
+        "id": "task-slow",
+        "goal": "Keep the operator informed when local coding takes unusually long.",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "branch_name": "feature/task-slow",
+        "status": "CODING",
+        "resume_target": None,
+        "current_approval_gate_name": None,
+        "approval_required": False,
+        "approval_reason": None,
+        "allow_repository_modifications": False,
+        "pull_request_url": None,
+        "latest_error": None,
+        "metadata": {
+            "worker_progress": {
+                "coding": {
+                    "state": "slow",
+                    "current_instruction": "Implementiere den Fix im lokalen Patch-Backend.",
+                    "waiting_for": "Antwort des Coding-Workers",
+                    "progress_message": (
+                        "Coding arbeitet seit 1292.2s und ist auffaellig langsam. "
+                        "Langsamkeitsgrenze 600s, Stage-Limit 1800s. Modell- oder Worker-Antwort steht noch aus."
+                    ),
+                    "elapsed_seconds": 1292.2,
+                    "slow_warning_seconds": 600.0,
+                    "started_at": (now - timedelta(minutes=22)).isoformat(),
+                    "updated_at": (now - timedelta(seconds=12)).isoformat(),
+                    "event_kind": "stage_heartbeat",
+                }
+            }
+        },
+        "created_at": (now - timedelta(minutes=23)).isoformat(),
+        "updated_at": (now - timedelta(seconds=12)).isoformat(),
+        "worker_results": {},
+        "risk_flags": [],
+        "events": [
+            {
+                "id": 1,
+                "task_id": "task-slow",
+                "level": "INFO",
+                "stage": "CODING",
+                "message": "Coding arbeitet auffaellig lange.",
+                "details": {
+                    "worker_name": "coding",
+                    "heartbeat": True,
+                    "state": "slow",
+                    "elapsed_seconds": 1292.2,
+                    "slow_warning_seconds": 600.0,
+                    "progress_message": (
+                        "Coding arbeitet seit 1292.2s und ist auffaellig langsam. "
+                        "Langsamkeitsgrenze 600s, Stage-Limit 1800s. Modell- oder Worker-Antwort steht noch aus."
+                    ),
+                },
+                "created_at": (now - timedelta(seconds=12)).isoformat(),
+            }
+        ],
+        "approvals": [],
+        "smoke_checks": [],
+        "deployment": None,
+    }
+
+    decorated = app_module._decorate_task(task)
+
+    assert decorated["current_stage_state"] == "slow"
+    assert decorated["current_stage_state_label"] == "auffaellig langsam"
+    assert decorated["worker_timeline"][0]["state"] == "idle"
+    coding_step = next(step for step in decorated["worker_timeline"] if step["worker_name"] == "coding")
+    assert coding_step["state"] == "slow"
+    assert decorated["worker_cast"][0]["worker_name"] == "requirements"
+    coding_cast = next(worker for worker in decorated["worker_cast"] if worker["worker_name"] == "coding")
+    assert coding_cast["bubble_kind"] == "thought"
+    assert "auffaellig langsam" in coding_cast["bubble_text"]
+    assert decorated["events"][-1]["state"] == "slow"
+    assert decorated["events"][-1]["state_label"] == "auffaellig langsam"
+
+
 def test_dashboard_shows_version_badge_in_top_navigation(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     app_module.templates.env.globals["ui_build"] = {

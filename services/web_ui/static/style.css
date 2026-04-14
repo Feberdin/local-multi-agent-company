@@ -860,6 +860,11 @@ button.secondary-button {
   color: #8a431f;
 }
 
+.status-slow {
+  background: #f6d0cb;
+  color: #8a431f;
+}
+
 .status-done,
 .status-staging_deployed,
 .status-complete {
@@ -1437,6 +1442,11 @@ pre {
   .status-info {
     background: #352414;
     color: #e8a87a;
+  }
+
+  .status-slow {
+    background: #3a1c1a;
+    color: #f0b28a;
   }
 
   .status-done,

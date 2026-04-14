@@ -548,6 +548,7 @@ class WorkflowOrchestrator:
         previous_worker = self._previous_worker_name(worker_name)
         next_worker = self._next_worker_name(worker_name)
         current_instruction = self._current_instruction(state, worker_name, stage_meta)
+        slow_warning_seconds = self._stage_slow_warning_seconds(route_summary)
         return {
             "event_kind": event_kind,
             "worker_name": worker_name,
@@ -567,11 +568,33 @@ class WorkflowOrchestrator:
             "started_at": started_at_iso,
             "updated_at": datetime.now(UTC).isoformat(),
             "elapsed_seconds": elapsed_seconds,
+            "slow_warning_seconds": slow_warning_seconds,
             "last_result_summary": last_result_summary,
             "last_error": last_error,
             "last_event_message": progress_message,
             "progress_message": progress_message,
         }
+
+    def _stage_slow_warning_seconds(self, route_summary: dict[str, Any]) -> float:
+        """
+        Return the point where a stage should still count as alive, but no longer as normal-speed work.
+
+        Why this exists:
+        On local hardware, some stages legitimately need minutes. But when a worker has been
+        heartbeating for a very long time, operators should see "auffaellig langsam" before the
+        hard timeout finally fires.
+        """
+
+        configured_route_timeout = route_summary.get("request_timeout_seconds")
+        try:
+            route_timeout = float(configured_route_timeout)
+        except (TypeError, ValueError):
+            route_timeout = 0.0
+
+        thresholds = [600.0, self.settings.worker_stage_timeout_seconds * 0.75]
+        if route_timeout > 0:
+            thresholds.append(route_timeout * 0.5)
+        return round(max(180.0, min(thresholds)), 1)
 
     async def _stage_heartbeat(
         self,
@@ -589,23 +612,42 @@ class WorkflowOrchestrator:
 
         interval = max(5.0, self.settings.stage_heartbeat_interval_seconds)
         stage_meta = self._stage_metadata(worker_name)
+        slow_warning_seconds = self._stage_slow_warning_seconds(route_summary)
         while True:
             await asyncio.sleep(interval)
             elapsed_seconds = round(asyncio.get_running_loop().time() - started_at, 1)
+            worker_state = "running"
+            event_message = (
+                f"{stage_meta['label']} arbeitet weiter. "
+                "Die Antwort aus dem Worker-Service oder vom lokalen Modell steht noch aus."
+            )
+            progress_message = (
+                f"{stage_meta['label']} arbeitet seit {elapsed_seconds:.1f}s im Hintergrund. "
+                "Modell- oder Worker-Antwort steht noch aus."
+            )
+            if elapsed_seconds >= slow_warning_seconds:
+                worker_state = "slow"
+                event_message = (
+                    f"{stage_meta['label']} arbeitet auffaellig lange. "
+                    "Die Antwort aus dem Worker-Service oder vom lokalen Modell steht weiter aus."
+                )
+                progress_message = (
+                    f"{stage_meta['label']} arbeitet seit {elapsed_seconds:.1f}s und ist auffaellig langsam. "
+                    f"Langsamkeitsgrenze {slow_warning_seconds:.0f}s, Stage-Limit "
+                    f"{self.settings.worker_stage_timeout_seconds:.0f}s. "
+                    "Modell- oder Worker-Antwort steht noch aus."
+                )
             self.task_service.append_event(
                 task_id,
                 stage=stage_status.value,
-                message=(
-                    f"{stage_meta['label']} arbeitet weiter. "
-                    "Die Antwort aus dem Worker-Service oder vom lokalen Modell steht noch aus."
-                ),
+                message=event_message,
                 details={
                     **self._progress_details(
                         state=state,
                         worker_name=worker_name,
                         stage_meta=stage_meta,
                         event_kind="stage_heartbeat",
-                        worker_state="running",
+                        worker_state=worker_state,
                         service_url=service_url,
                         route_summary=route_summary,
                         started_at_iso=started_at_iso,
@@ -615,10 +657,7 @@ class WorkflowOrchestrator:
                             if service_url
                             else "Antwort des Worker-Services"
                         ),
-                        progress_message=(
-                            f"{stage_meta['label']} arbeitet seit {elapsed_seconds:.1f}s im Hintergrund. "
-                            "Modell- oder Worker-Antwort steht noch aus."
-                        ),
+                        progress_message=progress_message,
                     ),
                     "heartbeat": True,
                 },

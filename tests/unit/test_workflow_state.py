@@ -79,3 +79,15 @@ def test_worker_requests_use_frozen_guidance_and_route_snapshots(isolated_sessio
 
     assert request.metadata["current_worker_guidance"]["role_description"] == "Snapshot A"
     assert request.metadata["current_worker_route"]["provider"] == "qwen"
+
+
+def test_stage_slow_warning_seconds_tracks_route_timeout_but_caps_operator_noise(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+
+    fast_route_threshold = orchestrator._stage_slow_warning_seconds({"request_timeout_seconds": 600.0})  # pyright: ignore[reportPrivateUsage]
+    slow_route_threshold = orchestrator._stage_slow_warning_seconds({"request_timeout_seconds": 1800.0})  # pyright: ignore[reportPrivateUsage]
+    fallback_threshold = orchestrator._stage_slow_warning_seconds({})  # pyright: ignore[reportPrivateUsage]
+
+    assert fast_route_threshold == 300.0
+    assert slow_route_threshold == 600.0
+    assert fallback_threshold == 600.0
