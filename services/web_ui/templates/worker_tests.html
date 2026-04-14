@@ -1,7 +1,7 @@
 <!--
 Purpose: Focused operator page for short worker-specific probe runs after a targeted fix.
-Input/Output: Receives persisted probe history plus worker choices and renders small subset tests without touching repositories.
-Important invariants: All tests stay synthetic, side-effect free, and clearly show which worker subset was selected.
+Input/Output: Receives persisted probe history plus worker choices and renders small subset tests or one tiny scratch-repo live patch.
+Important invariants: Synthetic tests stay side-effect free, and the README mini-fix may only touch a disposable workspace repo.
 How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-probe` and the generated `selected_workers` payload.
 -->
 <!doctype html>
@@ -40,7 +40,7 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
 
       <section class="panel panel-note">
         <h2>Wofür diese Ansicht da ist</h2>
-        <p>Nutze diese Seite, wenn du zum Beispiel nur <strong>Code</strong>, <strong>Architektur</strong> oder <strong>Recherche</strong> nach einem Fix schnell gegen das aktuelle Modell-Routing prüfen willst. Kein Repository wird dabei geändert.</p>
+        <p>Nutze diese Seite, wenn du zum Beispiel nur <strong>Code</strong>, <strong>Architektur</strong> oder <strong>Recherche</strong> nach einem Fix schnell prüfen willst. Die normalen Teiltests bleiben read-only. Der neue <strong>README-Mini-Fix</strong> ändert nur ein Wegwerf-Repo im Workspace, damit wir den echten Coding-Pfad minimal testen können.</p>
       </section>
 
       {% if error_message %}
@@ -86,7 +86,7 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
               <textarea name="focus_paths_text" rows="5" placeholder="services/coding_worker/app.py&#10;tests/unit/test_coding_worker.py">{{ focus_paths_text }}</textarea>
             </label>
             <p class="muted">Standardmäßig schlagen wir die zuletzt geänderten Dateien aus dem aktuellen Checkout vor. Damit testet der Worker eher den echten Fixbereich und nicht nur irgendein Beispiel.</p>
-            <p class="muted">Der Auftrag bleibt absichtlich kurz. Wir wollen hier schnell sehen, ob genau der gefixte Worker wieder saubere Antworten liefert.</p>
+            <p class="muted">Der Auftrag bleibt absichtlich kurz. Wir wollen hier schnell sehen, ob genau der gefixte Worker wieder saubere Antworten liefert. Fuer einen echten Minimal-Patch nimm den README-Mini-Fix beim Coding-Worker.</p>
             <div class="toolbar-inline">
               <button type="submit">Ausgewaehlte Worker testen</button>
               <button type="submit" name="probe_mode" value="ok_contract" class="secondary-button">Nur OK-Contract testen</button>
@@ -154,6 +154,15 @@ How to debug: If a selected worker is missing, inspect `/api/benchmarks/model-pr
                 <input type="hidden" name="focus_paths_text" value="{{ focus_paths_text }}">
                 <button type="submit" class="secondary-button">Nur OK pruefen</button>
               </form>
+              {% if choice.supports_micro_fix %}
+              <form method="post" action="/worker-tests/start" class="stack">
+                <input type="hidden" name="selected_workers" value="{{ choice.worker_name }}">
+                <input type="hidden" name="probe_goal" value="{{ choice.quick_micro_fix_goal }}">
+                <input type="hidden" name="probe_mode" value="micro_fix">
+                <input type="hidden" name="focus_paths_text" value="README.md">
+                <button type="submit" class="secondary-button">README-Mini-Fix</button>
+              </form>
+              {% endif %}
             </div>
           </article>
           {% endfor %}

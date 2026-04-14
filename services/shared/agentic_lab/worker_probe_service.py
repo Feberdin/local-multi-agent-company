@@ -1,11 +1,11 @@
 """
-Purpose: Run a fast, operator-friendly LLM routing probe across selected workers without touching repositories.
-Input/Output: Starts a persisted benchmark run, asks the configured worker routes for small synthetic answers,
-and stores readable results for the web UI.
-Important invariants: The probe must stay side-effect free, short enough for local homelabs,
-and explicit about which provider/model answered.
-How to debug: If a probe stalls or shows the wrong model, inspect the persisted run JSON together
-with the resolved model route and the recorded fallback flags.
+Purpose: Run fast, operator-friendly worker probes for routing checks and tiny live patch exercises.
+Input/Output: Starts a persisted benchmark run, asks configured worker routes for synthetic answers or
+one minimal scratch-repo patch, and stores readable results for the web UI.
+Important invariants: Synthetic probes stay side-effect free, and the live patch probe may only touch
+an isolated disposable repository under the workspace root.
+How to debug: If a probe stalls or shows the wrong behavior, inspect the persisted run JSON together
+with the resolved model route, recorded fallback flags, and scratch-repo evidence for live patch runs.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from services.shared.agentic_lab.edit_ops import EDIT_ACTION_CHOICES
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.model_routing import resolve_fallback_provider, resolve_worker_route
+from services.shared.agentic_lab.repo_tools import build_task_workspace_path, current_diff, git, run_command
 from services.shared.agentic_lab.schemas import (
     WorkerProbeMode,
     WorkerProbeRegistryResponse,
@@ -33,6 +34,7 @@ from services.shared.agentic_lab.schemas import (
     WorkerProbeStartRequest,
     WorkerRequest,
 )
+from services.shared.agentic_lab.worker_client import WorkerCallError, call_worker
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 PROBE_WORKERS: tuple[str, ...] = (
@@ -58,6 +60,13 @@ PROBE_WORKER_LABELS: dict[str, str] = {
 PROBE_HISTORY_LIMIT = 10
 PROBE_MAX_TOKENS = 320
 FOCUS_CONTEXT_MAX_CHARS = 2200
+MICRO_FIX_REPOSITORY = "Feberdin/worker-probe-scratch"
+MICRO_FIX_BRANCH_NAME = "probe/readme-smiley"
+MICRO_FIX_FOCUS_PATHS: tuple[str, ...] = ("README.md",)
+MICRO_FIX_INITIAL_README = (
+    "Probe README\n"
+    "This scratch repository is used only for the smallest live coding probe.\n"
+)
 
 
 class WorkerProbeError(RuntimeError):
@@ -222,8 +231,12 @@ class WorkerProbeService:
                     "Es laeuft bereits eine Modell-Probe. Warte auf deren Abschluss, bevor du einen neuen Schnelltest startest."
                 )
 
-            selected_workers = list(_normalize_probe_workers(request.selected_workers))
+            selected_workers = list(
+                _normalize_probe_workers(request.selected_workers, probe_mode=request.probe_mode)
+            )
             focus_paths = list(_normalize_focus_paths(request.focus_paths))
+            if request.probe_mode == WorkerProbeMode.MICRO_FIX and not focus_paths:
+                focus_paths = list(MICRO_FIX_FOCUS_PATHS)
             run = WorkerProbeRunResponse(
                 id=str(uuid4()),
                 status=WorkerProbeRunStatus.QUEUED,
@@ -295,6 +308,8 @@ class WorkerProbeService:
 
         definition = PROBE_DEFINITIONS[worker_name]
         probe_run = self._find_run(run_id)
+        if probe_run.probe_mode == WorkerProbeMode.MICRO_FIX:
+            return await self._run_coding_micro_fix_probe(run_id=run_id, worker_name=worker_name)
         synthetic_request = self._synthetic_request(run_id, worker_name)
         guidance_block = self.governance_service.guidance_prompt_block(synthetic_request, worker_name)
         primary_provider, route = resolve_worker_route(self.settings, worker_name)
@@ -393,6 +408,197 @@ class WorkerProbeService:
                         else "Kein konfigurierter Fallback."
                     ),
                 ],
+            )
+
+    async def _run_coding_micro_fix_probe(self, *, run_id: str, worker_name: str) -> WorkerProbeResultResponse:
+        """Run the real coding worker against a disposable scratch repo for one tiny README patch."""
+
+        if worker_name != "coding":
+            raise WorkerProbeError("Der README-Mini-Fix ist nur fuer den Coding-Worker verfuegbar.")
+
+        started_at = _utc_now()
+        primary_provider, _route = resolve_worker_route(self.settings, worker_name)
+        fallback_provider = resolve_fallback_provider(self.settings, worker_name)
+        scratch_root = self.settings.workspace_root / ".worker-probe-live" / run_id
+        seed_repo_path = scratch_root / "seed-repo"
+        task_id = f"{run_id}-{worker_name}-micro-fix"
+        target_repo_path = build_task_workspace_path(
+            task_id,
+            MICRO_FIX_REPOSITORY,
+            self.settings.workspace_root,
+            self.settings.effective_task_workspace_root,
+        )
+        before_first_line = _prepare_micro_fix_seed_repo(seed_repo_path, self.settings)
+        notes = [
+            "Der README-Mini-Fix nutzt den echten coding-worker auf einem Wegwerf-Repo im Workspace.",
+            "Die angezeigte Modellroute ist die aktuell konfigurierte Primär-/Fallback-Kette. "
+            "Der coding-worker exportiert die finale Live-Modellspur derzeit noch nicht separat.",
+            f"Konfiguriertes Primärmodell: {primary_provider.name} / {primary_provider.model_name}",
+            (
+                f"Konfigurierter Fallback: {fallback_provider.name} / {fallback_provider.model_name}"
+                if fallback_provider
+                else "Kein konfigurierter Fallback."
+            ),
+        ]
+
+        request = WorkerRequest(
+            task_id=task_id,
+            goal=(
+                "Minimaler Live-Patch-Test in einem Scratch-Repo. Aendere nur README.md. "
+                "Setze `:)` an den Anfang der ersten Zeile, sodass aus `Probe README` genau "
+                "`:) Probe README` wird. Lasse alle weiteren Zeilen unveraendert und fasse keine "
+                "andere Datei an."
+            ),
+            repository=MICRO_FIX_REPOSITORY,
+            local_repo_path=str(target_repo_path),
+            base_branch="main",
+            branch_name=MICRO_FIX_BRANCH_NAME,
+            metadata={
+                "source_local_repo_path": str(seed_repo_path),
+                "focus_paths": list(MICRO_FIX_FOCUS_PATHS),
+                "probe_mode": WorkerProbeMode.MICRO_FIX.value,
+                "scratch_repo": True,
+            },
+            prior_results={
+                "requirements": {
+                    "outputs": {
+                        "summary": "Ein minimaler README-Fix soll den echten Coding-Pfad pruefen.",
+                        "requirements": ["Nur README.md aendern.", "Nur die erste Zeile anpassen."],
+                        "acceptance_criteria": [
+                            "Die erste Zeile beginnt mit `:)`.",
+                            "Alle weiteren README-Zeilen bleiben unveraendert.",
+                            "Keine andere Datei wird geaendert.",
+                        ],
+                    }
+                },
+                "research": {
+                    "outputs": {
+                        "candidate_files": ["README.md"],
+                        "research_notes": (
+                            "Das Scratch-Repo enthaelt nur README.md. Die erste Zeile lautet `Probe README` "
+                            "und soll auf `:) Probe README` geaendert werden."
+                        ),
+                    }
+                },
+                "architecture": {
+                    "outputs": {
+                        "summary": "Einziger Scope ist README.md mit einem minimalen One-Line-Fix.",
+                        "implementation_plan": [
+                            "Ersetze nur die erste README-Zeile.",
+                            "Fuehre keine weiteren Dateioperationen aus.",
+                        ],
+                        "touched_areas": ["README.md"],
+                        "module_boundaries": ["README.md"],
+                    }
+                },
+            },
+        )
+
+        try:
+            worker_response = await call_worker(self.settings.coding_worker_url, request, attempts=1)
+            actual_repo_path = Path(str(worker_response.outputs.get("local_repo_path") or target_repo_path))
+            after_first_line = _read_first_line(actual_repo_path / "README.md")
+            diff = current_diff(actual_repo_path, "main")
+            changed_files = list(worker_response.outputs.get("changed_files") or diff.get("changed_files", []))
+            diff_stat = str(worker_response.outputs.get("diff_stat") or diff.get("diff_stat") or "").strip()
+            summary = str(worker_response.summary or "README-Mini-Fix ausgefuehrt.")
+            response_data = {
+                "seed_repo_path": str(seed_repo_path),
+                "local_repo_path": str(actual_repo_path),
+                "before_first_line": before_first_line,
+                "after_first_line": after_first_line,
+                "changed_files": changed_files,
+                "diff_stat": diff_stat,
+                "worker_summary": summary,
+                "worker_warnings": list(worker_response.warnings),
+                "worker_errors": list(worker_response.errors),
+                "worker_risk_flags": list(worker_response.risk_flags),
+            }
+            response_text = json.dumps(response_data, indent=2, ensure_ascii=False)
+            success_reasons: list[str] = []
+            failure_reasons: list[str] = []
+
+            if worker_response.success:
+                success_reasons.append("Der coding-worker meldete Erfolg.")
+            else:
+                failure_reasons.append("Der coding-worker meldete keinen erfolgreichen Lauf.")
+            if after_first_line == ":) Probe README":
+                success_reasons.append("Die erste README-Zeile wurde exakt wie erwartet geaendert.")
+            else:
+                failure_reasons.append(
+                    f"Die erste README-Zeile lautet `{after_first_line}` statt `:) Probe README`."
+                )
+            if "README.md" in changed_files:
+                success_reasons.append("README.md ist im resultierenden Diff sichtbar.")
+            else:
+                failure_reasons.append("README.md taucht nicht in den geaenderten Dateien auf.")
+            if any(path != "README.md" for path in changed_files):
+                failure_reasons.append(
+                    "Es wurden unerwartete Zusatzdateien geaendert: " + ", ".join(path for path in changed_files if path != "README.md")
+                )
+
+            completed_at = _utc_now()
+            if not failure_reasons:
+                return WorkerProbeResultResponse(
+                    worker_name=worker_name,
+                    worker_label=PROBE_WORKER_LABELS.get(worker_name, worker_name),
+                    status="ok",
+                    output_contract="live_patch",
+                    response_format="json",
+                    summary="README-Mini-Fix erfolgreich auf dem Wegwerf-Repo angewendet.",
+                    response_text=response_text,
+                    response_data=response_data,
+                    provider="coding-worker",
+                    model_name="scratch-repo",
+                    base_url=self.settings.coding_worker_url,
+                    used_fallback=False,
+                    repair_pass_used=False,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    elapsed_seconds=round((completed_at - started_at).total_seconds(), 1),
+                    notes=notes + success_reasons,
+                )
+
+            error_message = " ".join(failure_reasons + [item for item in worker_response.errors if item])
+            return WorkerProbeResultResponse(
+                worker_name=worker_name,
+                worker_label=PROBE_WORKER_LABELS.get(worker_name, worker_name),
+                status="failed",
+                output_contract="live_patch",
+                response_format="json",
+                summary="README-Mini-Fix hat keinen verwertbaren Live-Patch erzeugt.",
+                response_text=response_text,
+                response_data=response_data,
+                provider="coding-worker",
+                model_name="scratch-repo",
+                base_url=self.settings.coding_worker_url,
+                used_fallback=False,
+                repair_pass_used=False,
+                started_at=started_at,
+                completed_at=completed_at,
+                elapsed_seconds=round((completed_at - started_at).total_seconds(), 1),
+                error_message=error_message,
+                notes=notes + success_reasons + failure_reasons,
+            )
+        except (WorkerCallError, OSError, RuntimeError) as exc:
+            completed_at = _utc_now()
+            error_text = f"{exc.__class__.__name__}: {exc}"
+            return WorkerProbeResultResponse(
+                worker_name=worker_name,
+                worker_label=PROBE_WORKER_LABELS.get(worker_name, worker_name),
+                status="failed",
+                output_contract="live_patch",
+                response_format="json",
+                summary="README-Mini-Fix konnte nicht ausgefuehrt werden.",
+                response_text=error_text,
+                provider="coding-worker",
+                model_name="scratch-repo",
+                base_url=self.settings.coding_worker_url,
+                started_at=started_at,
+                completed_at=completed_at,
+                elapsed_seconds=round((completed_at - started_at).total_seconds(), 1),
+                error_message=error_text,
+                notes=notes,
             )
 
     def _probe_prompts(
@@ -747,10 +953,16 @@ def _utc_now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def _normalize_probe_workers(raw_workers: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
-    """Return a validated, de-duplicated worker order for full or targeted probe runs."""
+def _normalize_probe_workers(
+    raw_workers: list[str] | tuple[str, ...] | None,
+    *,
+    probe_mode: WorkerProbeMode = WorkerProbeMode.FULL,
+) -> tuple[str, ...]:
+    """Return a validated, de-duplicated worker order for full, targeted, or live mini-fix probe runs."""
 
     if not raw_workers:
+        if probe_mode == WorkerProbeMode.MICRO_FIX:
+            return ("coding",)
         return PROBE_WORKERS
 
     selected: set[str] = set()
@@ -769,6 +981,12 @@ def _normalize_probe_workers(raw_workers: list[str] | tuple[str, ...] | None) ->
         raise WorkerProbeError(
             "Es wurde kein gueltiger Worker fuer den Teiltest uebergeben. "
             "Waehle mindestens einen Worker aus."
+        )
+
+    if probe_mode == WorkerProbeMode.MICRO_FIX and selected != {"coding"}:
+        raise WorkerProbeError(
+            "Der README-Mini-Fix steht nur fuer den Worker `coding` zur Verfuegung. "
+            "Waehle nur `Code` aus oder nutze einen synthetischen Teiltest fuer andere Worker."
         )
 
     return tuple(worker_name for worker_name in PROBE_WORKERS if worker_name in selected)
@@ -813,6 +1031,28 @@ def _build_focus_context(settings: Settings, focus_paths: list[str]) -> str:
         if file_excerpt:
             sections.append(f"[{normalized_path}] Aktueller Auszug\n{file_excerpt}")
     return "\n\n".join(sections)
+
+
+def _prepare_micro_fix_seed_repo(seed_repo_path: Path, settings: Settings) -> str:
+    """Create a tiny committed repo so the real coding worker can patch it in isolation."""
+
+    seed_repo_path.mkdir(parents=True, exist_ok=True)
+    run_command(["git", "init"], cwd=seed_repo_path)
+    git(["config", "user.name", settings.git_author_name], repo_path=seed_repo_path)
+    git(["config", "user.email", settings.git_author_email], repo_path=seed_repo_path)
+    readme_path = seed_repo_path / "README.md"
+    readme_path.write_text(MICRO_FIX_INITIAL_README, encoding="utf-8")
+    git(["add", "README.md"], repo_path=seed_repo_path)
+    git(["commit", "-m", "chore: seed worker probe scratch repo"], repo_path=seed_repo_path)
+    git(["branch", "-M", "main"], repo_path=seed_repo_path)
+    return _read_first_line(readme_path)
+
+
+def _read_first_line(file_path: Path) -> str:
+    """Read the first line of a probe file defensively so live patch evidence stays explicit."""
+
+    content = file_path.read_text(encoding="utf-8")
+    return content.splitlines()[0] if content.splitlines() else ""
 
 
 def _resolve_probe_repo_root(settings: Settings) -> Path | None:

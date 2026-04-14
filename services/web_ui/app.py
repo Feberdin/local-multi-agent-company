@@ -47,6 +47,9 @@ DEFAULT_OK_WORKER_PROBE_GOAL = "Leerer OK-Kurztest fuer alle Worker-Vertraege oh
 DEFAULT_TARGETED_WORKER_PROBE_GOAL = (
     "Pruefe nur den ausgewaehlten Worker gegen den zuletzt gefixten Bereich ohne Repository-Aenderungen."
 )
+DEFAULT_MICRO_FIX_WORKER_PROBE_GOAL = (
+    "README-Mini-Fix in einem Wegwerf-Repo: Setze `:)` an den Anfang der ersten README-Zeile und aendere sonst nichts."
+)
 TARGETED_WORKER_FOCUS_LIMIT = 6
 
 # Why this exists:
@@ -2002,6 +2005,7 @@ def _decorate_worker_probe_registry(payload: dict[str, Any]) -> dict[str, Any]:
                 "probe_mode_label": {
                     WorkerProbeMode.FULL.value: "Normaler Probelauf",
                     WorkerProbeMode.OK_CONTRACT.value: "OK-Kurztest",
+                    WorkerProbeMode.MICRO_FIX.value: "README-Mini-Fix",
                 }.get(probe_mode, probe_mode),
                 "status_label": {
                     "queued": "wartet",
@@ -2065,6 +2069,7 @@ def _build_worker_test_choices(*, selected_workers: list[str] | None = None) -> 
             f"Kurzer Teiltest nur fuer den Worker {label}. "
             "Pruefe den zuletzt geaenderten Bereich ohne Repository-Aenderungen."
         )
+        micro_fix_goal = DEFAULT_MICRO_FIX_WORKER_PROBE_GOAL
         choices.append(
             {
                 "worker_name": worker_name,
@@ -2078,6 +2083,8 @@ def _build_worker_test_choices(*, selected_workers: list[str] | None = None) -> 
                 ),
                 "quick_ok_goal": quick_goal,
                 "quick_full_goal": focused_goal,
+                "quick_micro_fix_goal": micro_fix_goal,
+                "supports_micro_fix": worker_name == "coding",
                 "checked": worker_name in selected,
             }
         )
@@ -2736,6 +2743,7 @@ async def _load_worker_tests_context(
         "probe_worker_choices": _build_worker_test_choices(selected_workers=normalized_selected_workers),
         "worker_probe_default_goal": probe_goal or DEFAULT_TARGETED_WORKER_PROBE_GOAL,
         "worker_probe_ok_goal": DEFAULT_OK_WORKER_PROBE_GOAL,
+        "worker_probe_micro_fix_goal": DEFAULT_MICRO_FIX_WORKER_PROBE_GOAL,
         "selected_workers": normalized_selected_workers,
         "focus_paths": normalized_focus_paths,
         "focus_paths_text": "\n".join(normalized_focus_paths),
@@ -3272,9 +3280,10 @@ async def _submit_worker_probe_form(
     if default_selected_workers and not selected_workers:
         selected_workers = list(default_selected_workers)
 
-    normalized_goal = str(form.get("probe_goal") or fallback_goal or "").strip() or (
-        DEFAULT_OK_WORKER_PROBE_GOAL if probe_mode == WorkerProbeMode.OK_CONTRACT else DEFAULT_WORKER_PROBE_GOAL
-    )
+    normalized_goal = str(form.get("probe_goal") or fallback_goal or "").strip() or {
+        WorkerProbeMode.OK_CONTRACT: DEFAULT_OK_WORKER_PROBE_GOAL,
+        WorkerProbeMode.MICRO_FIX: DEFAULT_MICRO_FIX_WORKER_PROBE_GOAL,
+    }.get(probe_mode, DEFAULT_WORKER_PROBE_GOAL)
     payload: dict[str, Any] = {"probe_goal": normalized_goal, "probe_mode": probe_mode.value}
     if selected_workers:
         payload["selected_workers"] = selected_workers

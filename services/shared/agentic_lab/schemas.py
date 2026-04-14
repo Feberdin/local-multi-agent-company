@@ -47,6 +47,7 @@ class WorkerProbeRunStatus(StrEnum):
 class WorkerProbeMode(StrEnum):
     FULL = "full"
     OK_CONTRACT = "ok_contract"
+    MICRO_FIX = "micro_fix"
 
 
 class WorkflowWorkerName(StrEnum):

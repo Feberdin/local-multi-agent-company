@@ -594,6 +594,7 @@ def test_worker_tests_page_renders_targeted_actions_and_latest_run(tmp_path, mon
     assert "Teiltests pro Worker" in response.text
     assert "Diesen Worker testen" in response.text
     assert "Nur OK pruefen" in response.text
+    assert "README-Mini-Fix" in response.text
     assert "Architektur, Code" in response.text
     assert "services/coding_worker/app.py" in response.text
 
@@ -644,6 +645,57 @@ def test_worker_tests_page_can_start_targeted_probe_with_selected_workers(tmp_pa
                 "probe_goal": "Pruefe nur Code und Architektur nach dem Fix.",
                 "selected_workers": ["architecture", "coding"],
                 "focus_paths_text": "services/coding_worker/app.py\ntests/unit/test_coding_worker.py",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/worker-tests"
+
+
+def test_worker_tests_page_can_start_readme_micro_fix_probe(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        if method == "POST" and path == "/api/benchmarks/model-probe":
+            assert json_payload == {
+                "probe_goal": "README-Mini-Fix im Wegwerf-Repo pruefen.",
+                "probe_mode": "micro_fix",
+                "selected_workers": ["coding"],
+                "focus_paths": ["README.md"],
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "probe-micro-fix",
+                    "status": "queued",
+                    "probe_goal": json_payload["probe_goal"],
+                    "probe_mode": json_payload["probe_mode"],
+                    "selected_workers": json_payload["selected_workers"],
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "results": [],
+                    "errors": [],
+                    "total_workers": 1,
+                    "completed_workers": 0,
+                    "failed_workers": 0,
+                },
+            )
+        if method == "GET" and path == "/api/benchmarks/model-probe":
+            return httpx.Response(200, json={"runs": []})
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/worker-tests/start",
+            data={
+                "probe_goal": "README-Mini-Fix im Wegwerf-Repo pruefen.",
+                "probe_mode": "micro_fix",
+                "selected_workers": ["coding"],
+                "focus_paths_text": "README.md",
             },
             follow_redirects=False,
         )

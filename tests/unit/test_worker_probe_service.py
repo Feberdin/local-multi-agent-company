@@ -13,10 +13,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.llm import LLMError
-from services.shared.agentic_lab.schemas import WorkerProbeMode, WorkerProbeRunStatus, WorkerProbeStartRequest
-from services.shared.agentic_lab.worker_probe_service import PROBE_WORKERS, WorkerProbeService
+from services.shared.agentic_lab.schemas import (
+    WorkerProbeMode,
+    WorkerProbeResultResponse,
+    WorkerProbeRunStatus,
+    WorkerProbeStartRequest,
+)
+from services.shared.agentic_lab.worker_probe_service import PROBE_WORKERS, WorkerProbeError, WorkerProbeService
 
 
 class _FakeLLM:
@@ -290,3 +297,75 @@ async def test_worker_probe_service_marks_running_runs_as_failed_on_resume(tmp_p
     assert recovered.status == WorkerProbeRunStatus.FAILED
     assert recovered.active_worker_name is None
     assert "unterbrochen" in recovered.errors[-1]
+
+
+async def test_worker_probe_service_defaults_micro_fix_to_coding(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    service = WorkerProbeService(settings=settings, llm=_FakeLLM(), storage_path=storage_path)
+
+    run = await service.start_run(
+        WorkerProbeStartRequest(
+            probe_goal="README-Mini-Fix im Wegwerf-Repo pruefen.",
+            probe_mode=WorkerProbeMode.MICRO_FIX,
+        )
+    )
+
+    assert run.probe_mode is WorkerProbeMode.MICRO_FIX
+    assert run.selected_workers == ["coding"]
+    assert run.focus_paths == ["README.md"]
+    assert run.total_workers == 1
+
+
+async def test_worker_probe_service_rejects_micro_fix_for_non_coding_workers(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    service = WorkerProbeService(settings=settings, llm=_FakeLLM(), storage_path=storage_path)
+
+    with pytest.raises(WorkerProbeError, match="nur fuer den Worker `coding`"):
+        await service.start_run(
+            WorkerProbeStartRequest(
+                probe_goal="README-Mini-Fix mit dem falschen Worker pruefen.",
+                probe_mode=WorkerProbeMode.MICRO_FIX,
+                selected_workers=["research"],
+            )
+        )
+
+
+async def test_worker_probe_service_executes_micro_fix_probe_via_dedicated_helper(tmp_path, monkeypatch) -> None:
+    settings = _prepare_settings(tmp_path, monkeypatch)
+    storage_path = Path(settings.data_dir) / "worker_probe_runs.json"
+    service = WorkerProbeService(settings=settings, llm=_FakeLLM(), storage_path=storage_path)
+
+    async def fake_micro_fix_probe(*, run_id: str, worker_name: str) -> WorkerProbeResultResponse:
+        assert run_id
+        assert worker_name == "coding"
+        return WorkerProbeResultResponse(
+            worker_name="coding",
+            worker_label="Code",
+            status="ok",
+            output_contract="live_patch",
+            response_format="json",
+            summary="README-Mini-Fix erfolgreich.",
+            response_text='{"after_first_line":":) Probe README"}',
+            response_data={"after_first_line": ":) Probe README"},
+            provider="coding-worker",
+            model_name="scratch-repo",
+            base_url=settings.coding_worker_url,
+        )
+
+    monkeypatch.setattr(service, "_run_coding_micro_fix_probe", fake_micro_fix_probe)
+
+    run = await service.start_run(
+        WorkerProbeStartRequest(
+            probe_goal="README-Mini-Fix im Wegwerf-Repo pruefen.",
+            probe_mode=WorkerProbeMode.MICRO_FIX,
+        )
+    )
+    finished = await service.execute_run(run.id)
+
+    assert finished.status == WorkerProbeRunStatus.COMPLETED
+    assert finished.completed_workers == 1
+    assert finished.failed_workers == 0
+    assert finished.results[0].output_contract == "live_patch"
+    assert finished.results[0].summary == "README-Mini-Fix erfolgreich."
