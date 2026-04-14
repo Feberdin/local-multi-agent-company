@@ -90,6 +90,10 @@ _GENERIC_EMPTY_PLAN_PATTERNS = (
     "keine spezifischen anforderungen",
     "keine konkrete codeanderung",
     "keine konkreten codeanderungen",
+    "kein konkreter codeanderungsauftrag",
+    "kein konkreter code-anderungsauftrag",
+    "keine code-operationen moglich",
+    "keine datei-operationen moglich",
     "keine ziel datei",
     "keine zieldatei",
     "keine ziel-datei",
@@ -154,14 +158,102 @@ def normalize_raw_operation(raw: dict) -> dict:
       - missing 'action' → 'create_or_update'
     """
     out = dict(raw)
+
+    # Why this exists:
+    # Local models often return "almost right" edit operations that use field
+    # aliases (`file`, `description`, `new_code`) or nest the target location in
+    # one `location` object. Normalizing those shapes here keeps the shared
+    # contract validator and the coding worker aligned, so a nearly-correct
+    # fallback reply becomes one real edit instead of another full worker retry.
     if "content" in out and "new_content" not in out:
         out["new_content"] = out.pop("content")
+    for alias in ("new_code", "replacement", "replacement_text", "code", "body", "text"):
+        if alias in out and "new_content" not in out and isinstance(out.get(alias), str):
+            out["new_content"] = out.pop(alias)
+            break
+
     if "path" in out and "file_path" not in out:
         out["file_path"] = out.pop("path")
-    out.setdefault("action", EditAction.CREATE_OR_UPDATE.value)
+    for alias in ("file", "filepath", "target_file"):
+        if alias in out and "file_path" not in out and isinstance(out.get(alias), str):
+            out["file_path"] = out.pop(alias)
+            break
+
+    for alias in ("description", "details", "explanation", "why"):
+        if alias in out and "reason" not in out and isinstance(out.get(alias), str):
+            out["reason"] = out.pop(alias)
+            break
+
+    _apply_location_aliases(out)
+    _normalize_action_aliases(out)
+    out.setdefault("action", _infer_operation_action(out))
     # Drop keys not in the model to avoid Pydantic extra-field errors
     valid = set(EditOperation.model_fields)
     return {k: v for k, v in out.items() if k in valid}
+
+
+def normalize_edit_plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize near-valid edit-plan payloads into the canonical shared contract.
+
+    Example:
+      Input:
+        {
+          "summary": "Add clone error handling",
+          "operations": [
+            {
+              "file": "services/shared/agentic_lab/repo_tools.py",
+              "changes": [
+                {
+                  "location": {"type": "function", "name": "_clone_target_from_best_source"},
+                  "new_code": "def _clone_target_from_best_source(...):\\n    ...",
+                  "description": "Wrap the clone call with clearer error handling."
+                }
+              ]
+            }
+          ]
+        }
+      Output:
+        {
+          "summary": "Add clone error handling",
+          "operations": [
+            {
+              "action": "replace_symbol_body",
+              "file_path": "services/shared/agentic_lab/repo_tools.py",
+              "symbol_name": "_clone_target_from_best_source",
+              "reason": "Wrap the clone call with clearer error handling.",
+              "new_content": "def _clone_target_from_best_source(...):\\n    ..."
+            }
+          ]
+        }
+    """
+
+    normalized = dict(payload)
+
+    if "summary" not in normalized or not isinstance(normalized.get("summary"), str) or not normalized["summary"].strip():
+        for alias in ("plan_summary", "title", "description"):
+            candidate = normalized.get(alias)
+            if isinstance(candidate, str) and candidate.strip():
+                normalized["summary"] = candidate.strip()
+                break
+
+    operations = normalized.get("operations")
+    if not isinstance(operations, list) and isinstance(normalized.get("changes"), list):
+        operations = normalized.get("changes")
+
+    if isinstance(operations, list):
+        normalized["operations"] = expand_raw_operations(operations)
+
+    return normalized
+
+
+def expand_raw_operations(raw_operations: list[Any]) -> list[dict[str, Any]]:
+    """Flatten nested operation containers into the canonical flat edit-plan list."""
+
+    expanded: list[dict[str, Any]] = []
+    for raw in raw_operations:
+        expanded.extend(_expand_one_raw_operation(raw))
+    return expanded
 
 
 def validate_raw_operation(raw: Any, *, index: int | None = None) -> str | None:
@@ -202,6 +294,7 @@ def validate_raw_operation(raw: Any, *, index: int | None = None) -> str | None:
 def validate_edit_plan_payload(payload: dict[str, Any]) -> str | None:
     """Validate the semantic shape of an edit plan before the coding worker applies it."""
 
+    payload = normalize_edit_plan_payload(payload)
     operations = payload.get("operations")
     if not isinstance(operations, list):
         return "The `operations` field must be a list for the edit_plan contract."
@@ -257,3 +350,125 @@ def _normalize_text_for_pattern_match(text: str) -> str:
     ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
     collapsed = re.sub(r"\s+", " ", ascii_only).strip().lower()
     return collapsed
+
+
+def _expand_one_raw_operation(raw: Any) -> list[dict[str, Any]]:
+    """Expand one raw operation or one nested operation container into flat edit operations."""
+
+    if not isinstance(raw, dict):
+        return [raw]
+
+    nested_changes = raw.get("changes")
+    if not isinstance(nested_changes, list) or raw.get("action"):
+        return [normalize_raw_operation(raw)]
+
+    defaults: dict[str, Any] = {}
+    for source_key, target_key in (
+        ("file_path", "file_path"),
+        ("file", "file_path"),
+        ("path", "file_path"),
+        ("reason", "reason"),
+        ("description", "reason"),
+        ("details", "reason"),
+    ):
+        value = raw.get(source_key)
+        if isinstance(value, str) and value.strip() and target_key not in defaults:
+            defaults[target_key] = value.strip()
+
+    expanded: list[dict[str, Any]] = []
+    for change in nested_changes:
+        if not isinstance(change, dict):
+            continue
+        merged = dict(defaults)
+        merged.update(change)
+        expanded.append(normalize_raw_operation(merged))
+
+    return expanded or [normalize_raw_operation(raw)]
+
+
+def _apply_location_aliases(payload: dict[str, Any]) -> None:
+    """Map one nested `location` object into flat edit-plan fields when present."""
+
+    location = payload.pop("location", None)
+    if not isinstance(location, dict):
+        return
+
+    for alias in ("file_path", "file", "path"):
+        value = location.get(alias)
+        if isinstance(value, str) and value.strip() and "file_path" not in payload:
+            payload["file_path"] = value.strip()
+            break
+
+    location_type = str(location.get("type") or "").strip().lower()
+    location_name = str(location.get("name") or location.get("symbol") or "").strip()
+    if location_name and "symbol_name" not in payload and location_type in {"function", "method", "class", "symbol"}:
+        payload["symbol_name"] = location_name
+        parent_symbol = location.get("parent_symbol") or location.get("parent") or location.get("class_name")
+        if isinstance(parent_symbol, str) and parent_symbol.strip():
+            payload["parent_symbol"] = parent_symbol.strip()
+
+    start_line = _as_positive_int(
+        location.get("start_line") or location.get("line_start") or location.get("start")
+    )
+    end_line = _as_positive_int(
+        location.get("end_line") or location.get("line_end") or location.get("end")
+    )
+    if start_line is not None and "start_line" not in payload:
+        payload["start_line"] = start_line
+    if end_line is not None and "end_line" not in payload:
+        payload["end_line"] = end_line
+
+    anchor_text = location.get("anchor_text") or location.get("anchor") or location.get("snippet")
+    if isinstance(anchor_text, str) and anchor_text.strip() and "anchor_text" not in payload:
+        payload["anchor_text"] = anchor_text
+
+
+def _normalize_action_aliases(payload: dict[str, Any]) -> None:
+    """Map loose action names from local models onto the canonical edit action set."""
+
+    raw_action = str(payload.get("action") or "").strip().lower()
+    if not raw_action:
+        return
+
+    action_aliases = {
+        "update": EditAction.CREATE_OR_UPDATE.value,
+        "modify": EditAction.CREATE_OR_UPDATE.value,
+        "edit": EditAction.CREATE_OR_UPDATE.value,
+        "rewrite": EditAction.CREATE_OR_UPDATE.value,
+    }
+    if raw_action in action_aliases:
+        payload["action"] = action_aliases[raw_action]
+        return
+
+    if raw_action == "validate":
+        payload.pop("action", None)
+
+
+def _infer_operation_action(payload: dict[str, Any]) -> str:
+    """Choose the most specific canonical action that matches the normalized fields."""
+
+    existing_action = payload.get("action")
+    if isinstance(existing_action, str) and existing_action.strip():
+        return existing_action.strip()
+    if isinstance(payload.get("symbol_name"), str) and isinstance(payload.get("new_content"), str):
+        return EditAction.REPLACE_SYMBOL_BODY.value
+    if (
+        isinstance(payload.get("start_line"), int)
+        and isinstance(payload.get("end_line"), int)
+        and isinstance(payload.get("new_content"), str)
+    ):
+        return EditAction.REPLACE_LINES.value
+    if isinstance(payload.get("anchor_text"), str) and isinstance(payload.get("new_content"), str):
+        return EditAction.REPLACE_BLOCK.value
+    return EditAction.CREATE_OR_UPDATE.value
+
+
+def _as_positive_int(value: Any) -> int | None:
+    """Convert one loose line number field into a usable positive integer."""
+
+    if isinstance(value, int):
+        return value if value >= 1 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed >= 1 else None
+    return None

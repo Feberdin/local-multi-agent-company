@@ -634,23 +634,30 @@ def test_coding_user_prompt_renders_candidate_scope_as_readable_targets(
         {"touched_areas": ["services/shared/agentic_lab/repo_tools.py"]},
         {"candidate_files": ["services/shared/agentic_lab/repo_tools.py"]},
         {"file_count": 2},
-        {
-            "services/shared/agentic_lab/repo_tools.py": (
-                "# services/shared/agentic_lab/repo_tools.py\n"
-                "[lines 271-275]\n"
-                "0271:     run_command(\n"
-                "0272:         [\"git\", \"clone\", \"--branch\", base_branch, \"--single-branch\", clone_source, str(repo_path)],\n"
-                "0273:         env=clone_env,\n"
-                "0274:         timeout=900,\n"
-                "0275:     )\n"
-            )
-        },
+            {
+                "services/shared/agentic_lab/repo_tools.py": (
+                    "# services/shared/agentic_lab/repo_tools.py\n"
+                    "[lines 250-275]\n"
+                    "0250: def _clone_target_from_best_source(\n"
+                    "0251:     *,\n"
+                    "0252:     repository: str,\n"
+                    "0253:     repo_path: Path,\n"
+                    "0254: ) -> None:\n"
+                    "0271:     run_command(\n"
+                    "0272:         [\"git\", \"clone\", \"--branch\", base_branch, \"--single-branch\", clone_source, str(repo_path)],\n"
+                    "0273:         env=clone_env,\n"
+                    "0274:         timeout=900,\n"
+                    "0275:     )\n"
+                    "0280: def ensure_repository_checkout(\n"
+                )
+            },
         "Symbol index:\n- services/shared/agentic_lab/repo_tools.py:271 _clone_target_from_best_source",
         ["services/shared/agentic_lab/repo_tools.py", "services/coding_worker/app.py"],
     )
 
     assert "Likely implementation targets:" in prompt
     assert "- services/shared/agentic_lab/repo_tools.py" in prompt
+    assert "Relevant symbols: _clone_target_from_best_source, ensure_repository_checkout." in prompt
     assert "Candidate file contents:\n# services/shared/agentic_lab/repo_tools.py" in prompt
     assert 'Candidate files:\n- services/shared/agentic_lab/repo_tools.py\n- services/coding_worker/app.py' in prompt
     assert "Do not claim that no target file was provided when candidate files are listed above." in prompt
@@ -845,6 +852,80 @@ async def test_local_patch_backend_retries_after_empty_operation_plan(
     assert response.success is True
     assert call_counter["qwen"] == 2
     assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith('return "retried-value"\n')
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_recovers_from_nested_change_container_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            content = '{"summary":"Kein konkreter Code-Änderungsauftrag erkannt.","operations":[]}'
+        else:
+            call_counter["mistral"] += 1
+            content = (
+                '{"summary":"Recover from nested change container.",'
+                '"operations":['
+                '{'
+                '"file":"worker_target.py",'
+                '"changes":['
+                '{'
+                '"location":{"type":"function","name":"target_function"},'
+                '"new_code":"def target_function():\\n    return \\"nested-shape-recovered\\"\\n",'
+                '"description":"Flatten the nested repair shape into one real edit operation."'
+                '}'
+                ']'
+                '}'
+                ']}'
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", LLMClient(settings, transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    request = WorkerRequest(
+        task_id="task-nested-change-shape",
+        goal="Add error handling to the git clone command in the local patch backend",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(repo_path),
+        base_branch="main",
+        branch_name="feature/test-nested-change-shape",
+        metadata={},
+        prior_results={
+            "requirements": {"outputs": {"requirements": ["Implement clone error handling."]}},
+            "architecture": {"outputs": {"touched_areas": ["worker_target.py"]}},
+            "research": {"outputs": {"candidate_files": ["worker_target.py"]}},
+        },
+    )
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        request,
+        repo_path,
+        "feature/test-nested-change-shape",
+    )
+
+    assert response.success is True
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+    assert (repo_path / "worker_target.py").read_text(encoding="utf-8").endswith(
+        'return "nested-shape-recovered"\n'
+    )
 
 
 @pytest.mark.asyncio

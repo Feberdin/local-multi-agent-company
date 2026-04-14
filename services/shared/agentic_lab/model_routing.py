@@ -112,8 +112,8 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             routing_note="Bevorzugt robusten, strikt parsebaren JSON-Output fuer Anforderungen.",
         ),
         "research": _route(
-            reasoning_provider,
-            secondary_reasoning_provider,
+            structured_provider,
+            secondary_structured_provider,
             temperature=0.1,
             max_tokens=2200,
             budget_tokens=9000,
@@ -121,11 +121,14 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             reasoning="high",
             purpose="Repository and optional web research.",
             output_contract="text",
-            routing_note="Bevorzugt staerkere semantische Analyse fuer Repo-Kontext und Quellen.",
+            routing_note=(
+                "Bevorzugt den stabileren lokalen Text-Output fuer Repo-Kontext und Quellen; "
+                "Qwen bleibt als semantischer Fallback verfuegbar."
+            ),
         ),
         "architecture": _route(
-            reasoning_provider,
-            secondary_reasoning_provider,
+            structured_provider,
+            secondary_structured_provider,
             temperature=0.1,
             max_tokens=2200,
             budget_tokens=9000,
@@ -133,16 +136,18 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             reasoning="high",
             purpose="Architecture, interfaces, deployment design, and implementation plan.",
             output_contract="json",
-            routing_note="Bevorzugt tieferes Architekturdenken, toleriert aber strukturierten Fallback.",
+            routing_note=(
+                "Bevorzugt den robusteren strukturierten JSON-Pfad fuer Architekturplaene; "
+                "Qwen bleibt als semantischer Fallback verfuegbar."
+            ),
         ),
-        # Coding edit-plan generation needs both strict JSON and enough semantic
-        # depth to turn a terse goal plus a few candidate files into one real
-        # patch. In recent local runs qwen has been more reliable at avoiding
-        # generic no-op plans, so coding now prefers the stronger reasoning
-        # model and keeps the more conservative structured model as fallback.
+        # Coding edit-plan generation has repeatedly failed harder when the
+        # primary model returned empty content or near-valid but non-canonical
+        # JSON. We therefore optimize defaults for the more stable structured
+        # model first and keep the reasoning-heavy model only as fallback.
         "coding": _route(
-            reasoning_provider,
-            secondary_reasoning_provider,
+            structured_provider,
+            secondary_structured_provider,
             temperature=0.05,
             max_tokens=2600,
             budget_tokens=12000,
@@ -151,8 +156,8 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             purpose="Code generation and safe file updates.",
             output_contract="edit_plan",
             routing_note=(
-                "Bevorzugt das semantisch staerkere Modell fuer konkrete Patch-Entscheidungen; "
-                "Fallback bleibt auf dem robusten JSON-Modell."
+                "Bevorzugt das robustere JSON-Modell fuer konkrete Patch-Entscheidungen; "
+                "Qwen bleibt fuer semantisch schwierige Faelle als Fallback verfuegbar."
             ),
         ),
         "rollback": _route(

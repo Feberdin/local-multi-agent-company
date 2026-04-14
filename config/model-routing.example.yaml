@@ -2,7 +2,8 @@
 # Input/Output: The shared LLM client reads this file to map worker roles to concrete local models, timeouts, and output contracts.
 # Invariants:
 #   - Strukturierte Worker bevorzugen standardmaessig Mistral fuer robustere parsebare Antworten.
-#   - Coding, Research und Architecture duerfen bevorzugt Qwen nutzen, wenn semantische Tiefe fuer die Aufgabe wichtiger ist.
+#   - Bei laengeren echten Laeufen haben Research, Architecture und Coding stabiler mit Mistral als Primärmodell reagiert.
+#   - Qwen bleibt fuer semantisch schwierige Faelle als expliziter Fallback erhalten.
 #   - Fallbacks bleiben explizit und nachvollziehbar statt still implizit.
 # Debugging:
 #   - Wenn ein Worker das falsche Modell nutzt, pruefe zuerst diesen Eintrag und danach die gesetzten Provider-ENV-Werte.
@@ -43,26 +44,26 @@ workers:
     routing_note: Bevorzugt klare Worker-Empfehlungen und Rollenlisten im sauberen Format.
 
   research:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
     request_timeout_seconds: 1800
     reasoning: high
     output_contract: text
-    routing_note: Bevorzugt staerkere semantische Analyse fuer Repo-Kontext und Quellen.
+    routing_note: Bevorzugt den stabileren lokalen Text-Output fuer Repo-Kontext und Quellen; Qwen bleibt als semantischer Fallback verfuegbar.
 
   architecture:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.1
     max_tokens: 2200
     budget_tokens: 9000
     request_timeout_seconds: 1800
     reasoning: high
     output_contract: json
-    routing_note: Bevorzugt tieferes Architekturdenken, toleriert aber strukturierten Fallback.
+    routing_note: Bevorzugt den robusteren strukturierten JSON-Pfad fuer Architekturplaene; Qwen bleibt als semantischer Fallback verfuegbar.
 
   data:
     primary_provider: mistral
@@ -87,15 +88,15 @@ workers:
     routing_note: Bevorzugt staerkere semantische UX-Bewertung, behaelt aber einen strukturierten Fallback.
 
   coding:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
     temperature: 0.05
     max_tokens: 2600
     budget_tokens: 12000
     request_timeout_seconds: 1800
     reasoning: medium
     output_contract: edit_plan
-    routing_note: Bevorzugt das semantisch staerkere Modell fuer konkrete Patch-Entscheidungen; Fallback bleibt auf dem robusten JSON-Modell.
+    routing_note: Bevorzugt das robustere JSON-Modell fuer konkrete Patch-Entscheidungen; Qwen bleibt fuer semantisch schwierige Faelle als Fallback verfuegbar.
 
   rollback:
     primary_provider: mistral

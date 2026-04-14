@@ -497,6 +497,9 @@ def _coding_system_prompt(guidance_block: str) -> str:
         '   {"action":"create_or_update","file_path":"p.py","new_content":"full file","reason":"..."}\n'
         "RULE: prefer replace_symbol_body for Python changes. "
         "Use create_or_update only as last resort.\n"
+        "Each item inside `operations` must be one flat operation object. "
+        "Do not wrap edits inside shapes like `{\"file\":\"...\",\"changes\":[...]}`. "
+        "Do not invent action names such as `validate`, `review`, or `analyze`.\n"
         "If the goal explicitly asks to add, fix, implement, update, change, or handle code, "
         "you must return at least one concrete file operation whenever the provided candidate files make a safe "
         "change possible.\n"
@@ -746,7 +749,10 @@ def _build_target_focus_block(
     lines = ["Likely implementation targets:"]
     for hint in hints:
         matched_terms = ", ".join(hint["matched_terms"]) or "excerpt available"
-        lines.append(f"- {hint['file_path']}: {hint['reason']} Matched terms: {matched_terms}.")
+        symbol_suffix = ""
+        if hint["symbols"]:
+            symbol_suffix = " Relevant symbols: " + ", ".join(hint["symbols"]) + "."
+        lines.append(f"- {hint['file_path']}: {hint['reason']} Matched terms: {matched_terms}.{symbol_suffix}")
     lines.append("Start with the highest-ranked target unless another listed file is clearly safer.")
     return "\n".join(lines)
 
@@ -772,6 +778,8 @@ def _derive_target_focus_hints(
             score += 4
         if "ensure_repository_checkout" in matched_terms:
             score += 3
+        if "_clone_target_from_best_source" in matched_terms:
+            score += 3
         if "run_command" in matched_terms:
             score += 2
         if score == 0 and excerpt:
@@ -783,11 +791,15 @@ def _derive_target_focus_hints(
             reason = "This file already contains the clone path that the goal talks about."
         elif "ensure_repository_checkout" in matched_terms:
             reason = "This file contains the checkout helper that likely owns the change."
+        elif "_clone_target_from_best_source" in matched_terms:
+            reason = "This file contains the helper that directly performs the clone command."
+        symbol_candidates = _extract_focus_symbols_from_excerpt(excerpt)
         hints.append(
             {
                 "file_path": path,
                 "matched_terms": matched_terms,
                 "reason": reason,
+                "symbols": symbol_candidates[:4],
                 "score": score,
                 "order": index,
             }
@@ -982,6 +994,20 @@ def _merge_line_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]
         else:
             merged.append((start, end))
     return merged
+
+
+def _extract_focus_symbols_from_excerpt(excerpt: str) -> list[str]:
+    """Extract a few likely symbol names from one file excerpt for stronger coding target hints."""
+
+    symbol_matches = re.findall(r"^\d+:\s*(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)", excerpt, flags=re.MULTILINE)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for symbol in symbol_matches:
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        ordered.append(symbol)
+    return ordered
 
 
 def _normalize_prompt_search_text(text: str) -> str:

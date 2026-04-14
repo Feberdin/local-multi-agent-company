@@ -42,11 +42,11 @@ model_preferences:
     primary_provider: mistral
     fallback_provider: qwen
   architecture:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
   research:
-    primary_provider: qwen
-    fallback_provider: mistral
+    primary_provider: mistral
+    fallback_provider: qwen
   validation:
     primary_provider: mistral
     fallback_provider: qwen

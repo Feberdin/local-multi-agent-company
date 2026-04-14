@@ -329,6 +329,75 @@ async def test_complete_json_falls_back_when_edit_plan_operations_are_semantical
 
 
 @pytest.mark.asyncio
+async def test_complete_json_normalizes_nested_change_operations_from_fallback_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider: mistral\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    call_counter = {"qwen": 0, "mistral": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "qwen.test" in str(request.url):
+            call_counter["qwen"] += 1
+            content = '{"summary":"Kein konkreter Code-Änderungsauftrag erkannt.","operations":[]}'
+        else:
+            call_counter["mistral"] += 1
+            content = (
+                '{"summary":"Recover from nested repair output.",'
+                '"operations":['
+                '{'
+                '"file":"worker_target.py",'
+                '"changes":['
+                '{'
+                '"location":{"type":"function","name":"target_function"},'
+                '"new_code":"def target_function():\\n    return \\"normalized-change-ops\\"\\n",'
+                '"description":"Flatten one nested change object into one canonical edit operation."'
+                '}'
+                ']'
+                '}'
+                ']}'
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    response = await client.complete_json(
+        "system",
+        "user",
+        worker_name="coding",
+        required_keys=["summary", "operations"],
+    )
+
+    assert response["summary"] == "Recover from nested repair output."
+    assert response["operations"] == [
+        {
+            "action": "replace_symbol_body",
+            "file_path": "worker_target.py",
+            "reason": "Flatten one nested change object into one canonical edit operation.",
+            "new_content": 'def target_function():\n    return "normalized-change-ops"\n',
+            "symbol_name": "target_function",
+        }
+    ]
+    assert call_counter["qwen"] == 2
+    assert call_counter["mistral"] == 1
+
+
+@pytest.mark.asyncio
 async def test_complete_json_falls_back_when_edit_plan_returns_generic_empty_blocker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

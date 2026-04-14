@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from services.shared.agentic_lab.config import Settings
-from services.shared.agentic_lab.edit_ops import validate_edit_plan_payload
+from services.shared.agentic_lab.edit_ops import normalize_edit_plan_payload, validate_edit_plan_payload
 from services.shared.agentic_lab.guardrails import sanitize_untrusted_text
 from services.shared.agentic_lab.model_routing import (
     ModelProvider,
@@ -97,6 +97,14 @@ class LLMClient:
             return validate_edit_plan_payload(payload)
 
         return None
+
+    @staticmethod
+    def _normalize_json_payload(payload: dict[str, Any], *, output_contract: str) -> dict[str, Any]:
+        """Normalize near-valid structured payloads so fallbacks can recover from common local-model quirks."""
+
+        if output_contract == "edit_plan":
+            return normalize_edit_plan_payload(payload)
+        return payload
 
     @staticmethod
     def _content_to_text(value: Any) -> str:
@@ -528,15 +536,17 @@ class LLMClient:
                 continue
 
             result = self._extract_json(raw)
+            normalized_result = None
             validation_error = None
             if result is not None:
+                normalized_result = self._normalize_json_payload(result, output_contract=route.output_contract)
                 validation_error = self._validate_json_contract(
-                    result,
+                    normalized_result,
                     output_contract=route.output_contract,
                     required_keys=required_key_tuple,
                 )
-            if result is not None and validation_error is None:
-                return result, {
+            if normalized_result is not None and validation_error is None:
+                return normalized_result, {
                     "provider": candidate.name,
                     "model_name": candidate.model_name,
                     "base_url": candidate.base_url,
@@ -605,15 +615,17 @@ class LLMClient:
                 continue
 
             result = self._extract_json(retry_raw)
+            normalized_result = None
             validation_error = None
             if result is not None:
+                normalized_result = self._normalize_json_payload(result, output_contract=route.output_contract)
                 validation_error = self._validate_json_contract(
-                    result,
+                    normalized_result,
                     output_contract=route.output_contract,
                     required_keys=required_key_tuple,
                 )
-            if result is not None and validation_error is None:
-                return result, {
+            if normalized_result is not None and validation_error is None:
+                return normalized_result, {
                     "provider": candidate.name,
                     "model_name": candidate.model_name,
                     "base_url": candidate.base_url,
