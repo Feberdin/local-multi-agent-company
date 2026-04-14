@@ -193,6 +193,50 @@ async def test_complete_json_falls_back_when_primary_provider_returns_non_json_t
 
 
 @pytest.mark.asyncio
+async def test_complete_json_failure_carries_trace_metadata_for_probe_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: mistral\n"
+            "    fallback_provider: qwen\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "mistral.test" in str(request.url):
+            content = '{"summary":"Broken primary plan","operations":[{"action":"create_or_update"}]}'
+        else:
+            content = '{"summary":"Broken fallback plan","operations":[{"action":"validate","file_path":"worker_target.py"}]}'
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(LLMError) as exc_info:
+        await client.complete_json(
+            "system",
+            "user",
+            worker_name="coding",
+            required_keys=["summary", "operations"],
+        )
+
+    assert exc_info.value.trace["provider"] == "qwen"
+    assert exc_info.value.trace["model_name"] == "qwen3.5:35b-a3b"
+    assert exc_info.value.trace["used_fallback"] is True
+    assert exc_info.value.trace["repair_pass_used"] is True
+
+
+@pytest.mark.asyncio
 async def test_complete_json_accepts_ollama_generate_style_response_field(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

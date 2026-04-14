@@ -365,6 +365,7 @@ class WorkerProbeService:
         except LLMError as exc:
             completed_at = _utc_now()
             error_text = str(exc)
+            trace = getattr(exc, "trace", {}) or {}
             return WorkerProbeResultResponse(
                 worker_name=worker_name,
                 worker_label=PROBE_WORKER_LABELS.get(worker_name, worker_name),
@@ -373,11 +374,13 @@ class WorkerProbeService:
                 response_format=definition.response_format,
                 summary="Keine nutzbare Modellantwort erhalten.",
                 response_text=error_text,
-                provider=primary_provider.name,
-                model_name=primary_provider.model_name,
-                base_url=primary_provider.base_url,
-                used_fallback=bool(fallback_provider and f"`{fallback_provider.name}`" in error_text),
-                repair_pass_used="JSON-repair attempt" in error_text,
+                provider=str(trace.get("provider") or primary_provider.name),
+                model_name=str(trace.get("model_name") or primary_provider.model_name),
+                base_url=str(trace.get("base_url") or primary_provider.base_url),
+                used_fallback=bool(trace.get("used_fallback")) or bool(
+                    fallback_provider and f"`{fallback_provider.name}`" in error_text
+                ),
+                repair_pass_used=bool(trace.get("repair_pass_used")) or "JSON-repair attempt" in error_text,
                 started_at=started_at,
                 completed_at=completed_at,
                 elapsed_seconds=round((completed_at - started_at).total_seconds(), 1),

@@ -31,6 +31,10 @@ LOGGER = logging.getLogger(__name__)
 class LLMError(RuntimeError):
     """Raised when an LLM call or response format is unusable."""
 
+    def __init__(self, message: str, *, trace: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.trace = trace or {}
+
 
 class LLMClient:
     """Small wrapper around an OpenAI-compatible chat completions endpoint."""
@@ -72,6 +76,28 @@ class LLMClient:
         if len(compact) <= max_length:
             return compact
         return compact[: max_length - 1].rstrip() + "…"
+
+    @staticmethod
+    def _failure_trace(
+        *,
+        provider: ModelProvider | None,
+        route: WorkerModelRoute | None = None,
+        used_fallback: bool,
+        repair_pass_used: bool,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        """Build one consistent diagnostics payload for failing structured and text calls."""
+
+        return {
+            "provider": provider.name if provider else "",
+            "model_name": provider.model_name if provider else "",
+            "base_url": provider.base_url if provider else "",
+            "used_fallback": used_fallback,
+            "repair_pass_used": repair_pass_used,
+            "output_contract": route.output_contract if route else "",
+            "request_timeout_seconds": route.request_timeout_seconds if route else 0,
+            "max_tokens": max_tokens,
+        }
 
     @staticmethod
     def _missing_required_json_keys(payload: dict[str, Any], required_keys: tuple[str, ...]) -> list[str]:
@@ -408,6 +434,13 @@ class LLMClient:
 
         errors: list[str] = []
         candidates = self._provider_candidates(provider, fallback_provider)
+        last_error_trace = self._failure_trace(
+            provider=provider,
+            route=route,
+            used_fallback=False,
+            repair_pass_used=False,
+            max_tokens=request_max_tokens,
+        )
         for index, candidate in enumerate(candidates):
             try:
                 text = await self._complete_with_provider(
@@ -431,6 +464,17 @@ class LLMClient:
                 }
             except LLMError as exc:
                 errors.append(str(exc))
+                last_error_trace = {
+                    **last_error_trace,
+                    **self._failure_trace(
+                        provider=candidate,
+                        route=route,
+                        used_fallback=index > 0,
+                        repair_pass_used=False,
+                        max_tokens=request_max_tokens,
+                    ),
+                    **getattr(exc, "trace", {}),
+                }
                 next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
                 if next_candidate is not None:
                     LOGGER.warning(
@@ -443,7 +487,8 @@ class LLMClient:
 
         raise LLMError(
             "All configured model providers failed for "
-            f"`{worker_name}`. " + " | ".join(errors)
+            f"`{worker_name}`. " + " | ".join(errors),
+            trace=last_error_trace,
         )
 
     async def complete_json(
@@ -509,6 +554,13 @@ class LLMClient:
         candidates = self._provider_candidates(provider, fallback_provider)
         required_key_tuple = tuple(required_keys or ())
         request_max_tokens = max_tokens if max_tokens is not None else route.max_tokens
+        last_error_trace = self._failure_trace(
+            provider=provider,
+            route=route,
+            used_fallback=False,
+            repair_pass_used=False,
+            max_tokens=request_max_tokens,
+        )
 
         for index, candidate in enumerate(candidates):
             try:
@@ -524,6 +576,17 @@ class LLMClient:
                 )
             except LLMError as exc:
                 errors.append(str(exc))
+                last_error_trace = {
+                    **last_error_trace,
+                    **self._failure_trace(
+                        provider=candidate,
+                        route=route,
+                        used_fallback=index > 0,
+                        repair_pass_used=False,
+                        max_tokens=request_max_tokens,
+                    ),
+                    **getattr(exc, "trace", {}),
+                }
                 next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
                 if next_candidate is not None:
                     LOGGER.warning(
@@ -612,6 +675,17 @@ class LLMClient:
                 )
             except LLMError as exc:
                 errors.append(str(exc))
+                last_error_trace = {
+                    **last_error_trace,
+                    **self._failure_trace(
+                        provider=candidate,
+                        route=route,
+                        used_fallback=index > 0,
+                        repair_pass_used=True,
+                        max_tokens=request_max_tokens,
+                    ),
+                    **getattr(exc, "trace", {}),
+                }
                 continue
 
             result = self._extract_json(retry_raw)
@@ -654,9 +728,17 @@ class LLMClient:
                     else self._response_preview(retry_raw)
                 )
             )
+            last_error_trace = self._failure_trace(
+                provider=candidate,
+                route=route,
+                used_fallback=index > 0,
+                repair_pass_used=True,
+                max_tokens=request_max_tokens,
+            )
 
         raise LLMError(
-            f"Model did not return valid JSON for `{worker_name}`. " + " | ".join(errors)
+            f"Model did not return valid JSON for `{worker_name}`. " + " | ".join(errors),
+            trace=last_error_trace,
         )
 
     @staticmethod

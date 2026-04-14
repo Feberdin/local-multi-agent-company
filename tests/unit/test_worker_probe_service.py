@@ -235,7 +235,14 @@ class _FailingLLM:
         raise LLMError(
             "Model did not return valid JSON for `coding`. "
             "Provider `mistral` with model `mistral-small3.2:latest` returned JSON that did not satisfy the `edit_plan` contract. "
-            "Provider `mistral` JSON-repair attempt still returned no valid JSON."
+            "Provider `qwen` JSON-repair attempt still returned no valid JSON.",
+            trace={
+                "provider": "qwen",
+                "model_name": "qwen3.5:35b-a3b",
+                "base_url": "http://qwen.local/v1",
+                "used_fallback": True,
+                "repair_pass_used": True,
+            },
         )
 
     async def complete_with_trace(self, **kwargs):
@@ -262,6 +269,8 @@ async def test_worker_probe_service_surfaces_fallback_and_repair_details_on_fail
     assert result.status == "failed"
     assert result.used_fallback is True
     assert result.repair_pass_used is True
+    assert result.provider == "qwen"
+    assert result.model_name == "qwen3.5:35b-a3b"
     assert "JSON-repair attempt" in result.response_text
 
 
