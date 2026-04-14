@@ -94,6 +94,7 @@ class TaskService:
                 self.settings.effective_task_workspace_root,
             )
             branch_name = create_branch_name(request.goal, task_id)
+            operator_label = str(request.metadata.get("worker_project_label") or WORKER_PROJECT_LABEL)
             record = TaskRecord(
                 id=task_id,
                 goal=request.goal,
@@ -119,7 +120,7 @@ class TaskService:
                     "task_workspace_path": str(task_workspace_path),
                     "workspace_strategy": "task_isolated_checkout",
                     "worker_progress": {},
-                    "worker_project_label": WORKER_PROJECT_LABEL,
+                    "worker_project_label": operator_label,
                     "auto_deploy_staging": (
                         request.auto_deploy_staging if request.auto_deploy_staging is not None else True
                     ),

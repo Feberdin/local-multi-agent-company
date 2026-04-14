@@ -99,6 +99,44 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
       </section>
       {% endif %}
 
+      {% set gh_autofix_status = task.metadata.get("github_autofix_status") %}
+      {% if gh_autofix_status %}
+      <section class="panel {% if gh_autofix_status in ['checks_passed', 'fix_ready'] %}panel-success{% elif gh_autofix_status in ['fix_failed', 'monitor_error', 'max_attempts_reached'] %}panel-alert{% else %}panel-note{% endif %}">
+        <div class="panel-header">
+          <h2>🧪 GitHub-CI Auto-Fix</h2>
+          <span class="muted">Versuch {{ task.metadata.get("github_autofix_attempt", 0) }} / {{ task.metadata.get("github_autofix_max_attempts", "?") }}</span>
+        </div>
+        {% if gh_autofix_status == "monitoring" %}
+        <p><strong>Checks werden beobachtet.</strong> GitHub meldet noch laufende oder wartende Prüfungen.</p>
+        {% elif gh_autofix_status == "checks_passed" %}
+        <p><strong>Checks grün.</strong> Für diese Pull-Request-Signatur war kein automatischer Folge-Fix nötig.</p>
+        {% elif gh_autofix_status == "fix_in_progress" %}
+        <p><strong>Auto-Fix läuft:</strong> {{ task.metadata.get("github_autofix_fix_goal", "–") }}</p>
+        <p class="muted">{{ task.metadata.get("github_autofix_error_summary", "Noch kein Fehler-Summary gespeichert.") }}</p>
+        {% if task.metadata.get("github_autofix_fix_task_id") %}
+        <p><a class="button-link secondary" href="/tasks/{{ task.metadata.get('github_autofix_fix_task_id') }}">Folge-Task öffnen →</a></p>
+        {% endif %}
+        {% elif gh_autofix_status == "fix_ready" %}
+        <p><strong>Auto-Fix bereit.</strong> Der Folge-Task hat eine neue Branch-/PR-Antwort erzeugt.</p>
+        {% if task.metadata.get("github_autofix_fix_pr_url") %}
+        <p><a class="button-link" href="{{ task.metadata.get('github_autofix_fix_pr_url') }}" target="_blank" rel="noreferrer">Fix-PR öffnen</a></p>
+        {% endif %}
+        {% if task.metadata.get("github_autofix_fix_task_id") %}
+        <p><a class="button-link secondary" href="/tasks/{{ task.metadata.get('github_autofix_fix_task_id') }}">Folge-Task öffnen →</a></p>
+        {% endif %}
+        {% elif gh_autofix_status == "fix_failed" %}
+        <p><strong>Auto-Fix fehlgeschlagen.</strong> {{ task.metadata.get("github_autofix_fix_error", "–") }}</p>
+        {% elif gh_autofix_status == "monitor_error" %}
+        <p><strong>GitHub-Prüfung konnte nicht gelesen werden.</strong> {{ task.metadata.get("github_autofix_last_error", "–") }}</p>
+        {% elif gh_autofix_status == "max_attempts_reached" %}
+        <p><strong>Automatische Folgelimits erreicht.</strong> {{ task.metadata.get("github_autofix_error_summary", "–") }}</p>
+        {% endif %}
+        {% if task.metadata.get("github_autofix_failed_checks") %}
+        <p class="muted">Letzte fehlerhafte Checks: {{ task.metadata.get("github_autofix_error_summary", "–") }}</p>
+        {% endif %}
+      </section>
+      {% endif %}
+
       <section class="panel panel-note">
         <h2>Repository-Freigabe</h2>
         <p><strong>Änderungen erlaubt:</strong> {{ "Ja" if task.allow_repository_modifications else "Nein" }}</p>

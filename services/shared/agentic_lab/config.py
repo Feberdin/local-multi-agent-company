@@ -438,6 +438,9 @@ class Settings(BaseSettings):
     # ── Auto-Debug ────────────────────────────────────────────────────────────
     auto_debug_enabled: bool = Field(default=False, alias="AUTO_DEBUG_ENABLED")
     auto_debug_max_attempts: int = Field(default=2, alias="AUTO_DEBUG_MAX_ATTEMPTS")
+    github_auto_fix_enabled: bool = Field(default=True, alias="GITHUB_AUTO_FIX_ENABLED")
+    github_auto_fix_poll_seconds: float = Field(default=120.0, alias="GITHUB_AUTO_FIX_POLL_SECONDS")
+    github_auto_fix_max_attempts: int = Field(default=2, alias="GITHUB_AUTO_FIX_MAX_ATTEMPTS")
 
     def ensure_runtime_directories(self) -> None:
         """Create runtime directories early so services fail less often at first write."""

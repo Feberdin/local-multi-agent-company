@@ -498,6 +498,9 @@ class SelfImprovementConfigResponse(BaseModel):
     policy_path: str
     approval_email_enabled: bool
     approval_email_to: str | None = None
+    github_auto_fix_enabled: bool
+    github_auto_fix_poll_seconds: float
+    github_auto_fix_max_attempts: int
 
 
 class SelfImprovementPolicyResponse(BaseModel):

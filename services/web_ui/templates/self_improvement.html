@@ -257,6 +257,36 @@ How to debug: If the page shows no status, check /api/self-improvement/status on
         {% endif %}
       </section>
 
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <h2>GitHub-CI Auto-Fix</h2>
+          <span class="cycle-status-badge {% if si_config.github_auto_fix_enabled %}badge-running{% else %}badge-idle{% endif %}">
+            {% if si_config.github_auto_fix_enabled %}aktiv{% else %}aus{% endif %}
+          </span>
+        </div>
+        <p class="muted">
+          Fehlgeschlagene GitHub-Checks auf von diesem System erzeugten Pull Requests werden zyklisch gelesen.
+          Wenn GitHub daraus einen klaren Fehler ableiten kann, startet das System automatisch einen fokussierten
+          Folge-Task gegen dasselbe Repository statt den roten PR einfach liegen zu lassen.
+        </p>
+        <div class="config-grid" style="margin-top:0.75rem;">
+          <div class="config-item">
+            <div class="label">Polling</div>
+            <div class="value">{{ si_config.github_auto_fix_poll_seconds }}s</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Max. Auto-Fix-Versuche</div>
+            <div class="value">{{ si_config.github_auto_fix_max_attempts }}</div>
+          </div>
+          <div class="config-item">
+            <div class="label">Aktivierung</div>
+            <div class="value {% if si_config.github_auto_fix_enabled %}value-on{% else %}value-off{% endif %}">
+              {% if si_config.github_auto_fix_enabled %}GitHub-Fehler werden automatisch in Fix-Tasks übersetzt.{% else %}GitHub-Fehler werden nur beobachtet, aber nicht automatisch repariert.{% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- State-Machine Visualization -->
       <section class="panel">
         <div class="panel-header">

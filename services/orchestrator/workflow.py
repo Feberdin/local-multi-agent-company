@@ -586,9 +586,12 @@ class WorkflowOrchestrator:
         """
 
         configured_route_timeout = route_summary.get("request_timeout_seconds")
-        try:
-            route_timeout = float(configured_route_timeout)
-        except (TypeError, ValueError):
+        if isinstance(configured_route_timeout, (int, float, str)):
+            try:
+                route_timeout = float(configured_route_timeout)
+            except ValueError:
+                route_timeout = 0.0
+        else:
             route_timeout = 0.0
 
         thresholds = [600.0, self.settings.worker_stage_timeout_seconds * 0.75]
@@ -818,13 +821,26 @@ class WorkflowOrchestrator:
 
         github_result = stage_state.get("worker_results", {}).get("github", {})
         pull_request_url = github_result.get("outputs", {}).get("pull_request_url")
+        pull_request_number = github_result.get("outputs", {}).get("pull_request_number")
+        commit_sha = github_result.get("outputs", {}).get("commit_sha")
         if pull_request_url:
             self.task_service.set_pull_request(stage_state["task_id"], pull_request_url)
+        metadata_updates: dict[str, Any] = {}
+        if pull_request_number is not None:
+            metadata_updates["pull_request_number"] = pull_request_number
+        if isinstance(commit_sha, str) and commit_sha.strip():
+            metadata_updates["pull_request_commit_sha"] = commit_sha.strip()
+        if metadata_updates:
+            self.task_service.update_runtime_context(stage_state["task_id"], metadata_updates=metadata_updates)
         task = self.task_service.update_status(
             stage_state["task_id"],
             TaskStatus.PR_CREATED,
             message="Draft pull request created successfully.",
-            details={"pull_request_url": pull_request_url},
+            details={
+                "pull_request_url": pull_request_url,
+                "pull_request_number": pull_request_number,
+                "commit_sha": commit_sha,
+            },
         )
         return self._task_to_state(task)
 

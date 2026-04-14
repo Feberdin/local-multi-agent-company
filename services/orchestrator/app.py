@@ -17,6 +17,8 @@ from services.orchestrator.workflow import WorkflowOrchestrator
 from services.shared.agentic_lab.auto_debug import AutoDebugService
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.db import init_db
+from services.shared.agentic_lab.github_autofix import GitHubAutofixService
+from services.shared.agentic_lab.github_client import GitHubClient
 from services.shared.agentic_lab.llm import LLMClient
 from services.shared.agentic_lab.logging_utils import configure_logging
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
@@ -94,8 +96,10 @@ workflow = WorkflowOrchestrator(
     worker_governance_service=worker_governance_service,
 )
 llm_client = LLMClient(settings)
+github_client = GitHubClient(settings)
 self_improvement_service = SelfImprovementService(task_service, llm_client, settings=settings)
 auto_debug_service = AutoDebugService(task_service, llm_client, settings=settings)
+github_autofix_service = GitHubAutofixService(task_service, github_client, llm_client, settings=settings)
 worker_probe_service = WorkerProbeService(settings=settings, llm=llm_client, governance_service=worker_governance_service)
 
 
@@ -106,10 +110,19 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     self_improvement_service.resume_orphaned_cycles()
     self_improvement_service.resume_orphaned_sessions(run_task_fn=_run_workflow_task)
     worker_probe_service.resume_orphaned_runs()
+    github_autofix_loop_task: asyncio.Task[None] | None = None
     if settings.self_improvement_enabled and normalize_self_improvement_mode(settings.self_improvement_mode).value == "automatic":
         asyncio.create_task(_auto_start_self_improvement())
+    if settings.github_auto_fix_enabled and settings.github_token:
+        github_autofix_loop_task = asyncio.create_task(_github_autofix_loop())
     logger.info("Orchestrator startup completed.")
     yield
+    if github_autofix_loop_task is not None:
+        github_autofix_loop_task.cancel()
+        try:
+            await github_autofix_loop_task
+        except asyncio.CancelledError:
+            logger.info("GitHub-Auto-Fix loop stopped.")
 
 
 async def _auto_start_self_improvement() -> None:
@@ -122,6 +135,22 @@ async def _auto_start_self_improvement() -> None:
         logger.info("Auto-start: self-improvement cycle scheduled.")
     except SelfImprovementError as exc:
         logger.info("Auto-start: self-improvement skipped — %s", exc)
+
+
+async def _github_autofix_loop() -> None:
+    """Poll recent PR-bearing tasks and turn failed GitHub checks into focused follow-up fix tasks."""
+
+    poll_seconds = max(30.0, float(settings.github_auto_fix_poll_seconds))
+    while True:
+        try:
+            started = await github_autofix_service.scan_once(_run_workflow_task)
+            if started:
+                logger.info("GitHub-Auto-Fix started %d follow-up task(s) after failed PR checks.", started)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - safety net for background loop
+            logger.exception("GitHub-Auto-Fix loop crashed unexpectedly.")
+        await asyncio.sleep(poll_seconds)
 
 
 app = FastAPI(title="Feberdin Agent Team Orchestrator", version="0.1.0", lifespan=lifespan)
@@ -642,6 +671,9 @@ async def get_self_improvement_config() -> SelfImprovementConfigResponse:
         policy_path=str(settings.self_improvement_policy_path),
         approval_email_enabled=settings.self_improvement_email_enabled,
         approval_email_to=settings.self_improvement_email_to or None,
+        github_auto_fix_enabled=settings.github_auto_fix_enabled and bool(settings.github_token),
+        github_auto_fix_poll_seconds=settings.github_auto_fix_poll_seconds,
+        github_auto_fix_max_attempts=settings.github_auto_fix_max_attempts,
     )
 
 
