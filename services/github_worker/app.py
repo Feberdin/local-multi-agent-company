@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI
 
 from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.github_client import GitHubApiError, GitHubClient
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
-from services.shared.agentic_lab.repo_tools import current_diff, git, run_command, write_report
+from services.shared.agentic_lab.repo_tools import CommandError, current_diff, git, run_command, write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
 
 settings = get_settings()
@@ -42,6 +43,17 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             errors=["The working tree is empty relative to the base branch."],
         )
 
+    branch_name = (request.branch_name or "").strip()
+    if not branch_name:
+        return WorkerResponse(
+            worker="github",
+            success=False,
+            summary="GitHub push preflight failed.",
+            errors=[
+                "Branch-Name fehlt. Der GitHub-Worker braucht einen Feature-Branch, bevor er committen und pushen kann."
+            ],
+        )
+
     commit_message = f"{settings.git_commit_message_prefix}: {request.goal[:72]}"
     worker_project_label = request.metadata.get("worker_project_label", "Feberdin local-multi-agent-company worker project")
     commit_body = (
@@ -54,14 +66,23 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         "GIT_COMMITTER_NAME": settings.git_author_name,
         "GIT_COMMITTER_EMAIL": settings.git_author_email,
     }
+    try:
+        push_env = _build_authenticated_push_env(repo_path, author_env)
+    except CommandError as exc:
+        return WorkerResponse(
+            worker="github",
+            success=False,
+            summary="GitHub push preflight failed.",
+            errors=[str(exc)],
+        )
 
     try:
         run_command(["git", "add", "-A"], cwd=repo_path, env=author_env)
         run_command(["git", "commit", "-m", commit_message, "-m", commit_body], cwd=repo_path, env=author_env)
         run_command(
-            ["git", "push", "--set-upstream", "origin", request.branch_name or ""],
+            ["git", "push", "--set-upstream", "origin", branch_name],
             cwd=repo_path,
-            env=author_env,
+            env=push_env,
         )
     except Exception as exc:  # noqa: BLE001
         return WorkerResponse(
@@ -133,3 +154,111 @@ def _build_pr_body(request: WorkerRequest, diff: dict) -> str:
         f"These changes were created by the `{worker_project_label}` and should only exist after "
         f"explicit repository modification approval.\n"
     )
+
+
+def _has_usable_github_token(raw_token: str) -> bool:
+    """Treat empty and example placeholder values as unusable GitHub credentials."""
+
+    token = raw_token.strip()
+    return bool(token) and "replace-me" not in token.lower()
+
+
+def _origin_parts_for_https_push(origin_url: str) -> tuple[str, str, str] | None:
+    """Normalize HTTPS and SSH Git remotes into `(scheme, host, path)` for token-based push URLs."""
+
+    normalized = origin_url.strip()
+    if not normalized:
+        return None
+
+    if normalized.startswith(("https://", "http://")):
+        parsed = urlparse(normalized)
+        if not parsed.hostname or not parsed.path:
+            return None
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return parsed.scheme, host, parsed.path
+
+    if normalized.startswith("ssh://"):
+        parsed = urlparse(normalized)
+        if not parsed.hostname or not parsed.path:
+            return None
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return "https", host, parsed.path
+
+    if "@" in normalized and ":" in normalized:
+        user_host, remote_path = normalized.split(":", 1)
+        if "@" not in user_host:
+            return None
+        _, host = user_host.split("@", 1)
+        remote_path = remote_path.strip()
+        if not host or not remote_path:
+            return None
+        return "https", host, f"/{remote_path.lstrip('/')}"
+
+    return None
+
+
+def _display_origin_url(origin_url: str) -> str:
+    """Return a sanitized, operator-friendly remote URL without embedded credentials."""
+
+    normalized = _origin_parts_for_https_push(origin_url)
+    if normalized is None:
+        return origin_url.strip() or "unbekannte Origin-URL"
+    scheme, host, path = normalized
+    return f"{scheme}://{host}{path}"
+
+
+def _build_authenticated_push_url(origin_url: str, github_token: str) -> str | None:
+    """Create one token-authenticated HTTPS push URL without changing the fetch remote."""
+
+    origin_parts = _origin_parts_for_https_push(origin_url)
+    if origin_parts is None:
+        return None
+    scheme, host, path = origin_parts
+    encoded_token = quote(github_token.strip(), safe="")
+    return f"{scheme}://x-access-token:{encoded_token}@{host}{path}"
+
+
+def _add_ephemeral_git_config(env: dict[str, str], key: str, value: str) -> dict[str, str]:
+    """Inject one temporary Git config entry via environment variables for a single command call."""
+
+    merged = dict(env)
+    raw_count = merged.get("GIT_CONFIG_COUNT", "0")
+    try:
+        config_count = int(raw_count)
+    except ValueError:
+        config_count = 0
+    merged["GIT_CONFIG_COUNT"] = str(config_count + 1)
+    merged[f"GIT_CONFIG_KEY_{config_count}"] = key
+    merged[f"GIT_CONFIG_VALUE_{config_count}"] = value
+    return merged
+
+
+def _build_authenticated_push_env(repo_path: Path, base_env: dict[str, str]) -> dict[str, str]:
+    """Prepare one push-only Git environment that authenticates with the configured GitHub token."""
+
+    if not _has_usable_github_token(settings.github_token):
+        raise CommandError(
+            "GITHUB_TOKEN fehlt oder ist noch auf dem Beispielwert. "
+            "Der GitHub-Worker braucht denselben Token fuer `git push` und fuer das Erstellen der Pull Request."
+        )
+
+    origin_url = git(["config", "--get", "remote.origin.url"], repo_path=repo_path, check=False)
+    if not origin_url:
+        raise CommandError(
+            "Git-Remote `origin` ist nicht gesetzt. "
+            "Pruefe den isolierten Task-Workspace oder die Ausgangs-Repository-Konfiguration."
+        )
+
+    authenticated_push_url = _build_authenticated_push_url(origin_url, settings.github_token)
+    if not authenticated_push_url:
+        raise CommandError(
+            "Die Origin-URL "
+            f"`{_display_origin_url(origin_url)}` kann nicht fuer einen tokenbasierten GitHub-Push verwendet werden. "
+            "Unterstuetzt werden HTTPS- und SSH-Remotes mit einem klaren Host/Repository-Pfad."
+        )
+
+    return _add_ephemeral_git_config(base_env, "remote.origin.pushurl", authenticated_push_url)
