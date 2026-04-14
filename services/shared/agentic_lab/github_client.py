@@ -1,12 +1,12 @@
 """
-Purpose: Minimal GitHub REST client for pull requests, issue comments, and PR-check inspection.
-Input/Output: Workers and orchestrator helpers use this client to create pull requests, post comments,
-              and inspect GitHub CI state for one pull request head commit.
+Purpose: Minimal GitHub REST client for pull requests, issue comments, branch publication, and PR-check inspection.
+Input/Output: Workers and orchestrator helpers use this client to create pull requests, publish commit trees,
+              post comments, and inspect GitHub CI state for one pull request head commit.
 Important invariants:
   - No GitHub API call is attempted without a configured token.
   - Repository names must stay explicit `owner/name` pairs.
   - Check summaries are normalized into stable, operator-readable buckets before automation reacts.
-How to debug: If PR creation or CI inspection fails, inspect the repository, branch refs, token scopes,
+How to debug: If PR creation, branch publication, or CI inspection fails, inspect the repository, token scopes,
               returned status payload, and the normalized check summary from this module first.
 """
 
@@ -131,6 +131,29 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute one GitHub REST call and return the decoded JSON payload."""
+
+        url = f"{self.settings.github_api_url.rstrip('/')}{path}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request(
+                method,
+                url,
+                headers=self._headers(),
+                json=json_body,
+            )
+        if response.status_code >= 400:
+            raise GitHubApiError(
+                f"GitHub API request failed: {response.status_code} {response.text}"
+            )
+        return response.json()
+
     async def create_pull_request(
         self,
         repository: str,
@@ -141,50 +164,106 @@ class GitHubClient:
     ) -> dict[str, Any]:
         """Create a pull request and return the GitHub response payload."""
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{self.settings.github_api_url.rstrip('/')}/repos/{repository}/pulls",
-                headers=self._headers(),
-                json={
-                    "title": title,
-                    "body": body,
-                    "head": head_branch,
-                    "base": base_branch,
-                    "draft": True,
-                },
-            )
-            if response.status_code >= 400:
-                raise GitHubApiError(f"GitHub PR creation failed: {response.status_code} {response.text}")
-            return response.json()
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/pulls",
+            json_body={
+                "title": title,
+                "body": body,
+                "head": head_branch,
+                "base": base_branch,
+                "draft": True,
+            },
+        )
 
     async def create_issue_comment(self, repository: str, issue_number: int, body: str) -> dict[str, Any]:
         """Create a status or summary comment on an issue or pull request."""
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{self.settings.github_api_url.rstrip('/')}/repos/{repository}/issues/{issue_number}/comments",
-                headers=self._headers(),
-                json={"body": body},
-            )
-            if response.status_code >= 400:
-                raise GitHubApiError(
-                    f"GitHub comment creation failed: {response.status_code} {response.text}"
-                )
-            return response.json()
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/issues/{issue_number}/comments",
+            json_body={"body": body},
+        )
 
     async def get_pull_request(self, repository: str, pull_number: int) -> dict[str, Any]:
         """Load one pull request so automation can inspect the current head SHA safely."""
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                f"{self.settings.github_api_url.rstrip('/')}/repos/{repository}/pulls/{pull_number}",
-                headers=self._headers(),
-            )
-            if response.status_code >= 400:
-                raise GitHubApiError(
-                    f"GitHub pull request fetch failed: {response.status_code} {response.text}"
-                )
-            return response.json()
+        return await self._request_json("GET", f"/repos/{repository}/pulls/{pull_number}")
+
+    async def get_git_ref(self, repository: str, ref_name: str) -> dict[str, Any]:
+        """Load one Git ref such as `heads/main` so workers can publish fallback commits safely."""
+
+        return await self._request_json("GET", f"/repos/{repository}/git/ref/{ref_name}")
+
+    async def get_git_commit(self, repository: str, commit_sha: str) -> dict[str, Any]:
+        """Load one Git commit object and its tree metadata."""
+
+        return await self._request_json("GET", f"/repos/{repository}/git/commits/{commit_sha}")
+
+    async def create_git_blob(self, repository: str, content_base64: str) -> dict[str, Any]:
+        """Create one blob object from base64-encoded file content."""
+
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/git/blobs",
+            json_body={"content": content_base64, "encoding": "base64"},
+        )
+
+    async def create_git_tree(
+        self,
+        repository: str,
+        *,
+        tree: list[dict[str, Any]],
+        base_tree_sha: str,
+    ) -> dict[str, Any]:
+        """Create one Git tree on top of a base tree so a worker can publish multiple file changes at once."""
+
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/git/trees",
+            json_body={"base_tree": base_tree_sha, "tree": tree},
+        )
+
+    async def create_git_commit(
+        self,
+        repository: str,
+        *,
+        message: str,
+        tree_sha: str,
+        parent_shas: list[str],
+    ) -> dict[str, Any]:
+        """Create one commit object for a newly assembled tree."""
+
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/git/commits",
+            json_body={"message": message, "tree": tree_sha, "parents": parent_shas},
+        )
+
+    async def create_git_ref(self, repository: str, ref_name: str, commit_sha: str) -> dict[str, Any]:
+        """Create one branch or tag ref pointing at the provided commit."""
+
+        return await self._request_json(
+            "POST",
+            f"/repos/{repository}/git/refs",
+            json_body={"ref": f"refs/{ref_name}", "sha": commit_sha},
+        )
+
+    async def update_git_ref(
+        self,
+        repository: str,
+        ref_name: str,
+        commit_sha: str,
+        *,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Move one existing Git ref to a new commit, optionally forcefully for task-local retry branches."""
+
+        return await self._request_json(
+            "PATCH",
+            f"/repos/{repository}/git/refs/{ref_name}",
+            json_body={"sha": commit_sha, "force": force},
+        )
 
     async def get_commit_check_overview(self, repository: str, ref: str) -> dict[str, Any]:
         """Return one normalized CI summary for the given commit ref or SHA."""
