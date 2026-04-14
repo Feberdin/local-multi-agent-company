@@ -127,3 +127,29 @@ def test_readme_smiley_profile_skips_review_testing_security_and_deploy(isolated
     assert orchestrator._route_after_coding(state) == "validation"  # pyright: ignore[reportPrivateUsage]
     assert orchestrator._route_after_validation(state) == "github"  # pyright: ignore[reportPrivateUsage]
     assert orchestrator._route_after_github(state) == "memory"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_readme_smiley_profile_graph_maps_include_fast_path_destinations(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+
+    assert orchestrator._human_resources_route_map()["coding"] == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._research_route_map()["coding"] == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._coding_route_map()["validation"] == "validation"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._validation_route_map()["github"] == "github"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._github_route_map()["memory"] == "memory"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_readme_smiley_profile_uses_fast_path_handoff_labels(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-fast-handoff",
+        "goal": "Fuege am Anfang der Readme einen Smiley ein.",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "metadata": {"task_profile": {"name": "readme_prefix_smiley_fix"}},
+    }
+
+    assert orchestrator._next_worker_name("human_resources", state) == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._previous_worker_name("coding", state) == "human_resources"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._next_worker_name("github", state) == "memory"  # pyright: ignore[reportPrivateUsage]

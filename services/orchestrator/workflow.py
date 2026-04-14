@@ -215,12 +215,12 @@ class WorkflowOrchestrator:
         graph.add_conditional_edges(
             "human_resources",
             self._route_after_human_resources,
-            {"research": "research", "stop": END},
+            self._human_resources_route_map(),
         )
         graph.add_conditional_edges(
             "research",
             self._route_after_research,
-            {"architecture": "architecture", "stop": END},
+            self._research_route_map(),
         )
         graph.add_conditional_edges(
             "architecture",
@@ -230,7 +230,7 @@ class WorkflowOrchestrator:
         graph.add_conditional_edges("data", self._route_after_data, {"ux": "ux", "coding": "coding", "stop": END})
         graph.add_conditional_edges("ux", self._route_after_ux, {"coding": "coding", "stop": END})
         graph.add_conditional_edges("rollback", self._route_after_rollback, {"stop": END})
-        graph.add_conditional_edges("coding", self._route_after_coding, {"review": "review", "stop": END})
+        graph.add_conditional_edges("coding", self._route_after_coding, self._coding_route_map())
         graph.add_conditional_edges("review", self._route_after_review, {"testing": "testing", "stop": END})
         graph.add_conditional_edges("testing", self._route_after_testing, {"security": "security", "stop": END})
         graph.add_conditional_edges(
@@ -241,7 +241,7 @@ class WorkflowOrchestrator:
         graph.add_conditional_edges(
             "validation",
             self._route_after_validation,
-            {"documentation": "documentation", "stop": END},
+            self._validation_route_map(),
         )
         graph.add_conditional_edges(
             "documentation",
@@ -251,7 +251,7 @@ class WorkflowOrchestrator:
         graph.add_conditional_edges(
             "github",
             self._route_after_github,
-            {"deploy": "deploy", "memory": "memory", "stop": END},
+            self._github_route_map(),
         )
         graph.add_conditional_edges("deploy", self._route_after_deploy, {"qa": "qa", "stop": END})
         graph.add_conditional_edges("qa", self._route_after_qa, {"memory": "memory", "stop": END})
@@ -376,6 +376,31 @@ class WorkflowOrchestrator:
     def _route_after_memory(self, state: WorkflowState) -> str:
         return "stop"
 
+    def _human_resources_route_map(self) -> dict[str, str]:
+        """List all valid exits after human_resources so fast-path routes stay connected in the graph."""
+
+        return {"research": "research", "coding": "coding", "stop": END}
+
+    def _research_route_map(self) -> dict[str, str]:
+        """Allow research to hand off directly to coding for tiny deterministic tasks."""
+
+        return {"architecture": "architecture", "coding": "coding", "stop": END}
+
+    def _coding_route_map(self) -> dict[str, str]:
+        """Allow coding to skip review/testing for explicitly tiny deterministic fixes."""
+
+        return {"review": "review", "validation": "validation", "stop": END}
+
+    def _validation_route_map(self) -> dict[str, str]:
+        """Allow validation to continue directly to GitHub on the tiny README fast path."""
+
+        return {"documentation": "documentation", "github": "github", "stop": END}
+
+    def _github_route_map(self) -> dict[str, str]:
+        """Allow GitHub to hand off straight to memory when deploy should be skipped."""
+
+        return {"deploy": "deploy", "memory": "memory", "stop": END}
+
     def _should_stop(self, state: WorkflowState) -> bool:
         return state.get("current_status") in {
             TaskStatus.APPROVAL_REQUIRED.value,
@@ -498,8 +523,18 @@ class WorkflowOrchestrator:
             return compact
         return compact[: max_length - 1].rstrip() + "…"
 
-    def _previous_worker_name(self, worker_name: str) -> str | None:
+    def _previous_worker_name(self, worker_name: str, state: WorkflowState | None = None) -> str | None:
         """Return the worker that usually completes immediately before the current stage."""
+
+        if state and is_readme_smiley_profile(state.get("metadata")):
+            previous_map = {
+                "coding": "human_resources",
+                "validation": "coding",
+                "github": "validation",
+                "memory": "github",
+            }
+            if worker_name in previous_map:
+                return previous_map[worker_name]
 
         stage_order = list(WORKER_STAGE_DESCRIPTIONS)
         try:
@@ -510,8 +545,20 @@ class WorkflowOrchestrator:
             return None
         return stage_order[index - 1]
 
-    def _next_worker_name(self, worker_name: str) -> str | None:
+    def _next_worker_name(self, worker_name: str, state: WorkflowState | None = None) -> str | None:
         """Return the next worker in the default stage order for handoff hints."""
+
+        if state and is_readme_smiley_profile(state.get("metadata")):
+            next_map = {
+                "requirements": "cost",
+                "cost": "human_resources",
+                "human_resources": "coding",
+                "coding": "validation",
+                "validation": "github",
+                "github": "memory",
+            }
+            if worker_name in next_map:
+                return next_map[worker_name]
 
         stage_order = list(WORKER_STAGE_DESCRIPTIONS)
         try:
@@ -580,8 +627,8 @@ class WorkflowOrchestrator:
     ) -> dict[str, Any]:
         """Build one normalized progress payload that both the UI and debug bundles can consume."""
 
-        previous_worker = self._previous_worker_name(worker_name)
-        next_worker = self._next_worker_name(worker_name)
+        previous_worker = self._previous_worker_name(worker_name, state)
+        next_worker = self._next_worker_name(worker_name, state)
         current_instruction = self._current_instruction(state, worker_name, stage_meta)
         slow_warning_seconds = self._stage_slow_warning_seconds(route_summary)
         return {
@@ -1221,8 +1268,8 @@ class WorkflowOrchestrator:
                     started_at_iso=started_at_iso,
                     elapsed_seconds=elapsed_seconds,
                     waiting_for=(
-                        f"Uebergabe an {self._next_worker_name(worker_name)}"
-                        if self._next_worker_name(worker_name)
+                        f"Uebergabe an {self._next_worker_name(worker_name, state)}"
+                        if self._next_worker_name(worker_name, state)
                         else None
                     ),
                     last_result_summary=annotated_response.summary,
