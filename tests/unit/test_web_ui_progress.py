@@ -1,7 +1,7 @@
 """
 Purpose: Verify that the web UI presents long-running task progress in a readable, operator-friendly way.
 Input/Output: Tests feed raw task payloads into the UI decoration helpers and inspect the derived timeline state.
-Important invariants: Slow stages must look active instead of frozen, and heartbeat events must remain visible.
+Important invariants: Slow stages must look active instead of frozen, while heartbeat events may stay hidden from the normal event log.
 How to debug: If this fails, inspect `services/web_ui/app.py` and compare the derived context with the stored task events.
 """
 
@@ -434,6 +434,86 @@ def test_active_task_defaults_to_compact_view_and_full_view_can_be_requested(tmp
     assert full_response.status_code == 200
     assert "Aktueller Lauf" in full_response.text
     assert "ruhige Live-Übersicht ohne Aufklappen" not in full_response.text
+
+
+def test_task_detail_hides_heartbeat_rows_from_event_log_but_shows_a_small_hint(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/tasks/task-heartbeats":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task-heartbeats",
+                    "goal": "Halte das Ereignisprotokoll ruhig, auch wenn Heartbeats reinkommen.",
+                    "repository": "Feberdin/local-multi-agent-company",
+                    "repo_url": None,
+                    "local_repo_path": "/workspace/local-multi-agent-company",
+                    "base_branch": "main",
+                    "branch_name": "feature/task-heartbeats",
+                    "status": "CODING",
+                    "resume_target": None,
+                    "current_approval_gate_name": None,
+                    "approval_required": False,
+                    "approval_reason": None,
+                    "allow_repository_modifications": False,
+                    "pull_request_url": None,
+                    "latest_error": None,
+                    "metadata": {
+                        "worker_progress": {
+                            "coding": {
+                                "state": "running",
+                                "progress_message": "Coding arbeitet weiter im Hintergrund.",
+                                "elapsed_seconds": 42.0,
+                                "started_at": now,
+                                "updated_at": now,
+                            }
+                        }
+                    },
+                    "created_at": now,
+                    "updated_at": now,
+                    "worker_results": {},
+                    "risk_flags": [],
+                    "events": [
+                        {
+                            "id": 1,
+                            "task_id": "task-heartbeats",
+                            "level": "INFO",
+                            "stage": "CODING",
+                            "message": "Coding laeuft weiter.",
+                            "details": {"worker_name": "coding", "heartbeat": True},
+                            "created_at": now,
+                        },
+                        {
+                            "id": 2,
+                            "task_id": "task-heartbeats",
+                            "level": "INFO",
+                            "stage": "CODING",
+                            "message": "Patch-Plan an Coding gesendet.",
+                            "details": {"worker_name": "coding"},
+                            "created_at": now,
+                        },
+                    ],
+                    "approvals": [],
+                    "smoke_checks": [],
+                    "deployment": None,
+                },
+            )
+        if path == "/api/suggestions/registry":
+            return httpx.Response(200, json={"suggestions": []})
+        raise AssertionError(f"Unexpected path: {path}")
+
+    app_module._api_request = fake_api_request
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/tasks/task-heartbeats?view=full")
+
+    assert response.status_code == 200
+    assert "Patch-Plan an Coding gesendet." in response.text
+    assert "Coding laeuft weiter." not in response.text
+    assert "1 Live-Heartbeat" in response.text
 
 
 def test_decorate_task_normalizes_naive_timestamps_from_older_rows(tmp_path, monkeypatch) -> None:

@@ -1442,6 +1442,18 @@ def _decorate_events(task: dict[str, Any]) -> list[dict[str, Any]]:
     return decorated
 
 
+def _visible_task_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Keep the normal event log readable by hiding heartbeat-only noise.
+
+    Why this exists:
+    Heartbeats are useful for the live worker status, slow warnings, and compact progress cards.
+    But as individual timeline rows they quickly flood the task detail page without adding much operator value.
+    """
+
+    return [event for event in events if not bool(event.get("is_heartbeat"))]
+
+
 def _build_worker_cast(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a visual worker overview with avatar cards and short thought or speech bubbles."""
 
@@ -1671,7 +1683,9 @@ def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         if restarted_worker_name
         else "noch kein Teil-Neustart"
     )
-    decorated["events_latest_first"] = list(reversed(decorated["events"]))
+    decorated["visible_events"] = _visible_task_events(decorated["events"])
+    decorated["hidden_heartbeat_count"] = max(0, len(decorated["events"]) - len(decorated["visible_events"]))
+    decorated["events_latest_first"] = list(reversed(decorated["visible_events"]))
     decorated["is_active"] = str(decorated.get("status")) in ACTIVE_TASK_STATUSES and not decorated["archived"]
     decorated["auto_refresh_seconds"] = AUTO_REFRESH_SECONDS if decorated["is_active"] else 0
     return decorated

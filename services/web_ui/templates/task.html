@@ -420,6 +420,12 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
 
       <section class="panel">
         <h2>Ereignisse</h2>
+        {% if task.hidden_heartbeat_count %}
+        <p class="muted">
+          {{ task.hidden_heartbeat_count }} Live-Heartbeat{% if task.hidden_heartbeat_count != 1 %}s{% endif %}
+          werden hier ausgeblendet, bleiben aber in Fortschritt, Laufzeit und Slow-Warnings berücksichtigt.
+        </p>
+        {% endif %}
         <div class="timeline">
           {% for event in task.events_latest_first %}
           <article class="event event-{{ event.level_lower }}">
@@ -430,9 +436,6 @@ How to debug: If events or reports seem missing, inspect the orchestrator task d
                 <span class="muted">{{ event.worker_label }}</span>
                 {% endif %}
                 <span class="status status-{{ event.level_lower }}">{{ event.level }}</span>
-                {% if event.is_heartbeat %}
-                <span class="status status-running">heartbeat</span>
-                {% endif %}
                 {% if event.state_label and event.state_label != "note" %}
                 <span class="status status-{{ event.state or event.level_lower }}">{{ event.state_label }}</span>
                 {% endif %}
