@@ -253,3 +253,30 @@ async def test_run_retries_when_required_architecture_fields_are_semantically_em
     assert len(prompts) == 2
     assert "required fields were empty or semantically blank" in prompts[1]
     assert "summary, components" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_architecture_worker_uses_readme_smiley_fast_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app_module = _load_architecture_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "README.md").write_text("Probe README\n", encoding="utf-8")
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-architecture-fast",
+            goal="Fuege am Anfang der Readme einen Smiley ein.",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            metadata={"task_profile": {"name": "readme_prefix_smiley_fix"}},
+            prior_results={"research": {"outputs": {"candidate_files": ["README.md"]}}},
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["touched_areas"] == ["README.md"]
+    assert response.outputs["implementation_plan"][0] == "Open README.md in the task-local workspace."

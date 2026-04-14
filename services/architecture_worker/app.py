@@ -19,6 +19,7 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -54,6 +55,24 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     requirements = request.prior_results.get("requirements", {}).get("outputs", {})
     research = request.prior_results.get("research", {}).get("outputs", {})
     cost_plan = request.prior_results.get("cost", {}).get("outputs", {})
+
+    if is_readme_smiley_profile(request.metadata):
+        outputs = _readme_smiley_architecture(request.goal)
+        outputs = _normalize_architecture_outputs(outputs, repo_path, research)
+        report_path = write_report(settings.task_report_dir(request.task_id), "architecture.json", outputs)
+        return WorkerResponse(
+            worker="architecture",
+            summary="Architecture and implementation plan prepared.",
+            outputs=outputs,
+            artifacts=[
+                Artifact(
+                    name="architecture",
+                    path=str(report_path),
+                    description="Architecture design, data flows, deployment approach, and implementation plan.",
+                )
+            ],
+        )
+
     guidance_block = worker_governance.guidance_prompt_block(request, "architecture")
 
     system_prompt = _architecture_system_prompt(guidance_block)
@@ -130,6 +149,40 @@ def _heuristic_architecture(goal: str) -> dict:
             "Destructive actions",
             "Production deployment",
         ],
+    }
+
+
+def _readme_smiley_architecture(goal: str) -> dict[str, Any]:
+    """Return a fully non-empty architecture package for the trivial README smiley fast path."""
+
+    return {
+        "summary": f"Minimaler README-Einzeilenfix fuer: {goal}",
+        "components": [
+            {
+                "name": "README.md",
+                "type": "documentation",
+                "description": "Operator-facing project overview at the repository root.",
+            }
+        ],
+        "responsibilities": {
+            "README.md": "Carries the requested visible text change and is the only allowed edit target."
+        },
+        "data_flows": ["Goal -> coding -> README.md first line update -> validation of the resulting diff."],
+        "module_boundaries": ["Only README.md may change.", "No source code, tests, CI, or deployment files are in scope."],
+        "touched_areas": ["README.md"],
+        "deployment_strategy": ["No deployment changes are required for this documentation-only patch."],
+        "logging_strategy": ["Normal task-level logs are sufficient; no new runtime logging is needed."],
+        "implementation_plan": [
+            "Open README.md in the task-local workspace.",
+            "Prefix the first line with `:) ` exactly once.",
+            "Leave all remaining lines unchanged and avoid any second file edit.",
+        ],
+        "test_strategy": [
+            "Verify that only README.md appears in the diff.",
+            "Verify that the first README line now begins with `:) `.",
+        ],
+        "risks": ["Do not rewrite the full document unnecessarily.", "Do not create or touch any additional files."],
+        "approval_gates": ["No additional approval gate is needed beyond normal repository-modification approval."],
     }
 
 

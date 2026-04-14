@@ -40,6 +40,7 @@ from services.shared.agentic_lab.schemas import (
     WorkerResponse,
     WorkflowWorkerName,
 )
+from services.shared.agentic_lab.task_profiles import infer_task_profile
 
 WORKER_PROJECT_LABEL = "Feberdin local-multi-agent-company worker project"
 WORKFLOW_WORKER_INDEX = {worker.value: index for index, worker in enumerate(WORKFLOW_WORKER_ORDER)}
@@ -95,6 +96,28 @@ class TaskService:
             )
             branch_name = create_branch_name(request.goal, task_id)
             operator_label = str(request.metadata.get("worker_project_label") or WORKER_PROJECT_LABEL)
+            task_profile = infer_task_profile(request.goal, request.metadata)
+            metadata_json = {
+                **request.metadata,
+                "repo_url": request.repo_url,
+                "issue_number": request.issue_number,
+                "enable_web_research": request.enable_web_research,
+                "allow_repository_modifications": request.allow_repository_modifications,
+                "current_approval_gate_name": None,
+                "source_local_repo_path": source_local_repo_path,
+                "task_workspace_path": str(task_workspace_path),
+                "workspace_strategy": "task_isolated_checkout",
+                "worker_progress": {},
+                "worker_project_label": operator_label,
+                "auto_deploy_staging": (
+                    request.auto_deploy_staging if request.auto_deploy_staging is not None else True
+                ),
+                "test_commands": request.test_commands,
+                "lint_commands": request.lint_commands,
+                "typing_commands": request.typing_commands,
+            }
+            if task_profile and not metadata_json.get("task_profile"):
+                metadata_json["task_profile"] = task_profile
             record = TaskRecord(
                 id=task_id,
                 goal=request.goal,
@@ -109,25 +132,7 @@ class TaskService:
                     request.auto_deploy_staging if request.auto_deploy_staging is not None else True
                 ),
                 issue_number=request.issue_number,
-                metadata_json={
-                    **request.metadata,
-                    "repo_url": request.repo_url,
-                    "issue_number": request.issue_number,
-                    "enable_web_research": request.enable_web_research,
-                    "allow_repository_modifications": request.allow_repository_modifications,
-                    "current_approval_gate_name": None,
-                    "source_local_repo_path": source_local_repo_path,
-                    "task_workspace_path": str(task_workspace_path),
-                    "workspace_strategy": "task_isolated_checkout",
-                    "worker_progress": {},
-                    "worker_project_label": operator_label,
-                    "auto_deploy_staging": (
-                        request.auto_deploy_staging if request.auto_deploy_staging is not None else True
-                    ),
-                    "test_commands": request.test_commands,
-                    "lint_commands": request.lint_commands,
-                    "typing_commands": request.typing_commands,
-                },
+                metadata_json=metadata_json,
                 smoke_checks_json=[item.model_dump() for item in request.smoke_checks],
                 deployment_json=request.deployment.model_dump() if request.deployment else None,
             )
@@ -146,6 +151,7 @@ class TaskService:
                     "source_local_repo_path": source_local_repo_path,
                     "task_workspace_path": str(task_workspace_path),
                     "workspace_strategy": "task_isolated_checkout",
+                    "task_profile": metadata_json.get("task_profile"),
                 },
             )
             self._add_snapshot(session, record.id, TaskStatus.NEW.value, {"created": True})

@@ -14,6 +14,7 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -32,6 +33,22 @@ async def health() -> HealthResponse:
 async def run(request: WorkerRequest) -> WorkerResponse:
     task_logger = TaskLoggerAdapter(logger.logger, {"service": "requirements-worker", "task_id": request.task_id})
     try:
+        if is_readme_smiley_profile(request.metadata):
+            outputs = _readme_smiley_requirements(request.goal, request.repository)
+            report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
+            return WorkerResponse(
+                worker="requirements",
+                summary="Requirements package created.",
+                outputs=outputs,
+                artifacts=[
+                    Artifact(
+                        name="requirements",
+                        path=str(report_path),
+                        description="Structured requirements, assumptions, risks, and acceptance criteria.",
+                    )
+                ],
+            )
+
         guidance_block = worker_governance.guidance_prompt_block(request, "requirements")
 
         try:
@@ -108,4 +125,33 @@ def _heuristic_requirements(goal: str, repository: str) -> dict:
             "Are there target runtime, framework, or compatibility constraints inside the selected repository?",
         ],
         "recommended_workers": ["research", "architecture", "coding", "reviewer", "tester", "validation"],
+    }
+
+
+def _readme_smiley_requirements(goal: str, repository: str) -> dict:
+    """Return a deterministic requirements package for one tiny README smiley fix."""
+
+    return {
+        "summary": f"Minimaler README-Einzeilenfix fuer {repository}: {goal}",
+        "requirements": [
+            "Aendere nur README.md im Repository-Wurzelverzeichnis.",
+            "Setze `:)` an den Anfang der ersten README-Zeile.",
+            "Lasse alle weiteren README-Zeilen unveraendert.",
+        ],
+        "wishes": [],
+        "assumptions": [
+            "README.md ist die einzige benoetigte Zieldatei.",
+            "Ein ASCII-Smiley `:)` ist ausreichend und vermeidet unnoetige Unicode-Abhaengigkeiten.",
+        ],
+        "risks": [
+            "Eine versehentliche Voll-Datei-Umschreibung wuerde den Mini-Fix unverhaeltnismaessig aufblaehen.",
+            "Wenn README.md fehlt, muss der Worker den Fall klar melden statt Zusatzdateien anzulegen.",
+        ],
+        "acceptance_criteria": [
+            "Nur README.md erscheint im Diff.",
+            "Die erste README-Zeile beginnt mit `:)`.",
+            "Keine andere README-Zeile oder Datei wird geaendert.",
+        ],
+        "open_questions": [],
+        "recommended_workers": ["cost", "human_resources", "coding", "validation", "github", "memory"],
     }

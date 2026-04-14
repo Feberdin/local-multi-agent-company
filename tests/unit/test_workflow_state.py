@@ -91,3 +91,39 @@ def test_stage_slow_warning_seconds_tracks_route_timeout_but_caps_operator_noise
     assert fast_route_threshold == 300.0
     assert slow_route_threshold == 600.0
     assert fallback_threshold == 600.0
+
+
+def test_readme_smiley_profile_skips_research_and_architecture(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-fast-path",
+        "goal": "Fuege am Anfang der Readme einen Smiley ein.",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "current_status": "RESOURCE_PLANNING",
+        "approval_required": False,
+        "metadata": {"task_profile": {"name": "readme_prefix_smiley_fix"}},
+    }
+
+    assert orchestrator._route_after_human_resources(state) == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_research(state) == "coding"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_readme_smiley_profile_skips_review_testing_security_and_deploy(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-fast-tail",
+        "goal": "Fuege am Anfang der Readme einen Smiley ein.",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "current_status": "CODING",
+        "approval_required": False,
+        "auto_deploy_staging": True,
+        "metadata": {"task_profile": {"name": "readme_prefix_smiley_fix"}},
+    }
+
+    assert orchestrator._route_after_coding(state) == "validation"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_validation(state) == "github"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_github(state) == "memory"  # pyright: ignore[reportPrivateUsage]

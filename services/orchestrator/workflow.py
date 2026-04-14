@@ -20,6 +20,7 @@ from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configu
 from services.shared.agentic_lab.model_routing import resolve_worker_route
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, TaskDetail, TaskStatus, WorkerRequest
+from services.shared.agentic_lab.task_profiles import infer_task_profile, is_readme_smiley_profile
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.worker_client import WorkerCallError, call_worker
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
@@ -298,10 +299,18 @@ class WorkflowOrchestrator:
         return "stop" if self._should_stop(state) else "human_resources"
 
     def _route_after_human_resources(self, state: WorkflowState) -> str:
-        return "stop" if self._should_stop(state) else "research"
+        if self._should_stop(state):
+            return "stop"
+        if is_readme_smiley_profile(state.get("metadata")):
+            return "coding"
+        return "research"
 
     def _route_after_research(self, state: WorkflowState) -> str:
-        return "stop" if self._should_stop(state) else "architecture"
+        if self._should_stop(state):
+            return "stop"
+        if is_readme_smiley_profile(state.get("metadata")):
+            return "coding"
+        return "architecture"
 
     def _route_after_architecture(self, state: WorkflowState) -> str:
         if self._should_stop(state):
@@ -324,7 +333,11 @@ class WorkflowOrchestrator:
         return "stop"
 
     def _route_after_coding(self, state: WorkflowState) -> str:
-        return "stop" if self._should_stop(state) else "review"
+        if self._should_stop(state):
+            return "stop"
+        if is_readme_smiley_profile(state.get("metadata")):
+            return "validation"
+        return "review"
 
     def _route_after_review(self, state: WorkflowState) -> str:
         return "stop" if self._should_stop(state) else "testing"
@@ -336,7 +349,11 @@ class WorkflowOrchestrator:
         return "stop" if self._should_stop(state) else "validation"
 
     def _route_after_validation(self, state: WorkflowState) -> str:
-        return "stop" if self._should_stop(state) else "documentation"
+        if self._should_stop(state):
+            return "stop"
+        if is_readme_smiley_profile(state.get("metadata")):
+            return "github"
+        return "documentation"
 
     def _route_after_documentation(self, state: WorkflowState) -> str:
         return "stop" if self._should_stop(state) else "github"
@@ -344,6 +361,8 @@ class WorkflowOrchestrator:
     def _route_after_github(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
+        if is_readme_smiley_profile(state.get("metadata")):
+            return "memory"
         return "deploy" if state.get("auto_deploy_staging", True) else "memory"
 
     def _route_after_deploy(self, state: WorkflowState) -> str:
@@ -439,6 +458,12 @@ class WorkflowOrchestrator:
         metadata = dict(state.get("metadata", {}))
         metadata_updates: dict[str, Any] = {}
 
+        task_profile = metadata.get("task_profile")
+        if not isinstance(task_profile, dict) or not task_profile:
+            inferred_profile = infer_task_profile(state["goal"], metadata)
+            if inferred_profile:
+                metadata_updates["task_profile"] = inferred_profile
+
         guidance_snapshot = metadata.get("worker_guidance_snapshot")
         if not isinstance(guidance_snapshot, dict) or not guidance_snapshot:
             guidance_snapshot = self.worker_governance_service.guidance_map()
@@ -520,6 +545,16 @@ class WorkflowOrchestrator:
             "qa": "Fasse Smoke-Checks und Freigabestatus fuer den Operator zusammen.",
             "memory": "Halte Learnings, Entscheidungen und Folgepunkte dauerhaft fest.",
         }
+        if is_readme_smiley_profile(state.get("metadata")):
+            worker_specific_focus.update(
+                {
+                    "requirements": "Halte den Auftrag extrem klein: nur README.md, nur die erste Zeile, ASCII-Smiley.",
+                    "research": "Beschraenke die Recherche bewusst auf README.md und vermeide breite Repo-Analyse.",
+                    "architecture": "Plane nur einen sicheren Ein-Zeilen-Fix in README.md, ohne Zusatzdateien.",
+                    "coding": "Setze nur `:)` an den Anfang der ersten README-Zeile und aendere sonst nichts.",
+                    "validation": "Pruefe nur, dass README.md sauber geaendert wurde und keine Nebenwirkungen sichtbar sind.",
+                }
+            )
         return self._truncate_text(
             f"{worker_specific_focus.get(worker_name, stage_meta['description'])} Ziel: {state['goal']}",
             max_length=260,

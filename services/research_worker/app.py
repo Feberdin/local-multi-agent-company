@@ -39,6 +39,7 @@ from services.shared.agentic_lab.schemas import (
 )
 from services.shared.agentic_lab.search_providers import SearchProviderService
 from services.shared.agentic_lab.source_router import SourceRouter
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
 from services.shared.agentic_lab.trusted_sources import TrustedSourceService
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
@@ -85,6 +86,9 @@ async def run(request: WorkerRequest) -> WorkerResponse:
                 warnings.append(warning)
             else:
                 raise
+
+        if is_readme_smiley_profile(request.metadata):
+            return _run_readme_smiley_fast_path(request, repo_path, warnings)
 
         overview = collect_repo_overview(repo_path)
         sampled_files = list(overview["important_files"] or overview["sample_files"][:8])
@@ -214,6 +218,77 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         )
 
 
+def _run_readme_smiley_fast_path(
+    request: WorkerRequest,
+    repo_path: Path,
+    warnings: list[str],
+) -> WorkerResponse:
+    """
+    Return one tiny deterministic research package when the task already names README.md as the only target.
+
+    Why this exists:
+    A README one-line fix should not spend minutes on repo-wide file sampling, trusted-source routing,
+    or model summarization. The worker already has enough evidence locally.
+    """
+
+    overview = collect_repo_overview(repo_path)
+    sampled_files: list[str] = []
+    if (repo_path / "README.md").is_file():
+        sampled_files.append("README.md")
+    readme_excerpt = read_text_file(repo_path, "README.md") if sampled_files else ""
+    warnings = list(warnings)
+    warnings.append(
+        "README-Mini-Fix erkannt; breite Repository- und Web-Recherche wurde bewusst uebersprungen."
+    )
+    research_notes = _readme_smiley_summary(request.goal, overview, readme_excerpt)
+    source_plan = {
+        "mode": "local_repo_only",
+        "reason": "README.md ist bereits als einziger sicherer Zielpfad bekannt.",
+        "general_web_allowed": False,
+        "fallback_reason": "Nicht noetig fuer einen lokalen README-Einzeilenfix.",
+        "trusted_matches": [],
+    }
+    report_text = _build_report(
+        goal=request.goal,
+        repository=request.repository,
+        notes=research_notes,
+        overview=overview,
+        sampled_files=sampled_files,
+        source_plan=source_plan,
+        web_results=[],
+        warnings=warnings,
+    )
+    report_path = write_report(settings.task_report_dir(request.task_id), "research-notes.md", report_text)
+    return WorkerResponse(
+        worker="research",
+        summary="Repository research completed.",
+        outputs={
+            "research_notes": research_notes,
+            "repo_overview": overview,
+            "candidate_files": sampled_files,
+            "sources": {
+                "repository_files": sampled_files,
+                "trusted_source_plan": source_plan,
+                "trusted_sources": [],
+                "general_web_results": [],
+                "web_sources": [],
+                "source_quality": {},
+            },
+            "uncertainties": warnings,
+            "prompt_injection_signals": [],
+            "local_repo_path": str(repo_path),
+        },
+        warnings=warnings,
+        artifacts=[
+            Artifact(
+                name="research-notes",
+                path=str(report_path),
+                description="Structured repository and architecture research notes.",
+            )
+        ],
+    )
+
+
 def _grep_for_source_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list[str]:
     """Keyword-grep Python sources for goal tokens so the research LLM sees relevant code, not just config files."""
     import re
@@ -310,6 +385,30 @@ def _heuristic_summary(
         f"## Unknowns\n"
         f"- Goal-specific dependencies, deployment contracts, and test expectations should be confirmed during planning.\n"
         f"- Requested change: {goal}\n"
+    )
+
+
+def _readme_smiley_summary(goal: str, overview: dict, readme_excerpt: str) -> str:
+    """Return one deterministic five-section summary for the README smiley fast path."""
+
+    first_line = readme_excerpt.splitlines()[0] if readme_excerpt.splitlines() else "README.md not readable."
+    return (
+        "## Architecture\n"
+        "- The requested change is a documentation-only one-line patch in README.md.\n"
+        f"- Repository file count: {overview.get('file_count', 0)}.\n"
+        f"- Current first README line: {first_line}\n\n"
+        "## Likely Change Points\n"
+        "- Edit only README.md.\n"
+        "- Prefix the first line with `:) ` and leave all later lines untouched.\n\n"
+        "## Trusted Sources\n"
+        "- No external sources are needed because the goal names the target file directly.\n"
+        "- General web fallback intentionally skipped.\n\n"
+        "## Risks\n"
+        "- A full-file rewrite would be disproportionate for this task.\n"
+        "- Any change outside README.md would violate the intended minimal scope.\n\n"
+        "## Unknowns\n"
+        f"- Requested change: {goal}\n"
+        "- If README.md is missing, the coding worker should fail clearly instead of broadening scope.\n"
     )
 
 

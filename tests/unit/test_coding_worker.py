@@ -317,6 +317,45 @@ async def test_local_patch_backend_recovers_when_primary_model_returns_response_
 
 
 @pytest.mark.asyncio
+async def test_local_patch_backend_uses_deterministic_readme_smiley_fast_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "README.md").write_text("Probe README\nSecond line\n", encoding="utf-8")
+    _run_git(repo_path, "init", "-b", "main")
+    _run_git(repo_path, "config", "user.email", "test@example.com")
+    _run_git(repo_path, "config", "user.name", "Test User")
+    _run_git(repo_path, "add", "README.md")
+    _run_git(repo_path, "commit", "-m", "initial")
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        WorkerRequest(
+            task_id="task-readme-fast",
+            goal="Fuege am Anfang der Readme einen Smiley ein.",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            branch_name="feature/readme-fast",
+            metadata={"task_profile": {"name": "readme_prefix_smiley_fix"}},
+            prior_results={},
+        ),
+        repo_path,
+        "feature/readme-fast",
+    )
+
+    assert response.success is True
+    assert response.outputs["changed_files"] == ["README.md"]
+    assert response.outputs["deterministic_strategy"] == "prepend_ascii_smiley_to_readme_first_line"
+    assert (repo_path / "README.md").read_text(encoding="utf-8").startswith(":) Probe README\n")
+
+
+@pytest.mark.asyncio
 async def test_local_patch_backend_recovers_when_primary_model_returns_incomplete_edit_operation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

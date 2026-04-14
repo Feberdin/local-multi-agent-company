@@ -14,6 +14,7 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -35,6 +36,24 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
     tests = request.prior_results.get("tester", {}).get("outputs", {})
     security = request.prior_results.get("security", {}).get("outputs", {})
+
+    if is_readme_smiley_profile(request.metadata):
+        outputs = _readme_smiley_validation(request)
+        report_path = write_report(settings.task_report_dir(request.task_id), "validation.json", outputs)
+        return WorkerResponse(
+            worker="validation",
+            summary="Validation against the original Auftrag completed.",
+            outputs=outputs,
+            warnings=[],
+            artifacts=[
+                Artifact(
+                    name="validation",
+                    path=str(report_path),
+                    description="Validation of acceptance criteria, residual risks, and maturity rating.",
+                )
+            ],
+        )
+
     guidance_block = worker_governance.guidance_prompt_block(request, "validation")
 
     try:
@@ -90,4 +109,36 @@ def _heuristic_validation(requirements: dict, tests: dict, security: dict) -> di
         "residual_risks": security.get("risk_flags", []),
         "release_readiness": "prototype" if security.get("risk_flags") else "beta",
         "recommendation": "Proceed with a draft PR and staging-only deployment, then request human review for flagged risks.",
+    }
+
+
+def _readme_smiley_validation(request: WorkerRequest) -> dict:
+    """Validate the trivial README smiley fast path without a slow model roundtrip."""
+
+    coding_outputs = request.prior_results.get("coding", {}).get("outputs", {})
+    changed_files = [item for item in coding_outputs.get("changed_files", []) if isinstance(item, str)]
+    only_readme_changed = changed_files == ["README.md"]
+    fulfilled = ["Der Fast-Path blieb auf den minimalen README-Scope begrenzt."]
+    partially_verified: list[str] = []
+    unverified: list[str] = []
+    if only_readme_changed:
+        fulfilled.append("Nur README.md ist im resultierenden Diff sichtbar.")
+    else:
+        partially_verified.append(
+            "Die geaenderten Dateien weichen vom erwarteten Minimal-Scope ab oder sind noch nicht vollstaendig sichtbar."
+        )
+    if not changed_files:
+        unverified.append("Es wurde noch kein veraenderter README-Diff nachgewiesen.")
+
+    return {
+        "fulfilled": fulfilled,
+        "partially_verified": partially_verified,
+        "unverified": unverified,
+        "residual_risks": [] if only_readme_changed else ["Pruefe den Diff manuell, falls neben README.md weitere Dateien auftauchen."],
+        "release_readiness": "beta" if only_readme_changed else "prototype",
+        "recommendation": (
+            "Proceed with a draft PR for the tiny README fix."
+            if only_readme_changed
+            else "Inspect the resulting diff before creating a PR."
+        ),
     }

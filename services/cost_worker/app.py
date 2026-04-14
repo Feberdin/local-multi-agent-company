@@ -13,6 +13,7 @@ from services.shared.agentic_lab.config import get_settings
 from services.shared.agentic_lab.model_routing import get_model_routing
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
 
 settings = get_settings()
 app = FastAPI(title="Feberdin Cost Worker", version="0.1.0")
@@ -40,15 +41,24 @@ async def run(request: WorkerRequest) -> WorkerResponse:
         }
         for worker_name, route in routing.workers.items()
     }
-    recommended = "qwen-heavy" if len(request.goal) > 180 or "architecture" in request.goal.lower() else "mixed-routing"
-    outputs = {
-        "recommended_strategy": recommended,
-        "route_summary": route_summary,
-        "notes": [
+    if is_readme_smiley_profile(request.metadata):
+        recommended = "micro-fix-fast-path"
+        notes = [
+            "Der Auftrag ist ein sehr kleiner README-Einzeilenfix und soll den Fast-Path nutzen.",
+            "Breite Recherche- und Architekturphasen werden bewusst uebersprungen, um Wartezeit zu sparen.",
+            "Der entscheidende Teil ist ein deterministischer oder stark fokussierter Coding-Schritt gegen README.md.",
+        ]
+    else:
+        recommended = "qwen-heavy" if len(request.goal) > 180 or "architecture" in request.goal.lower() else "mixed-routing"
+        notes = [
             "Routine extraction and summarization can stay on Mistral.",
             "Research und Architektur duerfen Qwen bevorzugen, waehrend strukturierte Worker standardmaessig Mistral bevorzugen.",
             "Fuer JSON-, Schema- und Patch-Worker sollten parsebare Antworten immer wichtiger sein als freie Prosa.",
-        ],
+        ]
+    outputs = {
+        "recommended_strategy": recommended,
+        "route_summary": route_summary,
+        "notes": notes,
     }
     report_path = write_report(settings.task_report_dir(request.task_id), "cost-plan.json", outputs)
     return WorkerResponse(

@@ -34,6 +34,10 @@ from services.shared.agentic_lab.repo_tools import (
     write_report,
 )
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
+from services.shared.agentic_lab.task_profiles import (
+    README_SMILEY_CODING_STRATEGY,
+    is_readme_smiley_profile,
+)
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -169,6 +173,9 @@ async def _run_local_patch_backend(
             summary="Coding backend is unavailable.",
             errors=["Local patch mode requires a configured OpenAI-compatible model backend."],
         )
+
+    if is_readme_smiley_profile(request.metadata):
+        return _run_readme_smiley_fast_path(request, repo_path, branch_name)
 
     requirements = request.prior_results.get("requirements", {}).get("outputs", {})
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
@@ -411,6 +418,115 @@ async def _run_local_patch_backend(
     )
 
 
+def _run_readme_smiley_fast_path(
+    request: WorkerRequest,
+    repo_path: Path,
+    branch_name: str,
+) -> WorkerResponse:
+    """
+    Apply the smallest safe README smiley patch without spending minutes on model planning.
+
+    Example:
+      Before: "Probe README"
+      After:  ":) Probe README"
+    """
+
+    target_path = repo_path / "README.md"
+    if not target_path.is_file():
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="README-Mini-Fix konnte nicht ausgefuehrt werden.",
+            errors=["README.md wurde im isolierten Task-Workspace nicht gefunden."],
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    original_content = target_path.read_text(encoding="utf-8", errors="ignore")
+    updated_content = _prepend_smiley_to_first_line(original_content)
+    if updated_content == original_content:
+        report = {
+            "summary": "README hatte bereits das gewuenschte Smiley-Praefix.",
+            "branch_name": branch_name,
+            "changed_files": [],
+            "diff_stat": "",
+            "deterministic_strategy": README_SMILEY_CODING_STRATEGY,
+        }
+        report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
+        return WorkerResponse(
+            worker="coding",
+            summary="README war bereits im gewuenschten Zustand.",
+            outputs={
+                "branch_name": branch_name,
+                "local_repo_path": str(repo_path),
+                "changed_files": [],
+                "diff_stat": "",
+                "deterministic_strategy": README_SMILEY_CODING_STRATEGY,
+            },
+            warnings=["README.md enthaelt bereits das gewuenschte `:)`-Praefix in der ersten Zeile."],
+            artifacts=[
+                Artifact(
+                    name="coding-report",
+                    path=str(report_path),
+                    description="Deterministischer README-Mini-Fix ohne resultierenden Diff.",
+                )
+            ],
+        )
+
+    edit_plan = [
+        EditOperation(
+            action="create_or_update",
+            file_path="README.md",
+            reason="Der Trivial-Fast-Path setzt nur ein ASCII-Smiley an den Anfang der ersten README-Zeile.",
+            new_content=updated_content,
+        )
+    ]
+    patch_result = apply_edit_plan(repo_path, edit_plan)
+    if not patch_result.success:
+        errors = [
+            f"Operation {item.operation_index} ({item.action} on {item.file_path}): {item.error}"
+            for item in patch_result.failed_operations
+        ]
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="README-Mini-Fix konnte nicht angewendet werden.",
+            errors=errors or patch_result.errors,
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    diff = current_diff(repo_path, request.base_branch)
+    risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
+    report = {
+        "summary": "README-Mini-Fix wurde deterministisch angewendet.",
+        "branch_name": branch_name,
+        "changed_files": diff["changed_files"],
+        "diff_stat": diff["diff_stat"],
+        "deterministic_strategy": README_SMILEY_CODING_STRATEGY,
+        "patch_summary": patch_result.summary_text(),
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
+    return WorkerResponse(
+        worker="coding",
+        summary="README-Mini-Fix wurde deterministisch angewendet.",
+        outputs={
+            "branch_name": branch_name,
+            "local_repo_path": str(repo_path),
+            "changed_files": diff["changed_files"],
+            "diff_stat": diff["diff_stat"],
+            "deterministic_strategy": README_SMILEY_CODING_STRATEGY,
+            "patch_summary": patch_result.summary_text(),
+        },
+        risk_flags=risk_flags,
+        artifacts=[
+            Artifact(
+                name="coding-report",
+                path=str(report_path),
+                description="Deterministischer README-Mini-Fix mit resultierendem Diff.",
+            )
+        ],
+    )
+
+
 def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list[str]:
     """Fallback file discovery: grep Python sources for keywords from the goal.
 
@@ -632,6 +748,31 @@ def _is_generic_repo_metadata_candidate(path: str) -> bool:
         ".github/workflows/ci.yml",
         ".github/workflows/ci.yaml",
     }
+
+
+def _prepend_smiley_to_first_line(content: str) -> str:
+    """Prefix the first line with `:) ` exactly once while preserving the rest of the file verbatim."""
+
+    if content == "":
+        return ":)\n"
+
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return ":)\n"
+
+    first_line = lines[0]
+    line_break = ""
+    if first_line.endswith("\r\n"):
+        line_break = "\r\n"
+    elif first_line.endswith("\n"):
+        line_break = "\n"
+
+    stripped_first_line = first_line[:-len(line_break)] if line_break else first_line
+    if stripped_first_line.startswith(":) "):
+        return content
+
+    lines[0] = f":) {stripped_first_line}{line_break}"
+    return "".join(lines)
 
 
 def _coding_system_prompt(guidance_block: str) -> str:
