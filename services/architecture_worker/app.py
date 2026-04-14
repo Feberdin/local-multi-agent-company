@@ -7,7 +7,10 @@ How to debug: If coding changes feel unstructured, inspect the component map and
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -144,32 +147,194 @@ def _normalize_architecture_outputs(outputs: dict, repo_path: Path, research: ob
     normalized = dict(outputs)
     raw_touched = normalized.get("touched_areas", [])
     research_outputs = research if isinstance(research, dict) else {}
-    research_candidates = [
-        item
-        for item in research_outputs.get("candidate_files", [])
-        if isinstance(item, str) and (repo_path / item).exists() and (repo_path / item).is_file()
-    ]
+    research_candidates = _existing_repo_files(research_outputs.get("candidate_files", []), repo_path)
+    existing_touched = _existing_repo_files(raw_touched, repo_path)
 
-    existing_touched: list[str] = []
-    if isinstance(raw_touched, list):
-        for item in raw_touched:
-            if not isinstance(item, str):
-                continue
-            candidate = item.strip()
-            if not candidate:
-                continue
-            full_path = repo_path / candidate
-            if full_path.exists() and full_path.is_file() and candidate not in existing_touched:
-                existing_touched.append(candidate)
+    # Why this exists:
+    # Architecture answers occasionally mention the correct target in the summary/components,
+    # but still emit generic touched_areas like README.md or docker-compose.yml. Downstream
+    # coding then trusts the wrong files and loses the real implementation target.
+    ranked_touched = _rank_architecture_touched_areas(
+        outputs=normalized,
+        repo_path=repo_path,
+        research_outputs=research_outputs,
+        existing_touched=existing_touched,
+        research_candidates=research_candidates,
+    )
 
-    if len(existing_touched) < 2:
-        for candidate in research_candidates:
-            if candidate not in existing_touched:
-                existing_touched.append(candidate)
-            if len(existing_touched) >= 6:
-                break
-
-    if existing_touched:
-        normalized["touched_areas"] = existing_touched
+    if ranked_touched:
+        normalized["touched_areas"] = ranked_touched
 
     return normalized
+
+
+def _existing_repo_files(raw_paths: object, repo_path: Path) -> list[str]:
+    """Keep only unique existing files from a mixed worker payload."""
+
+    if not isinstance(raw_paths, list):
+        return []
+    existing: list[str] = []
+    for item in raw_paths:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if not candidate:
+            continue
+        full_path = repo_path / candidate
+        if full_path.exists() and full_path.is_file() and candidate not in existing:
+            existing.append(candidate)
+    return existing
+
+
+def _rank_architecture_touched_areas(
+    *,
+    outputs: dict[str, Any],
+    repo_path: Path,
+    research_outputs: dict[str, Any],
+    existing_touched: list[str],
+    research_candidates: list[str],
+) -> list[str]:
+    """
+    Rank touched areas by semantic fit so concrete source files win over generic repo metadata.
+
+    Example:
+      summary references ensure_repository_checkout in repo_tools.py
+      existing touched_areas contain README.md and docker-compose.yml
+      research suggests services/shared/agentic_lab/repo_tools.py
+      => repo_tools.py must rise to the top.
+    """
+
+    candidate_pool = _merge_unique_paths(research_candidates, existing_touched)
+    if not candidate_pool:
+        return []
+
+    architecture_text = _normalize_search_text(_flatten_text(outputs))
+    research_text = _normalize_search_text(_flatten_text(research_outputs))
+    has_specific_source_candidate = any(_looks_like_source_file(path) for path in candidate_pool)
+    ranked: list[tuple[int, int, str]] = []
+    for index, path in enumerate(candidate_pool):
+        score = 0
+        normalized_path = _normalize_search_text(path)
+        path_terms = _path_terms(path)
+        basename_terms = _path_terms(Path(path).stem)
+
+        if normalized_path and normalized_path in architecture_text:
+            score += 18
+
+        for term in basename_terms:
+            if term in architecture_text:
+                score += 7
+
+        for term in path_terms:
+            if term in architecture_text:
+                score += 3
+            if term in research_text:
+                score += 2
+
+        if path in research_candidates:
+            score += 10
+        if path in existing_touched:
+            score += 5
+        if _looks_like_source_file(path):
+            score += 4
+        if _is_generic_repo_metadata_path(path) and has_specific_source_candidate:
+            score -= 9
+        if path.startswith("tests/") and has_specific_source_candidate:
+            score -= 2
+
+        preview = _safe_read_preview(repo_path / path)
+        preview_text = _normalize_search_text(preview)
+        if "git" in preview_text and "clone" in preview_text:
+            score += 6
+        if "ensure_repository_checkout" in preview_text:
+            score += 5
+        if "_clone_target_from_best_source" in preview_text:
+            score += 4
+
+        ranked.append((score, -index, path))
+
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [path for _, _, path in ranked[:6]]
+
+
+def _merge_unique_paths(*groups: list[str]) -> list[str]:
+    """Preserve order while merging candidate path lists."""
+
+    merged: list[str] = []
+    for group in groups:
+        for path in group:
+            if path not in merged:
+                merged.append(path)
+    return merged
+
+
+def _flatten_text(value: object) -> str:
+    """Collect free text recursively so we can compare file paths against the full architecture intent."""
+
+    parts: list[str] = []
+
+    def _collect(item: object) -> None:
+        if isinstance(item, str):
+            if item.strip():
+                parts.append(item.strip())
+            return
+        if isinstance(item, dict):
+            for nested in item.values():
+                _collect(nested)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                _collect(nested)
+
+    _collect(value)
+    return "\n".join(parts)
+
+
+def _normalize_search_text(value: str) -> str:
+    """Normalize mixed English/German worker text into a stable lowercase search string."""
+
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", normalized.lower()).strip()
+
+
+def _path_terms(path: str) -> list[str]:
+    """Extract useful search terms from file paths without generic filler words."""
+
+    raw_terms = re.split(r"[^a-z0-9_]+", _normalize_search_text(path))
+    ignore = {"services", "shared", "agentic_lab", "tests", "unit", "app", "main", "file"}
+    terms: list[str] = []
+    for term in raw_terms:
+        if len(term) < 4 or term in ignore:
+            continue
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _looks_like_source_file(path: str) -> bool:
+    """Prefer concrete source files over repo metadata when both are present."""
+
+    return Path(path).suffix.lower() in {".py", ".sh", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs"}
+
+
+def _is_generic_repo_metadata_path(path: str) -> bool:
+    """Recognize broad repo-level files that often drown out the real implementation target."""
+
+    normalized = path.strip().lower()
+    return normalized in {
+        "readme.md",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/ci.yaml",
+    }
+
+
+def _safe_read_preview(path: Path, max_chars: int = 6000) -> str:
+    """Read a small preview for ranking without letting one large file dominate the decision."""
+
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+    except OSError:
+        return ""

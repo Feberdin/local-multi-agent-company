@@ -58,3 +58,68 @@ def test_normalize_architecture_outputs_filters_missing_paths_and_uses_research_
         "services/coding_worker/app.py",
         "services/shared/agentic_lab/repo_tools.py",
     ]
+
+
+def test_normalize_architecture_outputs_prioritizes_semantically_relevant_source_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app_module = _load_architecture_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    for relative_path, content in {
+        "README.md": "# docs\n",
+        "docker-compose.yml": "services:\n  app:\n    image: demo\n",
+        "pyproject.toml": "[project]\nname = 'demo'\n",
+        "services/coding_worker/app.py": "def coding_worker():\n    return 'ok'\n",
+        "services/shared/agentic_lab/repo_tools.py": (
+            "def ensure_repository_checkout():\n"
+            "    run_command(['git', 'clone', '--branch', 'main', 'demo', '/tmp/repo'])\n"
+        ),
+    }.items():
+        file_path = repo_path / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+
+    outputs = {
+        "summary": (
+            "Wrap git clone failures inside ensure_repository_checkout in "
+            "services/shared/agentic_lab/repo_tools.py."
+        ),
+        "components": [
+            {
+                "name": "Checkout helper",
+                "file_path": "services/shared/agentic_lab/repo_tools.py",
+                "description": "Owns the clone path for local repo preparation.",
+            }
+        ],
+        "implementation_plan": [
+            "Update services/shared/agentic_lab/repo_tools.py to add guarded clone error handling.",
+            "Keep services/coding_worker/app.py aligned with the helper contract.",
+        ],
+        "touched_areas": [
+            "README.md",
+            "docker-compose.yml",
+            "pyproject.toml",
+            "services/coding_worker/app.py",
+        ],
+    }
+    research = {
+        "candidate_files": [
+            "services/shared/agentic_lab/repo_tools.py",
+            "services/coding_worker/app.py",
+        ],
+        "research_notes": (
+            "The git clone path lives in services/shared/agentic_lab/repo_tools.py "
+            "inside ensure_repository_checkout."
+        ),
+    }
+
+    normalized = app_module._normalize_architecture_outputs(outputs, repo_path, research)  # pyright: ignore[reportPrivateUsage]
+
+    assert normalized["touched_areas"][:2] == [
+        "services/shared/agentic_lab/repo_tools.py",
+        "services/coding_worker/app.py",
+    ]
+    assert "README.md" not in normalized["touched_areas"][:2]

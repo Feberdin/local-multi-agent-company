@@ -180,20 +180,13 @@ async def _run_local_patch_backend(
         p for p in architecture.get("touched_areas", []) or architecture.get("module_boundaries", [])
         if isinstance(p, str)
     ]
-    candidate_files = [p for p in arch_touched if (repo_path / p).exists() and (repo_path / p).is_file()][:6]
-
-    # When the architecture hallucinated more than half of its touched_areas (non-existent paths),
-    # supplement with research candidate_files so the coding LLM gets the real relevant source files.
-    if arch_touched and len(candidate_files) < len(arch_touched) / 2:
-        for p in research.get("candidate_files", []):
-            if isinstance(p, str) and (repo_path / p).exists() and (repo_path / p).is_file() and p not in candidate_files:
-                candidate_files.append(p)
-                if len(candidate_files) >= 6:
-                    break
-
-    # Final fallback: when no usable paths came from architecture or research, grep Python sources.
-    if not candidate_files:
-        candidate_files = _grep_for_candidates(repo_path, request.goal)
+    candidate_files = _select_candidate_files(
+        repo_path=repo_path,
+        goal=request.goal,
+        requirements=requirements,
+        architecture=architecture,
+        research=research,
+    )
 
     # Build a lightweight symbol index for Python candidate files so the LLM can
     # use targeted replace_symbol_body operations instead of full file rewrites.
@@ -470,6 +463,175 @@ def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list
     # Sort by hit count descending, prefer non-test files
     ranked = sorted(hits.items(), key=lambda x: (x[0].startswith("tests/"), -x[1]))
     return [path for path, _ in ranked[:max_files]]
+
+
+def _select_candidate_files(
+    *,
+    repo_path: Path,
+    goal: str,
+    requirements: object,
+    architecture: object,
+    research: object,
+    max_files: int = 6,
+) -> list[str]:
+    """
+    Choose the most relevant existing files for coding so concrete source targets win over repo metadata.
+
+    Why this exists:
+    Earlier runs trusted architecture.touched_areas too literally. When architecture returned
+    existing but generic files like README.md, the real implementation target dropped out of
+    file_context and the model blocked on oversized, irrelevant context instead of patching code.
+    """
+
+    architecture_outputs = architecture if isinstance(architecture, dict) else {}
+    research_outputs = research if isinstance(research, dict) else {}
+    arch_candidates = _existing_candidate_paths(
+        architecture_outputs.get("touched_areas", []) or architecture_outputs.get("module_boundaries", []),
+        repo_path,
+    )
+    research_candidates = _existing_candidate_paths(research_outputs.get("candidate_files", []), repo_path)
+    candidate_pool = _merge_unique_candidate_paths(research_candidates, arch_candidates)
+
+    if not candidate_pool:
+        return _grep_for_candidates(repo_path, goal, max_files=max_files)
+
+    ranked = _rank_candidate_files(
+        repo_path=repo_path,
+        goal=goal,
+        requirements=requirements,
+        architecture=architecture_outputs,
+        research=research_outputs,
+        arch_candidates=arch_candidates,
+        research_candidates=research_candidates,
+        candidate_pool=candidate_pool,
+    )
+    if ranked:
+        return ranked[:max_files]
+
+    return candidate_pool[:max_files]
+
+
+def _existing_candidate_paths(raw_paths: object, repo_path: Path) -> list[str]:
+    """Filter one mixed worker payload down to unique real files in the repo."""
+
+    if not isinstance(raw_paths, list):
+        return []
+    existing: list[str] = []
+    for item in raw_paths:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if not candidate:
+            continue
+        full_path = repo_path / candidate
+        if full_path.exists() and full_path.is_file() and candidate not in existing:
+            existing.append(candidate)
+    return existing
+
+
+def _merge_unique_candidate_paths(*groups: list[str]) -> list[str]:
+    """Preserve order while combining research and architecture candidates."""
+
+    merged: list[str] = []
+    for group in groups:
+        for path in group:
+            if path not in merged:
+                merged.append(path)
+    return merged
+
+
+def _rank_candidate_files(
+    *,
+    repo_path: Path,
+    goal: str,
+    requirements: object,
+    architecture: dict[str, Any],
+    research: dict[str, Any],
+    arch_candidates: list[str],
+    research_candidates: list[str],
+    candidate_pool: list[str],
+) -> list[str]:
+    """Rank file candidates by goal fit, code relevance, and signal quality."""
+
+    keywords = _prompt_focus_keywords(goal, requirements)
+    context_text = _normalize_prompt_search_text(
+        "\n".join(
+            [
+                _short_text(architecture.get("summary"), limit=1200),
+                _short_text(research.get("research_notes"), limit=1200),
+                " ".join(str(item) for item in architecture.get("implementation_plan", []) if isinstance(item, str)),
+                " ".join(str(item) for item in research.get("candidate_files", []) if isinstance(item, str)),
+            ]
+        )
+    )
+    has_specific_source_candidate = any(_looks_like_source_candidate(path) for path in candidate_pool)
+    ranked: list[tuple[int, int, str]] = []
+    for index, path in enumerate(candidate_pool):
+        preview = read_text_file(repo_path, path, max_bytes=8_000)
+        haystack = _normalize_prompt_search_text(f"{path}\n{preview}")
+        matched_terms = [keyword for keyword in keywords if keyword in haystack][:12]
+        path_terms = _candidate_path_terms(path)
+        score = len(matched_terms)
+
+        if path in research_candidates:
+            score += 9
+        if path in arch_candidates:
+            score += 5
+        if _looks_like_source_candidate(path):
+            score += 4
+        if any(term in context_text for term in path_terms):
+            score += 4
+        if "git" in matched_terms and "clone" in matched_terms:
+            score += 6
+        if "ensure_repository_checkout" in matched_terms:
+            score += 5
+        if "_clone_target_from_best_source" in matched_terms:
+            score += 4
+        if "error" in matched_terms and "backend" in matched_terms:
+            score += 2
+        if _is_generic_repo_metadata_candidate(path) and has_specific_source_candidate:
+            score -= 10
+        if path.startswith("tests/") and has_specific_source_candidate:
+            score -= 2
+
+        ranked.append((score, -index, path))
+
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [path for _, _, path in ranked]
+
+
+def _candidate_path_terms(path: str) -> list[str]:
+    """Extract the non-generic terms from a candidate path for context matching."""
+
+    ignore = {"services", "shared", "agentic_lab", "tests", "unit", "app", "main", "file"}
+    parts = re.split(r"[^a-z0-9_]+", _normalize_prompt_search_text(path))
+    terms: list[str] = []
+    for part in parts:
+        if len(part) < 4 or part in ignore:
+            continue
+        if part not in terms:
+            terms.append(part)
+    return terms
+
+
+def _looks_like_source_candidate(path: str) -> bool:
+    """Prefer real implementation files when the goal asks for a code change."""
+
+    return Path(path).suffix.lower() in {".py", ".sh", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs"}
+
+
+def _is_generic_repo_metadata_candidate(path: str) -> bool:
+    """Recognize broad repo files that often drown the real fix in prompt noise."""
+
+    normalized = path.strip().lower()
+    return normalized in {
+        "readme.md",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/ci.yaml",
+    }
 
 
 def _coding_system_prompt(guidance_block: str) -> str:

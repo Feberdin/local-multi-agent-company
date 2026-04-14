@@ -664,6 +664,67 @@ def test_coding_user_prompt_renders_candidate_scope_as_readable_targets(
     assert "{'services/shared/agentic_lab/repo_tools.py'" not in prompt
 
 
+def test_select_candidate_files_prioritizes_real_fix_targets_over_generic_repo_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+
+    for relative_path, content in {
+        "README.md": "Git clone setup notes for operators.\n",
+        "docker-compose.yml": "services:\n  app:\n    image: feberdin/demo\n",
+        "pyproject.toml": "[project]\nname = 'demo'\n",
+        "services/coding_worker/app.py": (
+            "def run_local_patch_backend():\n"
+            "    return 'local patch backend'\n"
+        ),
+        "services/shared/agentic_lab/repo_tools.py": (
+            "def ensure_repository_checkout():\n"
+            "    run_command(['git', 'clone', '--branch', 'main', 'demo', '/tmp/repo'])\n"
+        ),
+    }.items():
+        file_path = repo_path / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+
+    candidate_files = coding_app._select_candidate_files(  # pyright: ignore[reportPrivateUsage]
+        repo_path=repo_path,
+        goal="Add error handling to the git clone command in the local patch backend",
+        requirements={"requirements": ["Handle git clone failures in ensure_repository_checkout."]},
+        architecture={
+            "summary": "The clone path is in services/shared/agentic_lab/repo_tools.py.",
+            "touched_areas": [
+                "README.md",
+                "docker-compose.yml",
+                "pyproject.toml",
+                "services/coding_worker/app.py",
+            ],
+            "implementation_plan": [
+                "Update services/shared/agentic_lab/repo_tools.py first.",
+                "Keep services/coding_worker/app.py aligned if needed.",
+            ],
+        },
+        research={
+            "candidate_files": [
+                "services/shared/agentic_lab/repo_tools.py",
+                "services/coding_worker/app.py",
+            ],
+            "research_notes": (
+                "The failing git clone command lives in ensure_repository_checkout "
+                "inside services/shared/agentic_lab/repo_tools.py."
+            ),
+        },
+    )
+
+    assert candidate_files[:2] == [
+        "services/shared/agentic_lab/repo_tools.py",
+        "services/coding_worker/app.py",
+    ]
+    assert "README.md" not in candidate_files[:2]
+
+
 @pytest.mark.asyncio
 async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
     tmp_path: Path,
