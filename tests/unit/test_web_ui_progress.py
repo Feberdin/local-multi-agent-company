@@ -190,6 +190,14 @@ def test_decorate_task_marks_slow_heartbeat_as_slow_instead_of_normal_running(tm
     assert decorated["events"][-1]["state_label"] == "auffaellig langsam"
 
 
+def test_format_duration_renders_subsecond_values_as_less_than_one_second(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    assert app_module._format_duration(0.1) == "<1s"
+    assert app_module._format_duration(0.9) == "<1s"
+    assert app_module._format_duration(0.0) == "0s"
+
+
 def test_dashboard_shows_version_badge_in_top_navigation(tmp_path, monkeypatch) -> None:
     app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
     app_module.templates.env.globals["ui_build"] = {

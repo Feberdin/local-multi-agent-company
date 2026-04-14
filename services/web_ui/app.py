@@ -862,7 +862,10 @@ def _format_duration(seconds: float | int | None) -> str:
 
     if seconds is None:
         return "unbekannt"
-    total_seconds = max(0, int(seconds))
+    numeric_seconds = max(0.0, float(seconds))
+    if 0 < numeric_seconds < 1:
+        return "<1s"
+    total_seconds = int(numeric_seconds)
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
