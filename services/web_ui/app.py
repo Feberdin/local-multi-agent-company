@@ -20,6 +20,7 @@ from importlib import metadata
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -1725,6 +1726,118 @@ def _benchmark_recommendations(summary: dict[str, Any]) -> list[str]:
     return recommendations
 
 
+def _benchmark_guidance_lines(
+    summary: dict[str, Any],
+    probe_result: dict[str, Any] | None,
+) -> list[str]:
+    """
+    Turn benchmark signals into concrete worker-guidance language an operator can keep or edit.
+
+    Example:
+      top_error = "No access to necessary tools"
+      worker_name = "coding"
+      => guidance should explicitly forbid that generic blocker when file context is already available.
+    """
+
+    worker_name = str(summary.get("worker_name") or "")
+    top_error = str(summary.get("top_error") or "")
+    waiting_reason = str(summary.get("top_waiting_reason") or "")
+    active_count = int(summary.get("active_count") or 0)
+    failed_count = int(summary.get("failed_count") or 0)
+    warning_total = int(summary.get("warning_total") or 0)
+    average_duration = summary.get("average_duration_seconds")
+    probe_error = str((probe_result or {}).get("error_message") or "")
+    probe_failed = str((probe_result or {}).get("status") or "") == "failed"
+    combined_error_text = " ".join(
+        item for item in [top_error, probe_error] if item and item not in {"kein dominanter Fehler"}
+    ).lower()
+
+    lines: list[str] = []
+    if worker_name == "architecture" and (
+        probe_failed
+        or "keine nutzbare modellantwort" in combined_error_text
+        or "leer" in combined_error_text
+        or "summary" in combined_error_text
+    ):
+        lines.append(
+            "Pflichtfelder wie `summary`, `components`, `implementation_plan`, "
+            "`logging_strategy` und `test_strategy` duerfen nie leer bleiben."
+        )
+        lines.append(
+            "Wenn Details fehlen, liefere die kleinste konkrete, nichtleere Architekturantwort "
+            "statt leerer Strings, leerer Listen oder Platzhalter."
+        )
+    if worker_name == "coding" and (
+        "no access to necessary tools" in combined_error_text
+        or "did not generate any file operations" in combined_error_text
+        or "no file operations" in combined_error_text
+    ):
+        lines.append(
+            "Akzeptiere generische Blocker wie `No access to necessary tools` nicht als Endzustand, "
+            "solange `candidate_files` oder `file_context` sichtbar sind."
+        )
+        lines.append(
+            "Liefere dann den kleinsten sicheren `edit_plan` innerhalb der vorhandenen Ziel-Dateien "
+            "oder einen dateispezifischen Blocker mit echtem Pfad."
+        )
+    if active_count > 0 and isinstance(average_duration, (int, float)) and average_duration >= 300:
+        lines.append("Melde lange Wartephasen frueh als klaren Blocker oder Slow-Path statt minutenlang still zu wirken.")
+    if warning_total >= max(2, int(summary.get("run_count") or 0)):
+        lines.append("Nutze konkrete, kurze Fortschrittshinweise statt generischer Sammeltexte, wenn fast jeder Lauf Warnungen erzeugt.")
+    if waiting_reason not in {"", "kein typischer Wartegrund"}:
+        lines.append(
+            f"Wenn gewartet wird, benenne den Wartegrund konkret und reproduzierbar, zum Beispiel: `{waiting_reason}`."
+        )
+    if failed_count > 0 and not lines:
+        lines.append("Wenn ein Lauf scheitert, erklaere den kleinsten reproduzierbaren Blocker und den naechsten sicheren Schritt.")
+    return _deduplicate_preserve_order(lines)
+
+
+def _build_worker_guidance_suggestion(
+    summary: dict[str, Any],
+    probe_result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Create one operator-friendly benchmark hint that can be opened directly in the worker-guidance editor."""
+
+    hint_lines = _benchmark_guidance_lines(summary, probe_result)
+    if not hint_lines:
+        return None
+
+    evidence_parts = [
+        str(summary.get("top_error") or ""),
+        str(summary.get("top_waiting_reason") or ""),
+        str((probe_result or {}).get("error_message") or ""),
+    ]
+    evidence = " | ".join(
+        item for item in evidence_parts if item and item not in {"kein dominanter Fehler", "kein typischer Wartegrund"}
+    )
+    hint_text = "\n".join(hint_lines)
+    worker_name = str(summary.get("worker_name") or "")
+    return {
+        "worker_name": worker_name,
+        "worker_label": str(summary.get("label") or WORKER_LABELS.get(worker_name, worker_name)),
+        "hint_lines": hint_lines,
+        "hint_text": hint_text,
+        "hint_preview": _clip_text(hint_text, max_length=220),
+        "evidence": evidence or "Keine einzelne Spitzenursache sichtbar, aber die Benchmarks zeigen Optimierungspotenzial.",
+        "guidance_href": (
+            f"/worker-guidance?edit={worker_name}&benchmark_hint={quote(hint_text, safe='')}"
+        ),
+    }
+
+
+def _deduplicate_preserve_order(values: list[str]) -> list[str]:
+    """Keep operator hints readable by collapsing duplicates while preserving the first useful phrasing."""
+
+    unique_values: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in unique_values:
+            continue
+        unique_values.append(normalized)
+    return unique_values
+
+
 def _worker_run_records(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten one decorated task into benchmarkable worker runs with readable input, outcome, and runtime data."""
 
@@ -2678,6 +2791,20 @@ async def _load_benchmarks_context(
         hidden_tasks_before_reset=hidden_tasks_before_reset,
     )
     worker_probe_report = _decorate_worker_probe_registry(_as_mapping(_response_json(worker_probe_response, {})))
+    latest_probe_results_by_worker = {
+        str(result.get("worker_name") or ""): result for result in worker_probe_report["latest_results"]
+    }
+    guidance_suggestions_by_worker = {
+        worker_summary["worker_name"]: _build_worker_guidance_suggestion(
+            worker_summary,
+            latest_probe_results_by_worker.get(worker_summary["worker_name"]),
+        )
+        for worker_summary in benchmark_report["worker_summaries"]
+    }
+    for worker_summary in benchmark_report["worker_summaries"]:
+        worker_summary["guidance_suggestion"] = guidance_suggestions_by_worker.get(worker_summary["worker_name"])
+    for probe_result in worker_probe_report["latest_results"]:
+        probe_result["guidance_suggestion"] = guidance_suggestions_by_worker.get(str(probe_result.get("worker_name") or ""))
     if skipped_tasks:
         messages.append(
             f"{len(skipped_tasks)} Aufgaben konnten nicht vollständig in die Benchmark-Auswertung aufgenommen werden."
@@ -2879,6 +3006,8 @@ async def _load_worker_guidance_context(
     edit_worker_name: str | None = None,
     error_message: str | None = None,
     success_message: str | None = None,
+    benchmark_hint: str | None = None,
+    apply_benchmark_hint: bool = False,
 ) -> dict[str, Any]:
     registry_response = await _api_request("GET", "/api/settings/worker-guidance")
     registry = _as_mapping(_response_json(registry_response, {"workers": []}))
@@ -2907,6 +3036,14 @@ async def _load_worker_guidance_context(
         )
         form_values["operator_recommendations_text"] = "\n".join(edit_worker.get("operator_recommendations", []))
         form_values["decision_preferences_text"] = "\n".join(edit_worker.get("decision_preferences", []))
+    normalized_benchmark_hint = str(benchmark_hint or "").strip()
+    if normalized_benchmark_hint and apply_benchmark_hint:
+        form_values["operator_recommendations_text"] = "\n".join(
+            _deduplicate_preserve_order(
+                _split_lines(form_values.get("operator_recommendations_text", ""))
+                + _split_lines(normalized_benchmark_hint)
+            )
+        )
 
     messages = [error_message] if error_message else []
     if registry_response.status_code >= 400:
@@ -2916,6 +3053,8 @@ async def _load_worker_guidance_context(
         "worker_guidance_registry": registry,
         "workers": workers,
         "worker_guidance_form_values": form_values,
+        "benchmark_hint_text": normalized_benchmark_hint or None,
+        "benchmark_hint_applied": bool(normalized_benchmark_hint and apply_benchmark_hint),
         "error_message": " ".join(item for item in messages if item) or None,
         "success_message": success_message,
     }
@@ -3328,8 +3467,17 @@ async def web_search_page(request: Request, edit: str | None = Query(default=Non
 
 
 @app.get("/worker-guidance", response_class=HTMLResponse)
-async def worker_guidance_page(request: Request, edit: str | None = Query(default=None)) -> HTMLResponse:
-    context = await _load_worker_guidance_context(edit_worker_name=edit)
+async def worker_guidance_page(
+    request: Request,
+    edit: str | None = Query(default=None),
+    benchmark_hint: str | None = Query(default=None),
+    apply_benchmark_hint: bool = Query(default=False),
+) -> HTMLResponse:
+    context = await _load_worker_guidance_context(
+        edit_worker_name=edit,
+        benchmark_hint=benchmark_hint,
+        apply_benchmark_hint=apply_benchmark_hint,
+    )
     return templates.TemplateResponse(
         request=request,
         name="worker_guidance.html",
@@ -3498,6 +3646,8 @@ async def update_worker_guidance(
     competence_boundary: str = Form(...),
     escalate_out_of_scope: bool = Form(False),
     auto_submit_suggestions: bool = Form(False),
+    benchmark_hint: str = Form(""),
+    apply_benchmark_hint: bool = Form(False),
 ) -> Response:
     payload = {
         "worker_name": worker_name,
@@ -3513,7 +3663,12 @@ async def update_worker_guidance(
     response = await _api_request("PUT", f"/api/settings/worker-guidance/{worker_name}", json_payload=payload)
     if response.status_code >= 400:
         detail = _response_detail(response, "Die Worker-Guidance konnte nicht gespeichert werden.")
-        context = await _load_worker_guidance_context(edit_worker_name=worker_name, error_message=detail)
+        context = await _load_worker_guidance_context(
+            edit_worker_name=worker_name,
+            error_message=detail,
+            benchmark_hint=benchmark_hint,
+            apply_benchmark_hint=apply_benchmark_hint,
+        )
         context["worker_guidance_form_values"].update(payload)
         context["worker_guidance_form_values"]["operator_recommendations_text"] = operator_recommendations_text
         context["worker_guidance_form_values"]["decision_preferences_text"] = decision_preferences_text

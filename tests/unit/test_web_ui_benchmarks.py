@@ -284,6 +284,7 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
     assert "sichtbarer Input" in page_response.text
     assert "Schnelltest Modellantworten" in page_response.text
     assert "Gesammelte Modellantwort anzeigen" in page_response.text
+    assert "Guidance daraus ableiten" in page_response.text
 
     assert export_response.status_code == 200
     payload = export_response.json()
@@ -293,6 +294,7 @@ def test_benchmark_page_and_export_show_worker_metrics(tmp_path, monkeypatch) ->
     research_summary = next(item for item in payload["worker_summaries"] if item["worker_name"] == "research")
     assert coding_summary["run_count"] == 1
     assert research_summary["failed_count"] == 1
+    assert research_summary["guidance_suggestion"] is not None
 
 
 def test_benchmark_reset_starts_a_new_visible_window(tmp_path, monkeypatch) -> None:
@@ -702,3 +704,55 @@ def test_worker_tests_page_can_start_readme_micro_fix_probe(tmp_path, monkeypatc
 
     assert response.status_code == 303
     assert response.headers["location"] == "/worker-tests"
+
+
+def test_worker_guidance_page_can_apply_benchmark_hint_into_operator_recommendations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app_module = _prepare_web_ui_module(tmp_path, monkeypatch)
+
+    async def fake_api_request(method: str, path: str, *, json_payload=None):
+        del method, json_payload
+        if path == "/api/settings/worker-guidance":
+            return httpx.Response(
+                200,
+                json={
+                    "workers": [
+                        {
+                            "worker_name": "coding",
+                            "display_name": "Coding Worker",
+                            "enabled": True,
+                            "role_description": "Setzt kleine sichere Aenderungen um.",
+                            "operator_recommendations": ["Minimiere den Diff."],
+                            "decision_preferences": ["Kleine sichere Schritte."],
+                            "competence_boundary": "Keine Scope-Erweiterung ohne Freigabe.",
+                            "escalate_out_of_scope": True,
+                            "auto_submit_suggestions": True,
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected call: {path}")
+
+    app_module._api_request = fake_api_request
+    benchmark_hint = (
+        "Akzeptiere generische Blocker nicht als Endzustand.\n"
+        "Liefere den kleinsten sicheren edit_plan innerhalb der sichtbaren Ziel-Dateien."
+    )
+
+    with TestClient(app_module.app) as client:
+        response = client.get(
+            "/worker-guidance",
+            params={
+                "edit": "coding",
+                "benchmark_hint": benchmark_hint,
+                "apply_benchmark_hint": "true",
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Benchmark-Hinweis fuer diesen Worker" in response.text
+    assert "Akzeptiere generische Blocker nicht als Endzustand." in response.text
+    assert "Minimiere den Diff." in response.text
+    assert "Liefere den kleinsten sicheren edit_plan innerhalb der sichtbaren Ziel-Dateien." in response.text

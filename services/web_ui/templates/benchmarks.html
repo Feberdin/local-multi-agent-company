@@ -190,6 +190,14 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
             {% if result.error_message %}
             <p><strong>Fehler:</strong> {{ result.error_message }}</p>
             {% endif %}
+            {% if result.guidance_suggestion %}
+            <div class="benchmark-recommendations">
+              <strong>Guidance verbessern</strong>
+              <p>{{ result.guidance_suggestion.evidence }}</p>
+              <p class="muted">{{ result.guidance_suggestion.hint_preview }}</p>
+              <a class="button-link secondary" href="{{ result.guidance_suggestion.guidance_href }}">Guidance daraus ableiten</a>
+            </div>
+            {% endif %}
             <details class="response-details" {% if result.status == 'failed' %}open{% endif %}>
               <summary>Gesammelte Modellantwort anzeigen</summary>
               <pre class="response-block">{{ result.response_text }}</pre>
@@ -246,6 +254,18 @@ How to debug: If numbers look odd, export the JSON and compare one worker run wi
                 {% endfor %}
               </ul>
             </div>
+            {% if worker.guidance_suggestion %}
+            <div class="benchmark-recommendations">
+              <strong>Guidance verbessern</strong>
+              <p>{{ worker.guidance_suggestion.evidence }}</p>
+              <ul class="simple-list">
+                {% for line in worker.guidance_suggestion.hint_lines %}
+                <li>{{ line }}</li>
+                {% endfor %}
+              </ul>
+              <a class="button-link secondary" href="{{ worker.guidance_suggestion.guidance_href }}">Guidance daraus ableiten</a>
+            </div>
+            {% endif %}
           </article>
           {% endfor %}
         </div>

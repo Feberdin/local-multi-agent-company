@@ -10,7 +10,10 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+import pytest
+
 from services.shared.agentic_lab.config import get_settings
+from services.shared.agentic_lab.schemas import WorkerRequest
 
 
 def _load_architecture_module(tmp_path: Path, monkeypatch) -> object:
@@ -123,3 +126,130 @@ def test_normalize_architecture_outputs_prioritizes_semantically_relevant_source
         "services/coding_worker/app.py",
     ]
     assert "README.md" not in normalized["touched_areas"][:2]
+
+
+def test_empty_architecture_fields_detect_semantically_blank_required_values(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app_module = _load_architecture_module(tmp_path, monkeypatch)
+
+    empty_fields = app_module._empty_architecture_fields(  # pyright: ignore[reportPrivateUsage]
+        {
+            "summary": "",
+            "components": [],
+            "responsibilities": {"orchestrator": ""},
+            "data_flows": [],
+            "module_boundaries": "",
+            "deployment_strategy": [],
+            "logging_strategy": "",
+            "implementation_plan": "",
+            "test_strategy": [],
+            "risks": "",
+            "approval_gates": [],
+            "touched_areas": ["services/shared/agentic_lab/repo_tools.py"],
+        }
+    )
+
+    assert empty_fields == [
+        "summary",
+        "components",
+        "responsibilities",
+        "data_flows",
+        "module_boundaries",
+        "deployment_strategy",
+        "logging_strategy",
+        "implementation_plan",
+        "test_strategy",
+        "risks",
+        "approval_gates",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_retries_when_required_architecture_fields_are_semantically_empty(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app_module = _load_architecture_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    target_file = repo_path / "services" / "shared" / "agentic_lab" / "repo_tools.py"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("def ensure_repository_checkout():\n    return 'ok'\n", encoding="utf-8")
+
+    prompts: list[str] = []
+
+    class _FakeLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json(self, *, user_prompt: str, **_kwargs) -> dict[str, object]:
+            prompts.append(user_prompt)
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "summary": "",
+                    "components": [],
+                    "responsibilities": {},
+                    "data_flows": [],
+                    "module_boundaries": "",
+                    "deployment_strategy": [],
+                    "logging_strategy": "",
+                    "implementation_plan": "",
+                    "test_strategy": [],
+                    "risks": "",
+                    "approval_gates": [],
+                    "touched_areas": ["services/shared/agentic_lab/repo_tools.py"],
+                }
+            return {
+                "summary": "Guard git clone failures in repo_tools.",
+                "components": [
+                    {
+                        "name": "Checkout helper",
+                        "description": "Owns local repository preparation.",
+                    }
+                ],
+                "responsibilities": {"checkout helper": "Wrap git clone failures and raise clearer errors."},
+                "data_flows": ["Goal -> architecture -> coding against repo_tools.py"],
+                "module_boundaries": ["Keep clone preparation inside repo_tools.py."],
+                "deployment_strategy": ["No deployment changes required."],
+                "logging_strategy": ["Log clone failures with command context."],
+                "implementation_plan": ["Update ensure_repository_checkout to catch git clone failures."],
+                "test_strategy": ["Add unit coverage for the guarded clone path."],
+                "risks": ["Guard against masking the original clone stderr."],
+                "approval_gates": ["No additional approval gate required."],
+                "touched_areas": ["services/shared/agentic_lab/repo_tools.py"],
+            }
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(app_module, "llm", _FakeLLM())
+    monkeypatch.setattr(app_module, "worker_governance", _GuidanceStub())
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-architecture-retry",
+            goal="Add error handling to the git clone command in the local patch backend",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            branch_name="feature/architecture-retry",
+            prior_results={
+                "research": {
+                    "outputs": {
+                        "candidate_files": ["services/shared/agentic_lab/repo_tools.py"],
+                    }
+                }
+            },
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["summary"] == "Guard git clone failures in repo_tools."
+    assert response.outputs["touched_areas"][0] == "services/shared/agentic_lab/repo_tools.py"
+    assert len(prompts) == 2
+    assert "required fields were empty or semantically blank" in prompts[1]
+    assert "summary, components" in prompts[1]

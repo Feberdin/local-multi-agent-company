@@ -27,6 +27,20 @@ llm = LLMClient(settings)
 worker_governance = WorkerGovernanceService(settings)
 app = FastAPI(title="Feberdin Architecture Worker", version="0.1.0")
 
+ARCHITECTURE_REQUIRED_NON_EMPTY_FIELDS: tuple[str, ...] = (
+    "summary",
+    "components",
+    "responsibilities",
+    "data_flows",
+    "module_boundaries",
+    "deployment_strategy",
+    "logging_strategy",
+    "implementation_plan",
+    "test_strategy",
+    "risks",
+    "approval_gates",
+)
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
@@ -42,45 +56,32 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     cost_plan = request.prior_results.get("cost", {}).get("outputs", {})
     guidance_block = worker_governance.guidance_prompt_block(request, "architecture")
 
+    system_prompt = _architecture_system_prompt(guidance_block)
+    user_prompt = _architecture_user_prompt(
+        request.goal,
+        requirements=requirements,
+        research=research,
+        cost_plan=cost_plan,
+    )
+
     try:
         outputs = await llm.complete_json(
-            system_prompt=(
-                "You are a staff-plus architect. Return JSON with keys summary, components, responsibilities, "
-                "data_flows, module_boundaries, deployment_strategy, logging_strategy, implementation_plan, "
-                "test_strategy, risks, approval_gates, touched_areas.\n"
-                "CRITICAL: touched_areas must be a list of actual relative file paths that need to be modified "
-                "(e.g. ['services/coding_worker/app.py', 'services/shared/agentic_lab/repo_tools.py']). "
-                "Use the research candidate_files and repository file listing to identify the exact source files. "
-                "NEVER use generic descriptions like 'Backend-Infrastruktur' or directory names — only real relative file paths."
-                f"{guidance_block}"
-            ),
-            user_prompt=(
-                f"Goal:\n{request.goal}\n\n"
-                f"Requirements:\n{requirements}\n\n"
-                f"Research:\n{research}\n\n"
-                f"Resource plan:\n{cost_plan}\n\n"
-                "Design a practical implementation for a local-first, reviewable system. "
-                "For touched_areas, look at the research results and list the specific source files to edit."
-            ),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             worker_name="architecture",
-            required_keys=[
-                "summary",
-                "components",
-                "responsibilities",
-                "data_flows",
-                "module_boundaries",
-                "deployment_strategy",
-                "logging_strategy",
-                "implementation_plan",
-                "test_strategy",
-                "risks",
-                "approval_gates",
-                "touched_areas",
-            ],
+            required_keys=_architecture_required_keys(),
         )
     except LLMError as exc:
         task_logger.warning("LLM architecture design unavailable: %s", exc)
         outputs = _heuristic_architecture(request.goal)
+    else:
+        outputs = await _repair_empty_architecture_fields(
+            outputs=outputs,
+            request=request,
+            task_logger=task_logger,
+            system_prompt=system_prompt,
+            base_user_prompt=user_prompt,
+        )
 
     outputs = _normalize_architecture_outputs(outputs, repo_path, research)
 
@@ -130,6 +131,155 @@ def _heuristic_architecture(goal: str) -> dict:
             "Production deployment",
         ],
     }
+
+
+def _architecture_required_keys() -> list[str]:
+    """Keep the raw JSON contract in one place so retries and tests stay aligned."""
+
+    return [
+        "summary",
+        "components",
+        "responsibilities",
+        "data_flows",
+        "module_boundaries",
+        "deployment_strategy",
+        "logging_strategy",
+        "implementation_plan",
+        "test_strategy",
+        "risks",
+        "approval_gates",
+        "touched_areas",
+    ]
+
+
+def _architecture_system_prompt(guidance_block: str) -> str:
+    """Centralize the architecture contract so retries do not drift from the main request."""
+
+    return (
+        "You are a staff-plus architect. Return JSON with keys summary, components, responsibilities, "
+        "data_flows, module_boundaries, deployment_strategy, logging_strategy, implementation_plan, "
+        "test_strategy, risks, approval_gates, touched_areas.\n"
+        "CRITICAL: touched_areas must be a list of actual relative file paths that need to be modified "
+        "(e.g. ['services/coding_worker/app.py', 'services/shared/agentic_lab/repo_tools.py']). "
+        "Use the research candidate_files and repository file listing to identify the exact source files. "
+        "NEVER use generic descriptions like 'Backend-Infrastruktur' or directory names — only real relative file paths."
+        f"{guidance_block}"
+    )
+
+
+def _architecture_user_prompt(
+    goal: str,
+    *,
+    requirements: object,
+    research: object,
+    cost_plan: object,
+) -> str:
+    """Build the baseline architecture prompt so validation retries can extend the same context."""
+
+    return (
+        f"Goal:\n{goal}\n\n"
+        f"Requirements:\n{requirements}\n\n"
+        f"Research:\n{research}\n\n"
+        f"Resource plan:\n{cost_plan}\n\n"
+        "Design a practical implementation for a local-first, reviewable system. "
+        "For touched_areas, look at the research results and list the specific source files to edit."
+    )
+
+
+async def _repair_empty_architecture_fields(
+    *,
+    outputs: dict[str, Any],
+    request: WorkerRequest,
+    task_logger: TaskLoggerAdapter,
+    system_prompt: str,
+    base_user_prompt: str,
+) -> dict[str, Any]:
+    """
+    Reject semantically empty architecture answers before they poison the coding handoff.
+
+    Example:
+      summary = ""
+      components = []
+      implementation_plan = ""
+    must trigger one explicit retry instead of silently passing as a successful architecture stage.
+    """
+
+    empty_fields = _empty_architecture_fields(outputs)
+    if not empty_fields:
+        return outputs
+
+    task_logger.warning(
+        "Architecture response had empty required fields: %s",
+        ", ".join(empty_fields),
+    )
+    retry_prompt = _architecture_empty_field_retry_prompt(base_user_prompt, empty_fields)
+    try:
+        repaired = await llm.complete_json(
+            system_prompt=system_prompt,
+            user_prompt=retry_prompt,
+            worker_name="architecture",
+            required_keys=_architecture_required_keys(),
+        )
+    except LLMError as exc:
+        task_logger.warning("Architecture retry failed after empty-field validation: %s", exc)
+        return _merge_missing_architecture_fields(outputs, _heuristic_architecture(request.goal))
+
+    repaired_empty_fields = _empty_architecture_fields(repaired)
+    if not repaired_empty_fields:
+        return repaired
+
+    task_logger.warning(
+        "Architecture retry still left empty required fields: %s",
+        ", ".join(repaired_empty_fields),
+    )
+    return _merge_missing_architecture_fields(repaired, _merge_missing_architecture_fields(outputs, _heuristic_architecture(request.goal)))
+
+
+def _architecture_empty_field_retry_prompt(base_user_prompt: str, empty_fields: list[str]) -> str:
+    """Tell the model exactly why the previous architecture answer was rejected."""
+
+    return (
+        f"{base_user_prompt}\n\n"
+        "The previous architecture answer was rejected because these required fields were empty or semantically blank:\n"
+        f"{', '.join(empty_fields)}\n\n"
+        "Return the full JSON again. None of those required fields may be empty.\n"
+        "If details are uncertain, provide the smallest concrete non-empty value that still helps downstream coding.\n"
+        "Do not return empty strings, empty lists, or placeholders like 'TBD'."
+    )
+
+
+def _merge_missing_architecture_fields(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    """Fill only missing semantic gaps so we keep any useful specific data from the model output."""
+
+    merged = dict(primary)
+    for key, fallback_value in fallback.items():
+        if not _architecture_value_has_content(merged.get(key)):
+            merged[key] = fallback_value
+    return merged
+
+
+def _empty_architecture_fields(outputs: dict[str, Any]) -> list[str]:
+    """Return required keys whose values are present but still semantically empty."""
+
+    empty_fields: list[str] = []
+    for field_name in ARCHITECTURE_REQUIRED_NON_EMPTY_FIELDS:
+        if not _architecture_value_has_content(outputs.get(field_name)):
+            empty_fields.append(field_name)
+    return empty_fields
+
+
+def _architecture_value_has_content(value: object) -> bool:
+    """Treat blank strings, empty lists, and nested blank payloads as missing content."""
+
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_architecture_value_has_content(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_architecture_value_has_content(item) for item in value)
+    return True
 
 
 def _normalize_architecture_outputs(outputs: dict, repo_path: Path, research: object) -> dict:

@@ -84,10 +84,40 @@ How to debug: If a worker policy does not save, inspect the returned validation 
         </div>
       </section>
 
+      {% if benchmark_hint_text %}
+      <section class="panel panel-note">
+        <div class="panel-header">
+          <div>
+            <h2>Benchmark-Hinweis fuer diesen Worker</h2>
+            <span class="muted">Aus Benchmarks oder Teiltests abgeleitet. Du kannst den Entwurf direkt uebernehmen und dann weiter verfeinern.</span>
+          </div>
+          {% if benchmark_hint_applied %}
+          <span class="status status-done">im Entwurf enthalten</span>
+          {% endif %}
+        </div>
+        <label>
+          Abgeleiteter Guidance-Entwurf
+          <textarea rows="6" readonly>{{ benchmark_hint_text }}</textarea>
+        </label>
+        {% if not benchmark_hint_applied %}
+        <form method="get" action="/worker-guidance" class="toolbar-inline">
+          <input type="hidden" name="edit" value="{{ worker_guidance_form_values.worker_name }}">
+          <input type="hidden" name="benchmark_hint" value="{{ benchmark_hint_text }}">
+          <input type="hidden" name="apply_benchmark_hint" value="true">
+          <button type="submit" class="secondary-button">Als Entwurf in Handlungsempfehlungen uebernehmen</button>
+        </form>
+        {% endif %}
+      </section>
+      {% endif %}
+
       <section class="panel">
         <h2>Worker-Regel bearbeiten</h2>
         <form method="post" action="/settings/worker-guidance" class="stack">
           <input type="hidden" name="worker_name" value="{{ worker_guidance_form_values.worker_name }}">
+          {% if benchmark_hint_text %}
+          <input type="hidden" name="benchmark_hint" value="{{ benchmark_hint_text }}">
+          <input type="hidden" name="apply_benchmark_hint" value="{{ 'true' if benchmark_hint_applied else 'false' }}">
+          {% endif %}
           <label>
             Anzeigename
             <input type="text" name="display_name" value="{{ worker_guidance_form_values.display_name }}" required>
