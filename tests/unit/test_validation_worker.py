@@ -1,8 +1,8 @@
 """
-Purpose: Verify that tiny README smiley tasks use the deterministic validation fast path.
-Input/Output: Tests call the validation worker with a synthetic coding result and inspect the structured validation output.
-Important invariants: The fast path must stay strict about README-only diffs while avoiding slow LLM calls.
-How to debug: If this fails, inspect services/validation_worker/app.py and the readme smiley task profile.
+Purpose: Verify that tiny deterministic task profiles use the validation fast path.
+Input/Output: Tests call the validation worker with synthetic coding results and inspect the structured output.
+Important invariants: Fast paths must stay strict about their narrow diffs while avoiding slow LLM calls.
+How to debug: If this fails, inspect services/validation_worker/app.py and the task-profile helper.
 """
 
 from __future__ import annotations
@@ -44,3 +44,44 @@ async def test_validation_worker_uses_deterministic_readme_smiley_fast_path(tmp_
     assert response.success is True
     assert response.outputs["release_readiness"] == "beta"
     assert "Nur README.md ist im resultierenden Diff sichtbar." in response.outputs["fulfilled"]
+
+
+@pytest.mark.asyncio
+async def test_validation_worker_uses_deterministic_worker_stage_timeout_fast_path(tmp_path, monkeypatch) -> None:
+    app_module = _load_validation_module(tmp_path, monkeypatch)
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-validation-timeout-fast",
+            goal="Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(tmp_path / "workspace" / "local-multi-agent-company"),
+            base_branch="main",
+            metadata={
+                "task_profile": {
+                    "name": "worker_stage_timeout_config_fix",
+                    "target_timeout_seconds": 3600.0,
+                    "target_files": [
+                        "services/shared/agentic_lab/config.py",
+                        "README.md",
+                        "docs/configuration.md",
+                        "docs/troubleshooting.md",
+                    ],
+                }
+            },
+            prior_results={
+                "coding": {
+                    "outputs": {
+                        "changed_files": [
+                            "services/shared/agentic_lab/config.py",
+                            "README.md",
+                        ]
+                    }
+                }
+            },
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["release_readiness"] == "beta"
+    assert "services/shared/agentic_lab/config.py" in response.outputs["fulfilled"][0]

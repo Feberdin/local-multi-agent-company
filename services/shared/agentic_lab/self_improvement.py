@@ -287,6 +287,7 @@ async def analyze_problems(
         goal = _fallback_goal(problem_hint, dominant_class)
         hypothesis = hypothesis or "Generisches Ziel verwendet."
 
+    goal, hypothesis = _normalize_improvement_goal(goal, problem_class, hypothesis)
     return goal, problem_class, hypothesis
 
 
@@ -295,8 +296,8 @@ def _fallback_goal(problem_hint: str | None, cls: ProblemClass) -> str:
         return f"Behebe folgendes Problem im Repository: {problem_hint[:300]}"
     fallbacks = {
         ProblemClass.TIMEOUT: (
-            "Erhoehe den konfigurierbaren Timeout-Wert fuer den Worker-Stage-Ablauf "
-            "und ergaenze eine klarere Fehlermeldung bei Timeout."
+            "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in services/shared/agentic_lab/config.py "
+            "and align the visible timeout examples in README.md and docs."
         ),
         ProblemClass.INVALID_RESPONSE_SCHEMA: (
             "Verbessere die JSON-Extraktion in complete_json() mit einem robusteren "
@@ -316,6 +317,24 @@ def _fallback_goal(problem_hint: str | None, cls: ProblemClass) -> str:
         "Analysiere die letzten Worker-Fehler im Repository und implementiere "
         "eine minimale Verbesserung der Fehlerbehandlung oder Robustheit.",
     )
+
+
+def _normalize_improvement_goal(goal: str, problem_class: ProblemClass, hypothesis: str) -> tuple[str, str]:
+    """Rewrite one known timeout hallucination into the real repo paths before it reaches the workflow."""
+
+    normalized_goal = goal.strip()
+    normalized_hypothesis = hypothesis.strip()
+    if problem_class == ProblemClass.TIMEOUT and "WORKER_STAGE_TIMEOUT_SECONDS" in normalized_goal:
+        if "worker.py" in normalized_goal.lower() or "worker.py" in normalized_hypothesis.lower():
+            normalized_goal = (
+                "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in services/shared/agentic_lab/config.py "
+                "and align the visible timeout examples in README.md and docs."
+            )
+            normalized_hypothesis = (
+                "Der echte Worker-Stage-Timeout lebt in services/shared/agentic_lab/config.py; "
+                "README und Docs enthalten zusaetzliche Beispielwerte."
+            )
+    return normalized_goal, normalized_hypothesis
 
 
 # ---------------------------------------------------------------------------

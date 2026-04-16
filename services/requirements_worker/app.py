@@ -14,7 +14,11 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
-from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
+from services.shared.agentic_lab.task_profiles import (
+    is_readme_smiley_profile,
+    is_worker_stage_timeout_profile,
+    profile_target_timeout_seconds,
+)
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -35,6 +39,26 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     try:
         if is_readme_smiley_profile(request.metadata):
             outputs = _readme_smiley_requirements(request.goal, request.repository)
+            report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
+            return WorkerResponse(
+                worker="requirements",
+                summary="Requirements package created.",
+                outputs=outputs,
+                artifacts=[
+                    Artifact(
+                        name="requirements",
+                        path=str(report_path),
+                        description="Structured requirements, assumptions, risks, and acceptance criteria.",
+                    )
+                ],
+            )
+
+        if is_worker_stage_timeout_profile(request.metadata):
+            outputs = _worker_stage_timeout_requirements(
+                request.goal,
+                request.repository,
+                profile_target_timeout_seconds(request.metadata) or 3600.0,
+            )
             report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
             return WorkerResponse(
                 worker="requirements",
@@ -155,3 +179,48 @@ def _readme_smiley_requirements(goal: str, repository: str) -> dict:
         "open_questions": [],
         "recommended_workers": ["cost", "human_resources", "coding", "validation", "github", "memory"],
     }
+
+
+def _worker_stage_timeout_requirements(goal: str, repository: str, target_timeout_seconds: float) -> dict:
+    """Return a deterministic requirements package for the known worker-stage-timeout config fix."""
+
+    timeout_label = _format_timeout_seconds(target_timeout_seconds)
+    return {
+        "summary": f"Deterministischer Timeout-Config-Fix fuer {repository}: {goal}",
+        "requirements": [
+            (
+                "Aendere nur den Default fuer `worker_stage_timeout_seconds` in "
+                "`services/shared/agentic_lab/config.py` auf "
+                f"{timeout_label}."
+            ),
+            (
+                "Halte die sichtbaren Operator-Beispiele fuer "
+                f"`WORKER_STAGE_TIMEOUT_SECONDS={int(target_timeout_seconds)}` in README und Docs konsistent."
+            ),
+            "Aendere keine anderen Timeout-Parameter wie LLM_READ_TIMEOUT_SECONDS oder WORKER_CONNECT_TIMEOUT_SECONDS.",
+        ],
+        "wishes": [],
+        "assumptions": [
+            "Der echte Konfigurationswert lebt in `services/shared/agentic_lab/config.py`, nicht in einer `worker.py`.",
+            "README und Dokumentation enthalten nur Beispielwerte und duerfen konsistent mitgezogen werden.",
+        ],
+        "risks": [
+            "Ein zu breiter Timeout-Fix koennte versehentlich weitere Timeouts aufblaehen.",
+            "Wenn die Dokumentationsbeispiele nicht mitgezogen werden, bleibt die Operator-Fuehrung inkonsistent.",
+        ],
+        "acceptance_criteria": [
+            f"`worker_stage_timeout_seconds` hat als Default den Wert {timeout_label}.",
+            "Nur die echte Config-Datei und klar zugehoerige Timeout-Beispiele in README/Docs erscheinen im Diff.",
+            "Der Patch aendert keine anderen Timeout-Schluessel.",
+        ],
+        "open_questions": [],
+        "recommended_workers": ["cost", "human_resources", "coding", "validation", "github", "memory"],
+    }
+
+
+def _format_timeout_seconds(value: float) -> str:
+    """Render timeout values compactly for operator-facing requirement text."""
+
+    if float(value).is_integer():
+        return f"{value:.1f}"
+    return str(value)

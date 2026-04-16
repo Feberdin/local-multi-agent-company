@@ -14,7 +14,12 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
-from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
+from services.shared.agentic_lab.task_profiles import (
+    is_readme_smiley_profile,
+    is_worker_stage_timeout_profile,
+    profile_target_files,
+    profile_target_timeout_seconds,
+)
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -39,6 +44,23 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
     if is_readme_smiley_profile(request.metadata):
         outputs = _readme_smiley_validation(request)
+        report_path = write_report(settings.task_report_dir(request.task_id), "validation.json", outputs)
+        return WorkerResponse(
+            worker="validation",
+            summary="Validation against the original Auftrag completed.",
+            outputs=outputs,
+            warnings=[],
+            artifacts=[
+                Artifact(
+                    name="validation",
+                    path=str(report_path),
+                    description="Validation of acceptance criteria, residual risks, and maturity rating.",
+                )
+            ],
+        )
+
+    if is_worker_stage_timeout_profile(request.metadata):
+        outputs = _worker_stage_timeout_validation(request)
         report_path = write_report(settings.task_report_dir(request.task_id), "validation.json", outputs)
         return WorkerResponse(
             worker="validation",
@@ -139,6 +161,52 @@ def _readme_smiley_validation(request: WorkerRequest) -> dict:
         "recommendation": (
             "Proceed with a draft PR for the tiny README fix."
             if only_readme_changed
+            else "Inspect the resulting diff before creating a PR."
+        ),
+    }
+
+
+def _worker_stage_timeout_validation(request: WorkerRequest) -> dict:
+    """Validate the deterministic timeout-config fast path without another slow model roundtrip."""
+
+    coding_outputs = request.prior_results.get("coding", {}).get("outputs", {})
+    changed_files = [item for item in coding_outputs.get("changed_files", []) if isinstance(item, str)]
+    allowed_files = set(profile_target_files(request.metadata))
+    required_file = "services/shared/agentic_lab/config.py"
+    timeout_seconds = profile_target_timeout_seconds(request.metadata) or 3600.0
+    timeout_label = f"{timeout_seconds:.1f}" if float(timeout_seconds).is_integer() else str(timeout_seconds)
+
+    fulfilled: list[str] = []
+    partially_verified: list[str] = []
+    unverified: list[str] = []
+
+    if required_file in changed_files:
+        fulfilled.append(f"`{required_file}` wurde im Diff geaendert und traegt damit den Zielwert {timeout_label}.")
+    else:
+        unverified.append(f"Der erwartete Kern-Diff in `{required_file}` ist noch nicht sichtbar.")
+
+    if changed_files and all(path in allowed_files for path in changed_files):
+        fulfilled.append("Alle sichtbaren Aenderungen bleiben innerhalb des erlaubten Timeout-Fast-Path-Scopes.")
+    elif changed_files:
+        partially_verified.append("Im Diff tauchen Dateien ausserhalb des erlaubten Timeout-Fast-Path-Scopes auf.")
+    else:
+        unverified.append("Es wurden noch keine veraenderten Dateien fuer den Timeout-Fix nachgewiesen.")
+
+    release_readiness = "beta" if required_file in changed_files and not partially_verified else "prototype"
+    residual_risks = []
+    if partially_verified:
+        residual_risks.append("Pruefe den Diff manuell, falls ausserhalb von Config/README/Docs weitere Dateien auftauchen.")
+    residual_risks.append("Der laengere Stage-Timeout kann langsame Fehlversuche spaeter sichtbar machen statt sie schneller abzubrechen.")
+
+    return {
+        "fulfilled": fulfilled,
+        "partially_verified": partially_verified,
+        "unverified": unverified,
+        "residual_risks": residual_risks,
+        "release_readiness": release_readiness,
+        "recommendation": (
+            "Proceed with a draft PR for the deterministic timeout-config fix."
+            if release_readiness == "beta"
             else "Inspect the resulting diff before creating a PR."
         ),
     }

@@ -18,7 +18,12 @@ from fastapi import FastAPI
 
 from services.shared.agentic_lab.code_index import build_index
 from services.shared.agentic_lab.config import get_settings
-from services.shared.agentic_lab.edit_ops import EditOperation, normalize_raw_operation, validate_raw_operation
+from services.shared.agentic_lab.edit_ops import (
+    EditAction,
+    EditOperation,
+    normalize_raw_operation,
+    validate_raw_operation,
+)
 from services.shared.agentic_lab.guardrails import detect_risk_flags
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
@@ -36,7 +41,11 @@ from services.shared.agentic_lab.repo_tools import (
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
 from services.shared.agentic_lab.task_profiles import (
     README_SMILEY_CODING_STRATEGY,
+    WORKER_STAGE_TIMEOUT_CODING_STRATEGY,
     is_readme_smiley_profile,
+    is_worker_stage_timeout_profile,
+    profile_target_files,
+    profile_target_timeout_seconds,
 )
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
@@ -176,6 +185,8 @@ async def _run_local_patch_backend(
 
     if is_readme_smiley_profile(request.metadata):
         return _run_readme_smiley_fast_path(request, repo_path, branch_name)
+    if is_worker_stage_timeout_profile(request.metadata):
+        return _run_worker_stage_timeout_fast_path(request, repo_path, branch_name)
 
     requirements = request.prior_results.get("requirements", {}).get("outputs", {})
     architecture = request.prior_results.get("architecture", {}).get("outputs", {})
@@ -474,7 +485,7 @@ def _run_readme_smiley_fast_path(
 
     edit_plan = [
         EditOperation(
-            action="create_or_update",
+            action=EditAction.CREATE_OR_UPDATE,
             file_path="README.md",
             reason="Der Trivial-Fast-Path setzt nur ein ASCII-Smiley an den Anfang der ersten README-Zeile.",
             new_content=updated_content,
@@ -522,6 +533,148 @@ def _run_readme_smiley_fast_path(
                 name="coding-report",
                 path=str(report_path),
                 description="Deterministischer README-Mini-Fix mit resultierendem Diff.",
+            )
+        ],
+    )
+
+
+def _run_worker_stage_timeout_fast_path(
+    request: WorkerRequest,
+    repo_path: Path,
+    branch_name: str,
+) -> WorkerResponse:
+    """
+    Apply one deterministic timeout-config fix when self-improvement already named WORKER_STAGE_TIMEOUT_SECONDS.
+
+    Example:
+      Before in config.py: default=1800.0
+      After in config.py:  default=3600.0
+    """
+
+    target_timeout_seconds = profile_target_timeout_seconds(request.metadata) or 3600.0
+    integer_timeout = _format_timeout_seconds_for_docs(target_timeout_seconds)
+    target_files = profile_target_files(request.metadata) or [
+        "services/shared/agentic_lab/config.py",
+        "README.md",
+        "docs/configuration.md",
+        "docs/troubleshooting.md",
+    ]
+
+    config_path = repo_path / "services" / "shared" / "agentic_lab" / "config.py"
+    if not config_path.is_file():
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Timeout-Config-Fix konnte nicht ausgefuehrt werden.",
+            errors=[
+                "Die echte Ziel-Datei `services/shared/agentic_lab/config.py` wurde im isolierten Task-Workspace nicht gefunden."
+            ],
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    edit_plan: list[EditOperation] = []
+    changed_targets: list[str] = []
+
+    config_relative_path = "services/shared/agentic_lab/config.py"
+    config_original = config_path.read_text(encoding="utf-8", errors="ignore")
+    config_updated = _replace_worker_stage_timeout_default(config_original, target_timeout_seconds)
+    if config_updated == config_original:
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Timeout-Config-Fix konnte den echten Konfigurationswert nicht finden.",
+            errors=[
+                "In `services/shared/agentic_lab/config.py` wurde kein passender Default fuer `worker_stage_timeout_seconds` gefunden."
+            ],
+            outputs={
+                "local_repo_path": str(repo_path),
+                "branch_name": branch_name,
+                "target_timeout_seconds": target_timeout_seconds,
+            },
+        )
+
+    edit_plan.append(
+        EditOperation(
+            action=EditAction.CREATE_OR_UPDATE,
+            file_path=config_relative_path,
+            reason=(
+                "Der deterministische Timeout-Fast-Path setzt den echten Default fuer "
+                "`worker_stage_timeout_seconds` auf den Zielwert."
+            ),
+            new_content=config_updated,
+        )
+    )
+    changed_targets.append(config_relative_path)
+
+    for relative_path in target_files:
+        if relative_path == config_relative_path:
+            continue
+        full_path = repo_path / relative_path
+        if not full_path.is_file():
+            continue
+        original_content = full_path.read_text(encoding="utf-8", errors="ignore")
+        updated_content = _replace_worker_stage_timeout_examples(original_content, integer_timeout)
+        if updated_content == original_content:
+            continue
+        edit_plan.append(
+            EditOperation(
+                action=EditAction.CREATE_OR_UPDATE,
+                file_path=relative_path,
+                reason=(
+                    "Der deterministische Timeout-Fast-Path haelt sichtbare Operator-Beispiele "
+                    "fuer `WORKER_STAGE_TIMEOUT_SECONDS` konsistent."
+                ),
+                new_content=updated_content,
+            )
+        )
+        changed_targets.append(relative_path)
+
+    patch_result = apply_edit_plan(repo_path, edit_plan)
+    if not patch_result.success:
+        errors = [
+            f"Operation {item.operation_index} ({item.action} on {item.file_path}): {item.error}"
+            for item in patch_result.failed_operations
+        ]
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="Timeout-Config-Fix konnte nicht angewendet werden.",
+            errors=errors or patch_result.errors,
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    diff = current_diff(repo_path, request.base_branch)
+    risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
+    report = {
+        "summary": "Timeout-Config-Fix wurde deterministisch angewendet.",
+        "branch_name": branch_name,
+        "changed_files": diff["changed_files"],
+        "diff_stat": diff["diff_stat"],
+        "deterministic_strategy": WORKER_STAGE_TIMEOUT_CODING_STRATEGY,
+        "target_timeout_seconds": target_timeout_seconds,
+        "target_files": changed_targets,
+        "patch_summary": patch_result.summary_text(),
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
+    return WorkerResponse(
+        worker="coding",
+        summary="Timeout-Config-Fix wurde deterministisch angewendet.",
+        outputs={
+            "branch_name": branch_name,
+            "local_repo_path": str(repo_path),
+            "changed_files": diff["changed_files"],
+            "diff_stat": diff["diff_stat"],
+            "deterministic_strategy": WORKER_STAGE_TIMEOUT_CODING_STRATEGY,
+            "target_timeout_seconds": target_timeout_seconds,
+            "target_files": changed_targets,
+            "patch_summary": patch_result.summary_text(),
+        },
+        risk_flags=risk_flags,
+        artifacts=[
+            Artifact(
+                name="coding-report",
+                path=str(report_path),
+                description="Deterministischer Timeout-Config-Fix mit resultierendem Diff.",
             )
         ],
     )
@@ -773,6 +926,32 @@ def _prepend_smiley_to_first_line(content: str) -> str:
 
     lines[0] = f":) {stripped_first_line}{line_break}"
     return "".join(lines)
+
+
+def _replace_worker_stage_timeout_default(content: str, target_timeout_seconds: float) -> str:
+    """Update only the real Settings default for worker_stage_timeout_seconds in config.py."""
+
+    replacement_value = f"{target_timeout_seconds:.1f}" if float(target_timeout_seconds).is_integer() else str(
+        target_timeout_seconds
+    )
+    pattern = re.compile(
+        r"(worker_stage_timeout_seconds:\s*float\s*=\s*Field\(\s*default=)([0-9]+(?:\.[0-9]+)?)(,)",
+        re.MULTILINE,
+    )
+    return pattern.sub(rf"\g<1>{replacement_value}\g<3>", content, count=1)
+
+
+def _replace_worker_stage_timeout_examples(content: str, target_timeout_seconds: int) -> str:
+    """Update visible WORKER_STAGE_TIMEOUT_SECONDS examples in README and docs without touching other keys."""
+
+    pattern = re.compile(r"(WORKER_STAGE_TIMEOUT_SECONDS=)([0-9]+(?:\.[0-9]+)?)")
+    return pattern.sub(rf"\g<1>{target_timeout_seconds}", content)
+
+
+def _format_timeout_seconds_for_docs(value: float) -> int:
+    """Render timeout values as integer docs examples because the operator-facing env var is shown without decimals."""
+
+    return int(round(value))
 
 
 def _coding_system_prompt(guidance_block: str) -> str:

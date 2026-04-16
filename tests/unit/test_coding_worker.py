@@ -98,6 +98,36 @@ def _create_repo(tmp_path: Path) -> Path:
     return repo_path
 
 
+def _create_timeout_repo(tmp_path: Path) -> Path:
+    """Create a tiny repo that mirrors the real timeout-config fix surface."""
+
+    repo_path = tmp_path / "timeout-repo"
+    (repo_path / "services" / "shared" / "agentic_lab").mkdir(parents=True)
+    (repo_path / "docs").mkdir(parents=True)
+    (repo_path / "services" / "shared" / "agentic_lab" / "config.py").write_text(
+        "worker_stage_timeout_seconds: float = Field(\n"
+        "    default=1800.0,\n"
+        "    validation_alias=AliasChoices('WORKER_STAGE_TIMEOUT_SECONDS', 'WORKER_TIMEOUT_READ_SECONDS'),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    (repo_path / "README.md").write_text("WORKER_STAGE_TIMEOUT_SECONDS=1800\n", encoding="utf-8")
+    (repo_path / "docs" / "configuration.md").write_text(
+        "- `WORKER_STAGE_TIMEOUT_SECONDS=1800`\n",
+        encoding="utf-8",
+    )
+    (repo_path / "docs" / "troubleshooting.md").write_text(
+        "- `WORKER_STAGE_TIMEOUT_SECONDS=1800`\n",
+        encoding="utf-8",
+    )
+    _run_git(repo_path, "init", "-b", "main")
+    _run_git(repo_path, "config", "user.email", "test@example.com")
+    _run_git(repo_path, "config", "user.name", "Test User")
+    _run_git(repo_path, "add", ".")
+    _run_git(repo_path, "commit", "-m", "initial")
+    return repo_path
+
+
 def _load_coding_module() -> object:
     """Import the coding worker only after test env vars are in place."""
 
@@ -353,6 +383,57 @@ async def test_local_patch_backend_uses_deterministic_readme_smiley_fast_path(
     assert response.outputs["changed_files"] == ["README.md"]
     assert response.outputs["deterministic_strategy"] == "prepend_ascii_smiley_to_readme_first_line"
     assert (repo_path / "README.md").read_text(encoding="utf-8").startswith(":) Probe README\n")
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_uses_deterministic_worker_stage_timeout_fast_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_timeout_repo(tmp_path)
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        WorkerRequest(
+            task_id="task-timeout-fast",
+            goal="Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            branch_name="feature/timeout-fast",
+            metadata={
+                "task_profile": {
+                    "name": "worker_stage_timeout_config_fix",
+                    "target_timeout_seconds": 3600.0,
+                    "target_files": [
+                        "services/shared/agentic_lab/config.py",
+                        "README.md",
+                        "docs/configuration.md",
+                        "docs/troubleshooting.md",
+                    ],
+                }
+            },
+            prior_results={},
+        ),
+        repo_path,
+        "feature/timeout-fast",
+    )
+
+    assert response.success is True
+    assert response.outputs["deterministic_strategy"] == "set_worker_stage_timeout_seconds"
+    assert sorted(response.outputs["changed_files"]) == [
+        "README.md",
+        "docs/configuration.md",
+        "docs/troubleshooting.md",
+        "services/shared/agentic_lab/config.py",
+    ]
+    assert "default=3600.0" in (repo_path / "services" / "shared" / "agentic_lab" / "config.py").read_text(
+        encoding="utf-8"
+    )
+    assert "WORKER_STAGE_TIMEOUT_SECONDS=3600" in (repo_path / "README.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

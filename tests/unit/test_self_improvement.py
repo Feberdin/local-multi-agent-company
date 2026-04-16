@@ -21,6 +21,7 @@ from services.shared.agentic_lab.self_improvement import (
     SelfImprovementError,
     SelfImprovementService,
     SessionStatus,
+    _normalize_improvement_goal,
     classify_error_text,
     classify_risk,
 )
@@ -142,6 +143,19 @@ def test_classify_error_unknown():
 
 def test_classify_error_case_insensitive():
     assert classify_error_text("TIMEOUT exceeded for stage") == ProblemClass.TIMEOUT
+
+
+def test_normalize_improvement_goal_rewrites_timeout_worker_py_hallucination():
+    goal, hypothesis = _normalize_improvement_goal(
+        "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+        ProblemClass.TIMEOUT,
+        "The timeout value in worker.py is still set to 1800 seconds.",
+    )
+
+    assert "services/shared/agentic_lab/config.py" in goal
+    assert "README.md" in goal
+    assert "worker.py" not in goal
+    assert "config.py" in hypothesis
 
 
 # ---------------------------------------------------------------------------

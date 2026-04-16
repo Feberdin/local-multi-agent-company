@@ -9,6 +9,7 @@ How to debug: If a task stops unexpectedly, compare the last persisted status, r
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Hashable
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -20,7 +21,14 @@ from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configu
 from services.shared.agentic_lab.model_routing import resolve_worker_route
 from services.shared.agentic_lab.policy_service import RepositoryPolicyError, RepositoryPolicyService
 from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, TaskDetail, TaskStatus, WorkerRequest
-from services.shared.agentic_lab.task_profiles import infer_task_profile, is_readme_smiley_profile
+from services.shared.agentic_lab.task_profiles import (
+    infer_task_profile,
+    is_readme_smiley_profile,
+    is_worker_stage_timeout_profile,
+    profile_flag,
+    profile_route_target,
+    profile_target_timeout_seconds,
+)
 from services.shared.agentic_lab.task_service import TaskService
 from services.shared.agentic_lab.worker_client import WorkerCallError, call_worker
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
@@ -301,6 +309,10 @@ class WorkflowOrchestrator:
     def _route_after_human_resources(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
+        if profile_flag(state.get("metadata"), "skip_research"):
+            if profile_flag(state.get("metadata"), "skip_architecture"):
+                return "coding"
+            return "architecture"
         if is_readme_smiley_profile(state.get("metadata")):
             return "coding"
         return "research"
@@ -308,6 +320,8 @@ class WorkflowOrchestrator:
     def _route_after_research(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
+        if profile_flag(state.get("metadata"), "skip_architecture"):
+            return "coding"
         if is_readme_smiley_profile(state.get("metadata")):
             return "coding"
         return "architecture"
@@ -335,7 +349,10 @@ class WorkflowOrchestrator:
     def _route_after_coding(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
-        if is_readme_smiley_profile(state.get("metadata")):
+        profile_target = profile_route_target(state.get("metadata"), "coding")
+        if profile_target:
+            return profile_target
+        if self._uses_compact_fast_path_profile(state.get("metadata")):
             return "validation"
         return "review"
 
@@ -351,7 +368,10 @@ class WorkflowOrchestrator:
     def _route_after_validation(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
-        if is_readme_smiley_profile(state.get("metadata")):
+        profile_target = profile_route_target(state.get("metadata"), "validation")
+        if profile_target:
+            return profile_target
+        if self._uses_compact_fast_path_profile(state.get("metadata")):
             return "github"
         return "documentation"
 
@@ -361,7 +381,10 @@ class WorkflowOrchestrator:
     def _route_after_github(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
-        if is_readme_smiley_profile(state.get("metadata")):
+        profile_target = profile_route_target(state.get("metadata"), "github")
+        if profile_target:
+            return profile_target
+        if self._uses_compact_fast_path_profile(state.get("metadata")):
             return "memory"
         return "deploy" if state.get("auto_deploy_staging", True) else "memory"
 
@@ -376,27 +399,27 @@ class WorkflowOrchestrator:
     def _route_after_memory(self, state: WorkflowState) -> str:
         return "stop"
 
-    def _human_resources_route_map(self) -> dict[str, str]:
+    def _human_resources_route_map(self) -> dict[Hashable, str]:
         """List all valid exits after human_resources so fast-path routes stay connected in the graph."""
 
         return {"research": "research", "coding": "coding", "stop": END}
 
-    def _research_route_map(self) -> dict[str, str]:
+    def _research_route_map(self) -> dict[Hashable, str]:
         """Allow research to hand off directly to coding for tiny deterministic tasks."""
 
         return {"architecture": "architecture", "coding": "coding", "stop": END}
 
-    def _coding_route_map(self) -> dict[str, str]:
+    def _coding_route_map(self) -> dict[Hashable, str]:
         """Allow coding to skip review/testing for explicitly tiny deterministic fixes."""
 
         return {"review": "review", "validation": "validation", "stop": END}
 
-    def _validation_route_map(self) -> dict[str, str]:
+    def _validation_route_map(self) -> dict[Hashable, str]:
         """Allow validation to continue directly to GitHub on the tiny README fast path."""
 
         return {"documentation": "documentation", "github": "github", "stop": END}
 
-    def _github_route_map(self) -> dict[str, str]:
+    def _github_route_map(self) -> dict[Hashable, str]:
         """Allow GitHub to hand off straight to memory when deploy should be skipped."""
 
         return {"deploy": "deploy", "memory": "memory", "stop": END}
@@ -526,7 +549,7 @@ class WorkflowOrchestrator:
     def _previous_worker_name(self, worker_name: str, state: WorkflowState | None = None) -> str | None:
         """Return the worker that usually completes immediately before the current stage."""
 
-        if state and is_readme_smiley_profile(state.get("metadata")):
+        if state and self._uses_compact_fast_path_profile(state.get("metadata")):
             previous_map = {
                 "coding": "human_resources",
                 "validation": "coding",
@@ -548,7 +571,7 @@ class WorkflowOrchestrator:
     def _next_worker_name(self, worker_name: str, state: WorkflowState | None = None) -> str | None:
         """Return the next worker in the default stage order for handoff hints."""
 
-        if state and is_readme_smiley_profile(state.get("metadata")):
+        if state and self._uses_compact_fast_path_profile(state.get("metadata")):
             next_map = {
                 "requirements": "cost",
                 "cost": "human_resources",
@@ -602,10 +625,36 @@ class WorkflowOrchestrator:
                     "validation": "Pruefe nur, dass README.md sauber geaendert wurde und keine Nebenwirkungen sichtbar sind.",
                 }
             )
+        if is_worker_stage_timeout_profile(state.get("metadata")):
+            timeout_target = profile_target_timeout_seconds(state.get("metadata")) or 3600.0
+            timeout_label = f"{timeout_target:.1f}" if float(timeout_target).is_integer() else str(timeout_target)
+            worker_specific_focus.update(
+                {
+                    "requirements": (
+                        "Halte den Auftrag eng: echter Timeout-Default in `services/shared/agentic_lab/config.py`, "
+                        "plus konsistente README-/Docs-Beispiele."
+                    ),
+                    "research": "Breite Repo-Recherche ist fuer diesen deterministischen Timeout-Fix nicht noetig.",
+                    "architecture": (
+                        "Plane nur den schmalen Config-/Docs-Fix fuer "
+                        f"`WORKER_STAGE_TIMEOUT_SECONDS={int(timeout_target)}`."
+                    ),
+                    "coding": (
+                        "Setze nur den echten `worker_stage_timeout_seconds`-Default auf "
+                        f"{timeout_label} und halte die sichtbaren Timeout-Beispiele konsistent."
+                    ),
+                    "validation": "Pruefe nur den Config-/Docs-Diff fuer den schmalen Timeout-Fix.",
+                }
+            )
         return self._truncate_text(
             f"{worker_specific_focus.get(worker_name, stage_meta['description'])} Ziel: {state['goal']}",
             max_length=260,
         )
+
+    def _uses_compact_fast_path_profile(self, metadata: dict[str, Any] | None) -> bool:
+        """Group tiny deterministic profiles so UI handoffs and labels stay consistent."""
+
+        return is_readme_smiley_profile(metadata) or is_worker_stage_timeout_profile(metadata)
 
     def _progress_details(
         self,

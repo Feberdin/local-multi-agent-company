@@ -1,7 +1,7 @@
 """
-Purpose: Verify that tiny README smiley tasks use the deterministic requirements fast path.
-Input/Output: Tests call the requirements worker with a synthetic WorkerRequest and inspect the structured outputs.
-Important invariants: The fast path must keep scope on README.md and avoid broad worker recommendations.
+Purpose: Verify that tiny deterministic task profiles use the fast-path requirements logic.
+Input/Output: Tests call the requirements worker with synthetic WorkerRequests and inspect the structured outputs.
+Important invariants: Fast paths must stay tight on the real target files and avoid broad worker recommendations.
 How to debug: If this fails, inspect services/requirements_worker/app.py and the task-profile detection helper.
 """
 
@@ -42,4 +42,30 @@ async def test_requirements_worker_uses_deterministic_readme_smiley_fast_path(tm
 
     assert response.success is True
     assert response.outputs["requirements"][0] == "Aendere nur README.md im Repository-Wurzelverzeichnis."
+    assert response.outputs["recommended_workers"] == ["cost", "human_resources", "coding", "validation", "github", "memory"]
+
+
+@pytest.mark.asyncio
+async def test_requirements_worker_uses_deterministic_worker_stage_timeout_fast_path(tmp_path, monkeypatch) -> None:
+    app_module = _load_requirements_module(tmp_path, monkeypatch)
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-requirements-timeout-fast",
+            goal="Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(tmp_path / "workspace" / "local-multi-agent-company"),
+            base_branch="main",
+            metadata={
+                "task_profile": {
+                    "name": "worker_stage_timeout_config_fix",
+                    "target_timeout_seconds": 3600.0,
+                }
+            },
+        )
+    )
+
+    assert response.success is True
+    assert "services/shared/agentic_lab/config.py" in response.outputs["requirements"][0]
+    assert "README und Docs konsistent" in response.outputs["requirements"][1]
     assert response.outputs["recommended_workers"] == ["cost", "human_resources", "coding", "validation", "github", "memory"]

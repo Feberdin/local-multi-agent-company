@@ -153,3 +153,57 @@ def test_readme_smiley_profile_uses_fast_path_handoff_labels(isolated_session_fa
     assert orchestrator._next_worker_name("human_resources", state) == "coding"  # pyright: ignore[reportPrivateUsage]
     assert orchestrator._previous_worker_name("coding", state) == "human_resources"  # pyright: ignore[reportPrivateUsage]
     assert orchestrator._next_worker_name("github", state) == "memory"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_worker_stage_timeout_profile_skips_research_and_architecture(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-timeout-fast-path",
+        "goal": "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "current_status": "RESOURCE_PLANNING",
+        "approval_required": False,
+        "metadata": {
+            "task_profile": {
+                "name": "worker_stage_timeout_config_fix",
+                "target_timeout_seconds": 3600.0,
+                "skip_research": True,
+                "skip_architecture": True,
+                "route_after_coding": "validation",
+                "route_after_validation": "github",
+                "route_after_github": "memory",
+            }
+        },
+    }
+
+    assert orchestrator._route_after_human_resources(state) == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_coding(state) == "validation"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_validation(state) == "github"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._route_after_github(state) == "memory"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_worker_stage_timeout_profile_uses_fast_path_handoff_labels(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-timeout-handoff",
+        "goal": "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in worker.py",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "metadata": {
+            "task_profile": {
+                "name": "worker_stage_timeout_config_fix",
+                "target_timeout_seconds": 3600.0,
+                "skip_research": True,
+                "skip_architecture": True,
+                "route_after_coding": "validation",
+                "route_after_validation": "github",
+                "route_after_github": "memory",
+            }
+        },
+    }
+
+    assert orchestrator._next_worker_name("human_resources", state) == "coding"  # pyright: ignore[reportPrivateUsage]
+    assert orchestrator._previous_worker_name("validation", state) == "coding"  # pyright: ignore[reportPrivateUsage]
