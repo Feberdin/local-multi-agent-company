@@ -23,6 +23,13 @@ WORKER_STAGE_TIMEOUT_TARGET_FILES: tuple[str, ...] = (
     "docs/troubleshooting.md",
 )
 WORKER_STAGE_TIMEOUT_CODING_STRATEGY = "set_worker_stage_timeout_seconds"
+WORKER_STAGE_TIMEOUT_KEYWORDS: tuple[str, ...] = (
+    "worker_stage_timeout_seconds",
+    "worker_timeout_read_seconds",
+    "worker stage timeout",
+    "worker-stage-timeout",
+    "worker timeout",
+)
 
 
 def infer_task_profile(goal: str, metadata: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
@@ -122,10 +129,7 @@ def profile_target_files(metadata: Mapping[str, Any] | None) -> list[str]:
     profile = get_task_profile(metadata)
     if not profile:
         return []
-    raw_files = profile.get("target_files")
-    if not isinstance(raw_files, list):
-        return []
-    return [item for item in raw_files if isinstance(item, str) and item.strip()]
+    return _normalize_target_files(profile.get("target_files"))
 
 
 def profile_target_timeout_seconds(metadata: Mapping[str, Any] | None) -> float | None:
@@ -137,6 +141,11 @@ def profile_target_timeout_seconds(metadata: Mapping[str, Any] | None) -> float 
     raw_value = profile.get("target_timeout_seconds")
     if isinstance(raw_value, (int, float)):
         return float(raw_value)
+    if isinstance(raw_value, str):
+        try:
+            return float(raw_value.strip())
+        except ValueError:
+            return None
     return None
 
 
@@ -221,7 +230,7 @@ def _looks_like_readme_smiley_fix(normalized_goal: str) -> bool:
 def _looks_like_worker_stage_timeout_fix(normalized_goal: str, metadata: Mapping[str, Any]) -> bool:
     """Keep the timeout-config heuristic narrow so unrelated timeout chatter does not skip the full workflow."""
 
-    mentions_variable = "worker_stage_timeout_seconds" in normalized_goal
+    mentions_variable = any(keyword in normalized_goal for keyword in WORKER_STAGE_TIMEOUT_KEYWORDS)
     mentions_change = any(
         token in normalized_goal
         for token in ("change", "update", "set", "increase", "raise", "fix", "aendere", "erhoehe")
@@ -232,15 +241,46 @@ def _looks_like_worker_stage_timeout_fix(normalized_goal: str, metadata: Mapping
 
 
 def _extract_worker_stage_timeout_target_seconds(normalized_goal: str) -> float | None:
-    """Extract one concrete timeout target from goals like `Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 ...`."""
+    """Extract one concrete timeout target from exact env-var goals and looser natural-language variants."""
 
-    match = re.search(r"worker_stage_timeout_seconds[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)", normalized_goal)
-    if not match:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
+    patterns = (
+        r"worker_stage_timeout_seconds[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"worker_timeout_read_seconds[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"worker(?:[- ]stage)? timeout[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"(?:set|change|update|increase|raise|aendere|erhoehe)[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)"
+        r"[^a-z0-9]{0,20}(?:seconds|sekunden|secs|s)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized_goal)
+        if not match:
+            continue
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        if value >= 60:
+            return value
+    return None
+
+
+def _normalize_target_files(raw_value: object) -> list[str]:
+    """Accept small legacy variations like tuples or newline/comma-separated strings from older stored metadata."""
+
+    if isinstance(raw_value, str):
+        candidates = re.split(r"[\n,]+", raw_value)
+    elif isinstance(raw_value, (list, tuple, set)):
+        candidates = list(raw_value)
+    else:
+        return []
+
+    normalized: list[str] = []
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if candidate and candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
 
 
 def _normalize_text(value: str) -> str:

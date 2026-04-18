@@ -158,6 +158,20 @@ def test_normalize_improvement_goal_rewrites_timeout_worker_py_hallucination():
     assert "config.py" in hypothesis
 
 
+def test_normalize_improvement_goal_rewrites_generic_worker_stage_timeout_wording():
+    goal, hypothesis = _normalize_improvement_goal(
+        "Increase the worker stage timeout to 4200 seconds in workflow.py",
+        ProblemClass.TIMEOUT,
+        "The worker stage timeout still looks too small for the slow overnight model run.",
+    )
+
+    assert "WORKER_STAGE_TIMEOUT_SECONDS" in goal
+    assert "4200" in goal
+    assert "services/shared/agentic_lab/config.py" in goal
+    assert "README.md" in goal
+    assert "config.py" in hypothesis
+
+
 # ---------------------------------------------------------------------------
 # CycleStatus sets
 # ---------------------------------------------------------------------------

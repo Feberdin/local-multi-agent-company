@@ -9,7 +9,11 @@ How to debug: If this fails, inspect services/shared/agentic_lab/task_profiles.p
 
 from __future__ import annotations
 
-from services.shared.agentic_lab.task_profiles import infer_task_profile
+from services.shared.agentic_lab.task_profiles import (
+    infer_task_profile,
+    profile_target_files,
+    profile_target_timeout_seconds,
+)
 
 
 def test_infer_task_profile_detects_worker_stage_timeout_config_fix() -> None:
@@ -33,3 +37,30 @@ def test_infer_task_profile_does_not_overmatch_generic_timeout_discussion() -> N
     )
 
     assert profile is None
+
+
+def test_infer_task_profile_detects_generic_worker_stage_timeout_wording() -> None:
+    profile = infer_task_profile(
+        "Increase the worker stage timeout to 3600 seconds in the workflow config and keep docs aligned.",
+        {"problem_class": "timeout"},
+    )
+
+    assert profile is not None
+    assert profile["name"] == "worker_stage_timeout_config_fix"
+    assert profile["target_timeout_seconds"] == 3600.0
+
+
+def test_profile_helpers_accept_legacy_string_metadata_shapes() -> None:
+    metadata = {
+        "task_profile": {
+            "name": "worker_stage_timeout_config_fix",
+            "target_timeout_seconds": "3600",
+            "target_files": "services/shared/agentic_lab/config.py,\nREADME.md,\nREADME.md",
+        }
+    }
+
+    assert profile_target_timeout_seconds(metadata) == 3600.0
+    assert profile_target_files(metadata) == [
+        "services/shared/agentic_lab/config.py",
+        "README.md",
+    ]

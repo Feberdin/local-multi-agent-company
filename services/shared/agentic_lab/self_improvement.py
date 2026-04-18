@@ -320,14 +320,17 @@ def _fallback_goal(problem_hint: str | None, cls: ProblemClass) -> str:
 
 
 def _normalize_improvement_goal(goal: str, problem_class: ProblemClass, hypothesis: str) -> tuple[str, str]:
-    """Rewrite one known timeout hallucination into the real repo paths before it reaches the workflow."""
+    """Rewrite known timeout-goal drift into the real repo paths before it reaches the workflow."""
 
     normalized_goal = goal.strip()
     normalized_hypothesis = hypothesis.strip()
-    if problem_class == ProblemClass.TIMEOUT and "WORKER_STAGE_TIMEOUT_SECONDS" in normalized_goal:
-        if "worker.py" in normalized_goal.lower() or "worker.py" in normalized_hypothesis.lower():
+    if problem_class == ProblemClass.TIMEOUT:
+        combined_text = f"{normalized_goal}\n{normalized_hypothesis}".strip()
+        if _looks_like_worker_stage_timeout_goal(combined_text):
+            target_timeout_seconds = _extract_worker_stage_timeout_target_seconds(combined_text) or 3600.0
+            target_label = _format_timeout_goal_seconds(target_timeout_seconds)
             normalized_goal = (
-                "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in services/shared/agentic_lab/config.py "
+                f"Change WORKER_STAGE_TIMEOUT_SECONDS to {target_label} in services/shared/agentic_lab/config.py "
                 "and align the visible timeout examples in README.md and docs."
             )
             normalized_hypothesis = (
@@ -335,6 +338,56 @@ def _normalize_improvement_goal(goal: str, problem_class: ProblemClass, hypothes
                 "README und Docs enthalten zusaetzliche Beispielwerte."
             )
     return normalized_goal, normalized_hypothesis
+
+
+def _looks_like_worker_stage_timeout_goal(value: str) -> bool:
+    """Recognize the known timeout-config fix even when the wording drifts slightly overnight."""
+
+    normalized = value.lower()
+    timeout_keywords = (
+        "worker_stage_timeout_seconds",
+        "worker timeout read seconds",
+        "worker_timeout_read_seconds",
+        "worker stage timeout",
+        "worker-stage-timeout",
+        "worker timeout",
+    )
+    change_keywords = ("change", "update", "set", "increase", "raise", "fix", "aendere", "erhoehe")
+    return any(keyword in normalized for keyword in timeout_keywords) and any(
+        keyword in normalized for keyword in change_keywords
+    )
+
+
+def _extract_worker_stage_timeout_target_seconds(value: str) -> float | None:
+    """Extract the intended timeout value from exact env-var wording or looser natural language."""
+
+    normalized = value.lower()
+    patterns = (
+        r"worker_stage_timeout_seconds[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"worker_timeout_read_seconds[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"worker(?:[- ]stage)? timeout[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)",
+        r"(?:set|change|update|increase|raise|aendere|erhoehe)[^0-9]{0,40}([0-9]{3,5}(?:\.[0-9]+)?)"
+        r"[^a-z0-9]{0,20}(?:seconds|sekunden|secs|s)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        try:
+            seconds = float(match.group(1))
+        except ValueError:
+            continue
+        if seconds >= 60:
+            return seconds
+    return None
+
+
+def _format_timeout_goal_seconds(value: float) -> str:
+    """Render canonical timeout goal values without spurious trailing decimals."""
+
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
