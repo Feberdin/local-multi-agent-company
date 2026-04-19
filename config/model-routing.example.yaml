@@ -77,15 +77,15 @@ workers:
     routing_note: Bevorzugt konsistente Feld- und Statusstrukturen fuer Datenhygiene.
 
   ux:
-    primary_provider: qwen
-    fallback_provider: mistral
-    temperature: 0.2
+    primary_provider: mistral
+    fallback_provider: qwen
+    temperature: 0.1
     max_tokens: 1600
     budget_tokens: 5000
     request_timeout_seconds: 1200
     reasoning: medium
     output_contract: json
-    routing_note: Bevorzugt staerkere semantische UX-Bewertung, behaelt aber einen strukturierten Fallback.
+    routing_note: Bevorzugt sichtbaren, stabilen JSON-Output fuer UX-Vorschlaege; Qwen bleibt nur optionaler semantischer Fallback.
 
   coding:
     primary_provider: mistral

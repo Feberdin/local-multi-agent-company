@@ -56,6 +56,9 @@ model_preferences:
   documentation:
     primary_provider: mistral
     fallback_provider: qwen
+  ux:
+    primary_provider: mistral
+    fallback_provider: qwen
 
 team_hints:
   enable_data_worker: false

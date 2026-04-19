@@ -94,7 +94,6 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
     safe_default_provider = _safe_default_primary_provider(settings, provider_names)
     reasoning_provider = _preferred_provider(provider_names, "qwen", safe_default_provider, "mistral")
     structured_provider = _preferred_provider(provider_names, "mistral", safe_default_provider, "qwen")
-    secondary_reasoning_provider = _preferred_provider(provider_names, "mistral", safe_default_provider, "qwen")
     secondary_structured_provider = _preferred_provider(provider_names, "qwen", safe_default_provider, "mistral")
     if reasoning_provider is None or structured_provider is None:
         raise ValueError("No model provider is configured. At least one provider must be available.")
@@ -269,16 +268,19 @@ def _default_worker_routes(settings: Settings, provider_names: set[str]) -> dict
             routing_note="Bevorzugt konsistente Feld- und Statusstrukturen fuer Datenhygiene.",
         ),
         "ux": _route(
-            reasoning_provider,
-            secondary_reasoning_provider,
-            temperature=0.2,
+            structured_provider,
+            secondary_structured_provider,
+            temperature=0.1,
             max_tokens=1600,
             budget_tokens=5000,
             request_timeout_seconds=1200.0,
             reasoning="medium",
             purpose="UI/UX suggestions and flow improvements.",
             output_contract="json",
-            routing_note="Bevorzugt staerkere semantische UX-Bewertung, behält aber einen strukturierten Fallback.",
+            routing_note=(
+                "Bevorzugt sichtbaren, stabilen JSON-Output fuer UX-Vorschlaege; "
+                "Qwen bleibt nur noch als optionaler semantischer Fallback."
+            ),
         ),
         "cost": _route(
             structured_provider,

@@ -192,6 +192,8 @@ class LLMClient:
             "content_source": "",
             "reasoning_discarded": False,
             "reasoning_preview": "",
+            "finish_reason": "",
+            "reasoning_only_empty_content": False,
         }
         reasoning_fragments: list[str] = []
 
@@ -199,6 +201,7 @@ class LLMClient:
             if isinstance(data.get("choices"), list) and data["choices"]:
                 first_choice = data["choices"][0]
                 if isinstance(first_choice, dict):
+                    diagnostics["finish_reason"] = str(first_choice.get("finish_reason") or "").strip()
                     reasoning_fragments.extend(cls._collect_reasoning_fragments(first_choice))
                     message = first_choice.get("message")
                     if isinstance(message, dict):
@@ -245,6 +248,7 @@ class LLMClient:
 
         diagnostics["reasoning_discarded"] = bool(reasoning_fragments)
         diagnostics["reasoning_preview"] = cls._response_preview("\n".join(reasoning_fragments)) if reasoning_fragments else ""
+        diagnostics["reasoning_only_empty_content"] = bool(reasoning_fragments)
         return "", diagnostics
 
     @staticmethod
@@ -349,6 +353,22 @@ class LLMClient:
 
         content, diagnostics = self._extract_response_text(data)
         if not content:
+            if diagnostics.get("reasoning_only_empty_content"):
+                raise LLMError(
+                    "LLM backend returned reasoning-only output without visible assistant content for "
+                    f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`. "
+                    f"Finish reason: `{diagnostics.get('finish_reason') or 'unknown'}`. "
+                    "This provider currently exposed only a reasoning field and no parseable final answer. "
+                    f"Reasoning preview: {diagnostics.get('reasoning_preview') or 'none'}",
+                    trace={
+                        "provider": provider.name,
+                        "model_name": provider.model_name,
+                        "base_url": provider.base_url,
+                        "response_shape": "reasoning_only_empty_content",
+                        "finish_reason": diagnostics.get("finish_reason") or "",
+                        "reasoning_discarded": True,
+                    },
+                )
             raise LLMError(
                 "Unexpected LLM response shape for "
                 f"`{worker_name}` via provider `{provider.name}` using model `{provider.model_name}` at `{provider.base_url}`. "

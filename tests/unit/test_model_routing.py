@@ -68,6 +68,7 @@ def test_resolve_worker_route_prefers_mistral_for_coding_and_other_structured_wo
     architecture_provider, architecture_route = resolve_worker_route(settings, "architecture")
     coding_provider, coding_route = resolve_worker_route(settings, "coding")
     security_provider, security_route = resolve_worker_route(settings, "security")
+    ux_provider, ux_route = resolve_worker_route(settings, "ux")
 
     assert requirements_provider.name == "mistral"
     assert requirements_route.fallback_provider == "qwen"
@@ -87,3 +88,6 @@ def test_resolve_worker_route_prefers_mistral_for_coding_and_other_structured_wo
     assert security_provider.name == "mistral"
     assert security_route.fallback_provider == "qwen"
     assert security_route.output_contract == "json"
+    assert ux_provider.name == "mistral"
+    assert ux_route.fallback_provider == "qwen"
+    assert ux_route.output_contract == "json"

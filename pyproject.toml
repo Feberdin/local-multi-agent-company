@@ -45,6 +45,9 @@ include = ["services*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  "integration: opt-in tests that hit real external or homelab services",
+]
 
 [tool.ruff]
 line-length = 140

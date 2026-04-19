@@ -817,3 +817,49 @@ async def test_complete_json_error_mentions_all_provider_attempts_when_json_neve
     assert "Model did not return valid JSON for `coding`" in message
     assert "Provider `qwen`" in message
     assert "Provider `mistral`" in message
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_empty_content_raises_specific_diagnostic_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_routing(
+        tmp_path,
+        monkeypatch,
+        (
+            "workers:\n"
+            "  coding:\n"
+            "    primary_provider: qwen\n"
+            "    fallback_provider:\n"
+            "    request_timeout_seconds: 0.5\n"
+        ),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning": "Thinking Process: output only JSON, but no visible answer was emitted.",
+                        },
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    client = LLMClient(settings, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(LLMError) as exc_info:
+        await client.complete_json("system", "user", worker_name="coding")
+
+    message = str(exc_info.value)
+    assert "reasoning-only output without visible assistant content" in message
+    assert "Finish reason: `length`" in message
+    assert exc_info.value.trace["response_shape"] == "reasoning_only_empty_content"
+    assert exc_info.value.trace["finish_reason"] == "length"

@@ -56,6 +56,9 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     }
     warnings: list[str] = []
     ai_findings: list[str] = []
+    ai_residual_risks: list[str] = []
+    ai_requires_human_approval = False
+    ai_approval_reason = ""
     guidance_block = worker_governance.guidance_prompt_block(request, "security")
 
     try:
@@ -75,22 +78,37 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             required_keys=["findings", "residual_risks", "requires_human_approval", "approval_reason"],
         )
         ai_findings = ai_summary.get("findings", [])
-        if ai_summary.get("requires_human_approval"):
+        ai_residual_risks = [str(item) for item in ai_summary.get("residual_risks", []) if isinstance(item, str)]
+        ai_requires_human_approval = bool(ai_summary.get("requires_human_approval"))
+        ai_approval_reason = str(ai_summary.get("approval_reason") or "").strip()
+        if ai_requires_human_approval:
             risk_flags.append("security_manual_review")
     except LLMError as exc:
         warnings.append(f"LLM security summary unavailable: {exc}")
 
+    if injection_signals:
+        risk_flags.append("external_prompt_injection_signal")
+
+    normalized_risk_flags = sorted(set(risk_flags))
     all_findings = dependency_findings + ai_findings
-    requires_human_approval = bool(risk_flags or injection_signals)
-    approval_reason = None
+    residual_risks = _build_residual_risks(
+        injection_signals=injection_signals,
+        risk_flags=normalized_risk_flags,
+        ai_residual_risks=ai_residual_risks,
+    )
+    requires_human_approval = bool(normalized_risk_flags or injection_signals or ai_requires_human_approval)
+    approval_reason = ai_approval_reason or None
     if requires_human_approval:
-        approval_reason = "Security worker found prompt-injection signals or high-impact change areas."
+        approval_reason = approval_reason or "Security worker found prompt-injection signals or high-impact change areas."
 
     outputs = {
         "findings": all_findings,
+        "residual_risks": residual_risks,
+        "requires_human_approval": requires_human_approval,
+        "approval_reason": approval_reason or "",
         "injection_signals": injection_signals,
         "source_quality": source_quality,
-        "risk_flags": sorted(set(risk_flags)),
+        "risk_flags": normalized_risk_flags,
         "diff_stat": diff["diff_stat"],
     }
     report_path = write_report(settings.task_report_dir(request.task_id), "security-report.json", outputs)
@@ -121,3 +139,34 @@ def _dependency_hints(changed_files: list[str]) -> list[str]:
         if lowered.endswith(("requirements.txt", "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "uv.lock")):
             findings.append(f"Dependency lock or manifest changed in `{path}`. Review licensing and supply-chain implications.")
     return findings
+
+
+def _build_residual_risks(
+    *,
+    injection_signals: list[str],
+    risk_flags: list[str],
+    ai_residual_risks: list[str],
+) -> list[str]:
+    """Return one stable residual-risk list so UI, probes, and downstream workers see the same contract keys.
+
+    Example:
+      injection_signals = ["ignore-previous-instructions"]
+      risk_flags = ["shell_dangerous"]
+      ai_residual_risks = ["Check secret handling."]
+      ->
+      [
+        "Untrusted research or architecture text contains prompt-injection markers.",
+        "High-impact change areas still require a manual security review.",
+        "Check secret handling.",
+      ]
+    """
+
+    residual_risks: list[str] = []
+    if injection_signals:
+        residual_risks.append("Untrusted research or architecture text contains prompt-injection markers.")
+    if risk_flags:
+        residual_risks.append("High-impact change areas still require a manual security review.")
+    for item in ai_residual_risks:
+        if item and item not in residual_risks:
+            residual_risks.append(item)
+    return residual_risks
