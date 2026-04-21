@@ -256,7 +256,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WORKER_CONNECT_TIMEOUT_SECONDS", "WORKER_TIMEOUT_CONNECT_SECONDS"),
     )
     worker_stage_timeout_seconds: float = Field(
-        default=1800.0,
+        default=3600.0,
         validation_alias=AliasChoices("WORKER_STAGE_TIMEOUT_SECONDS", "WORKER_TIMEOUT_READ_SECONDS"),
     )
     worker_write_timeout_seconds: float = Field(
