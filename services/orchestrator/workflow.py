@@ -381,6 +381,9 @@ class WorkflowOrchestrator:
     def _route_after_github(self, state: WorkflowState) -> str:
         if self._should_stop(state):
             return "stop"
+        metadata = state.get("metadata", {})
+        if metadata.get("force_deploy_after_github"):
+            return "deploy"
         profile_target = profile_route_target(state.get("metadata"), "github")
         if profile_target:
             return profile_target

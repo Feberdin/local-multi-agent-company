@@ -19,6 +19,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -89,6 +90,13 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     repo_path = Path(request.local_repo_path)
     source_repo_path = Path(str(request.metadata.get("source_local_repo_path") or request.local_repo_path))
     rollback_commit_sha = str(request.metadata.get("rollback_commit_sha") or "").strip()
+    rollback_host_previous_sha = str(request.metadata.get("rollback_host_previous_sha") or "").strip()
+    if rollback_host_previous_sha:
+        task_logger.info("Running self-host rollback to previous SHA %s.", rollback_host_previous_sha)
+        return await _run_self_host_rollback_backend(
+            request=request,
+            rollback_host_previous_sha=rollback_host_previous_sha,
+        )
     if not rollback_commit_sha:
         return WorkerResponse(
             worker="rollback",
@@ -310,6 +318,19 @@ async def _run_host_rollback(
     state.updated_at = datetime.now(UTC)
     state.last_heartbeat_at = state.updated_at
     state.notes.append(f"Host rollback to {state.previous_sha} started.")
+    state.debug_report_path = await _capture_self_host_debug_report(
+        task_id=request.task_id,
+        ssh_user=request.ssh_user,
+        ssh_host=request.ssh_host,
+        ssh_port=request.ssh_port,
+        ssh_key_file=request.ssh_key_file,
+        project_dir=request.project_dir,
+        compose_file=request.compose_file,
+        previous_sha=state.previous_sha,
+        current_sha=state.current_sha,
+    )
+    if state.debug_report_path:
+        state.notes.append(f"Debug-Kontext gesichert: {state.debug_report_path}")
     write_watchdog_state(state, settings)
 
     script_path = Path("/app/scripts/unraid/rollback-self-update.sh")
@@ -336,10 +357,124 @@ async def _run_host_rollback(
         state.status = SelfUpdateWatchdogStatus.ROLLED_BACK
         state.last_error = None
         state.notes.append("Host rollback completed successfully.")
+    rollback_report = {
+        "rollback_mode": "watchdog_self_host_restore",
+        "previous_sha": state.previous_sha,
+        "current_sha_before_rollback": state.current_sha,
+        "debug_report_path": state.debug_report_path,
+        "health_url": request.health_url,
+        "ssh_host": request.ssh_host,
+    }
+    state.rollback_report_path = str(
+        write_report(settings.task_report_dir(request.task_id), "rollback-host-report.json", rollback_report)
+    )
 
     state.updated_at = datetime.now(UTC)
     state.last_heartbeat_at = state.updated_at
     write_watchdog_state(state, settings)
+
+
+async def _run_self_host_rollback_backend(
+    *,
+    request: WorkerRequest,
+    rollback_host_previous_sha: str,
+) -> WorkerResponse:
+    """Restore the self-hosted Feberdin stack to the previous healthy commit after a bad autonomous rollout."""
+
+    missing_fields: list[str] = []
+    if not settings.self_host_ssh_host:
+        missing_fields.append("SELF_HOST_SSH_HOST")
+    if not settings.self_host_project_dir:
+        missing_fields.append("SELF_HOST_PROJECT_DIR")
+    if not settings.self_host_health_url:
+        missing_fields.append("SELF_HOST_HEALTH_URL")
+    if missing_fields:
+        return WorkerResponse(
+            worker="rollback",
+            success=False,
+            summary="Self-Host-Rollback ist nicht vollstaendig konfiguriert.",
+            errors=[
+                "Fehlende Konfiguration fuer den Host-Rollback: "
+                + ", ".join(missing_fields)
+                + ". Ohne diese Angaben kann der Worker den laufenden Stack nicht sicher zuruecksetzen."
+            ],
+        )
+
+    debug_report_path = await _capture_self_host_debug_report(
+        task_id=request.task_id,
+        ssh_user=settings.self_host_ssh_user,
+        ssh_host=settings.self_host_ssh_host,
+        ssh_port=settings.self_host_ssh_port,
+        ssh_key_file=settings.self_host_ssh_key_file,
+        project_dir=settings.self_host_project_dir,
+        compose_file=settings.self_host_compose_file,
+        previous_sha=rollback_host_previous_sha,
+        current_sha=str(request.metadata.get("deployment_target_commit_sha") or "").strip() or None,
+    )
+
+    command = [
+        "/bin/sh",
+        "/app/scripts/unraid/rollback-self-update.sh",
+        settings.self_host_project_dir,
+        settings.self_host_compose_file,
+        rollback_host_previous_sha,
+        settings.self_host_ssh_user,
+        settings.self_host_ssh_host,
+        str(settings.self_host_ssh_port),
+        settings.self_host_health_url,
+        settings.self_host_ssh_key_file,
+    ]
+
+    try:
+        completed = await asyncio.to_thread(
+            run_command,
+            command,
+            timeout=int(max(300.0, settings.worker_stage_timeout_seconds)),
+        )
+    except CommandError as exc:
+        return WorkerResponse(
+            worker="rollback",
+            success=False,
+            summary="Self-Host-Rollback ist fehlgeschlagen.",
+            errors=[str(exc)],
+            outputs={
+                "backend": "self_host_restore",
+                "rollback_host_previous_sha": rollback_host_previous_sha,
+                "debug_report_path": debug_report_path,
+                "host": settings.self_host_ssh_host,
+            },
+        )
+
+    report = {
+        "rollback_mode": "self_host_restore",
+        "rollback_host_previous_sha": rollback_host_previous_sha,
+        "host": settings.self_host_ssh_host,
+        "project_dir": settings.self_host_project_dir,
+        "health_url": settings.self_host_health_url,
+        "debug_report_path": debug_report_path,
+        "stdout": completed.stdout[-6000:],
+        "stderr": completed.stderr[-6000:],
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "rollback-host-report.json", report)
+
+    return WorkerResponse(
+        worker="rollback",
+        summary="Self-Host wurde auf den letzten stabilen Commit zurueckgesetzt.",
+        outputs={
+            "backend": "self_host_restore",
+            "rollback_host_previous_sha": rollback_host_previous_sha,
+            "debug_report_path": debug_report_path,
+            "rollback_report_path": str(report_path),
+            "host": settings.self_host_ssh_host,
+        },
+        artifacts=[
+            Artifact(
+                name="rollback-host-report",
+                path=str(report_path),
+                description="Rollback des laufenden Self-Host-Stacks inklusive Debug-Kontext.",
+            )
+        ],
+    )
 
 
 def _read_remote_head(request: SelfUpdateWatchdogStartRequest) -> str | None:
@@ -397,3 +532,48 @@ def _ssh_command(
     command.append(f"{ssh_user}@{ssh_host}")
     command.extend(["/bin/sh", "-lc", remote_command])
     return command
+
+
+async def _capture_self_host_debug_report(
+    *,
+    task_id: str,
+    ssh_user: str,
+    ssh_host: str,
+    ssh_port: int,
+    ssh_key_file: str,
+    project_dir: str,
+    compose_file: str,
+    previous_sha: str | None,
+    current_sha: str | None,
+) -> str | None:
+    """Capture one small but useful remote debug snapshot before we mutate the host again."""
+
+    remote_command = (
+        f"printf 'current_sha=%s\\n' \"$(git -C '{project_dir}' rev-parse HEAD 2>/dev/null || echo unknown)\"; "
+        f"docker compose -f '{project_dir}/{compose_file}' ps || true; "
+        f"docker compose -f '{project_dir}/{compose_file}' logs --tail=200 || true"
+    )
+    command = _ssh_command(
+        ssh_user=ssh_user,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_key_file=ssh_key_file,
+        remote_command=remote_command,
+    )
+
+    report: dict[str, Any] = {
+        "previous_sha": previous_sha,
+        "current_sha_hint": current_sha,
+        "ssh_host": ssh_host,
+        "project_dir": project_dir,
+        "compose_file": compose_file,
+    }
+    try:
+        completed = await asyncio.to_thread(run_command, command, timeout=120)
+    except CommandError as exc:
+        report["capture_error"] = str(exc)
+    else:
+        report["stdout"] = completed.stdout[-12000:]
+        report["stderr"] = completed.stderr[-6000:]
+
+    return str(write_report(settings.task_report_dir(task_id), "rollback-debug-report.json", report))

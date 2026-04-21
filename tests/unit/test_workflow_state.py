@@ -139,6 +139,31 @@ def test_readme_smiley_profile_graph_maps_include_fast_path_destinations(isolate
     assert orchestrator._github_route_map()["memory"] == "memory"  # pyright: ignore[reportPrivateUsage]
 
 
+def test_fast_path_can_force_deploy_after_github_for_self_deploy_cycles(isolated_session_factory) -> None:
+    orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
+    state = {
+        "task_id": "task-fast-self-deploy",
+        "goal": "Change WORKER_STAGE_TIMEOUT_SECONDS to 3600 in services/shared/agentic_lab/config.py",
+        "repository": "Feberdin/local-multi-agent-company",
+        "local_repo_path": "/workspace/local-multi-agent-company",
+        "base_branch": "main",
+        "current_status": "PR_CREATED",
+        "approval_required": False,
+        "auto_deploy_staging": True,
+        "metadata": {
+            "force_deploy_after_github": True,
+            "task_profile": {
+                "name": "worker_stage_timeout_config_fix",
+                "route_after_coding": "validation",
+                "route_after_validation": "github",
+                "route_after_github": "memory",
+            },
+        },
+    }
+
+    assert orchestrator._route_after_github(state) == "deploy"  # pyright: ignore[reportPrivateUsage]
+
+
 def test_readme_smiley_profile_uses_fast_path_handoff_labels(isolated_session_factory) -> None:
     orchestrator = WorkflowOrchestrator(get_settings(), TaskService(session_factory=isolated_session_factory))
     state = {

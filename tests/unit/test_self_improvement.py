@@ -408,7 +408,8 @@ async def test_failed_cycle_creates_incident_and_rollback_task(
     assert (refreshed_cycle.metadata_json or {})["rollback_task_id"] == incident.rollback_task_id
 
 
-def test_resume_orphaned_cycle_uses_watchdog_success_state(
+@pytest.mark.asyncio
+async def test_resume_orphaned_cycle_uses_watchdog_success_state(
     isolated_session_factory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -464,13 +465,20 @@ def test_resume_orphaned_cycle_uses_watchdog_success_state(
         settings,
     )
 
-    service.resume_orphaned_cycles()
+    resumed_tasks: list[str] = []
+
+    async def fake_run_task(task_id: str) -> None:
+        resumed_tasks.append(task_id)
+
+    service.resume_orphaned_cycles(run_task_fn=fake_run_task)
+    await asyncio.sleep(0)
 
     refreshed_cycle = service.get_cycle(cycle.id)
     refreshed_task = task_service.get_task(summary.id)
     assert refreshed_cycle is not None
-    assert refreshed_cycle.status == CycleStatus.COMPLETED.value
-    assert refreshed_task.status == TaskStatus.DONE
+    assert refreshed_cycle.status == CycleStatus.POST_DEPLOY_TESTING.value
+    assert refreshed_task.status == TaskStatus.STAGING_DEPLOYED
+    assert resumed_tasks == [summary.id]
 
 
 def test_resume_orphaned_cycle_uses_watchdog_rollback_state(
@@ -543,6 +551,136 @@ def test_resume_orphaned_cycle_uses_watchdog_rollback_state(
 
 
 @pytest.mark.asyncio
+async def test_finalize_successful_self_deploy_merges_to_main_and_deletes_branch(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+    cycle = service._create_record(trigger="automatic", problem_hint="merge")  # noqa: SLF001
+    service._update(  # noqa: SLF001
+        cycle.id,
+        status=CycleStatus.POST_DEPLOY_TESTING.value,
+        goal="Setze den Worker-Stage-Timeout hoch und deploye den Fix.",
+        metadata_json={"allow_deploy_after_success": True, "pull_request_number": 2},
+    )
+
+    merged_prs: list[int] = []
+    deleted_refs: list[str] = []
+
+    class _FakeGitHubClient:
+        async def merge_pull_request(self, repository: str, pull_number: int, **kwargs):  # type: ignore[no-untyped-def]
+            assert repository == "Feberdin/local-multi-agent-company"
+            assert kwargs["merge_method"] == "merge"
+            merged_prs.append(pull_number)
+            return {"merged": True, "sha": "main-merge-sha", "message": "Pull Request successfully merged"}
+
+        async def delete_git_ref(self, repository: str, ref_name: str) -> None:
+            assert repository == "Feberdin/local-multi-agent-company"
+            deleted_refs.append(ref_name)
+
+    monkeypatch.setattr(service, "github_client", _FakeGitHubClient())
+
+    task = SimpleNamespace(
+        branch_name="feature/self-improvement-timeout",
+        metadata={"pull_request_number": 2},
+        worker_results={
+            "coding": {
+                "outputs": {
+                    "branch_name": "feature/self-improvement-timeout",
+                    "changed_files": ["services/shared/agentic_lab/config.py"],
+                }
+            },
+            "github": {"outputs": {"commit_sha": "abc123", "pull_request_number": 2}},
+            "deploy": {"outputs": {"watchdog_previous_sha": "old111", "target_commit_sha": "abc123"}},
+            "qa": {"outputs": {"results": [{"name": "self-host-healthcheck", "passed": True}]}},
+        },
+    )
+
+    await service._finalize_successful_task(cycle_id=cycle.id, task=task)  # noqa: SLF001
+
+    refreshed_cycle = service.get_cycle(cycle.id)
+    assert refreshed_cycle is not None
+    assert refreshed_cycle.status == CycleStatus.COMPLETED.value
+    assert merged_prs == [2]
+    assert deleted_refs == ["heads/feature/self-improvement-timeout"]
+    assert (refreshed_cycle.metadata_json or {})["merged_to_main"] is True
+    assert (refreshed_cycle.metadata_json or {})["deleted_branch_name"] == "feature/self-improvement-timeout"
+
+
+@pytest.mark.asyncio
+async def test_failed_self_deploy_qa_creates_host_rollback_task(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+        SELF_IMPROVEMENT_AUTO_ROLLBACK="true",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+    cycle = service._create_record(trigger="automatic", problem_hint="qa rollback")  # noqa: SLF001
+    service._update(  # noqa: SLF001
+        cycle.id,
+        status=CycleStatus.POST_DEPLOY_TESTING.value,
+        goal="Teste einen autonom deployten Fix und rolle bei QA-Fehlern sauber zurueck.",
+        problem_hypothesis="Die neue Version antwortet, aber der Smoke-Test faellt durch.",
+        risk_level=RiskLevel.HIGH.value,
+        task_id="task-qa-failed",
+        metadata_json={"allow_deploy_after_success": True, "deployment_target": "self"},
+    )
+
+    failed_task = SimpleNamespace(
+        id="task-qa-failed",
+        latest_error="QA healthcheck failed after self-update",
+        branch_name="feature/self-improvement-fix",
+        worker_results={
+            "coding": {
+                "outputs": {
+                    "branch_name": "feature/self-improvement-fix",
+                    "changed_files": ["services/shared/agentic_lab/config.py"],
+                }
+            },
+            "github": {"outputs": {"commit_sha": "badc0de123"}},
+            "deploy": {"outputs": {"watchdog_previous_sha": "stable999", "target_commit_sha": "badc0de123"}},
+            "qa": {"success": False, "errors": ["Health endpoint returned 503."]},
+        },
+    )
+
+    started_tasks: list[str] = []
+
+    async def fake_run_task(task_id: str) -> None:
+        started_tasks.append(task_id)
+
+    handled_task_id = await service._handle_failed_task(  # noqa: SLF001
+        cycle_id=cycle.id,
+        task=failed_task,
+        run_task_fn=fake_run_task,
+    )
+    await asyncio.sleep(0)
+
+    assert handled_task_id is None
+    incidents = service.list_incidents()
+    assert len(incidents) == 1
+    rollback_task = task_service.get_task(incidents[0].rollback_task_id)
+    assert rollback_task.metadata["rollback_host_previous_sha"] == "stable999"
+    assert rollback_task.metadata["deployment_target"] == "self"
+    assert "rollback_commit_sha" not in rollback_task.metadata
+    assert started_tasks == [incidents[0].rollback_task_id]
+
+
+@pytest.mark.asyncio
 async def test_autonomous_session_runs_follow_up_cycle_after_failure(
     isolated_session_factory,
     tmp_path: Path,
@@ -553,14 +691,14 @@ async def test_autonomous_session_runs_follow_up_cycle_after_failure(
         monkeypatch,
         SELF_IMPROVEMENT_ENABLED="true",
         SELF_IMPROVEMENT_MODE="automatic",
-        SELF_IMPROVEMENT_MAX_SESSION_CYCLES="4",
+        SELF_IMPROVEMENT_MAX_SESSION_CYCLES="2",
     )
     task_service = TaskService(isolated_session_factory, settings)
     service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
     session_record = service._create_session_record(  # noqa: SLF001
         trigger="overnight",
         problem_hint="Coding bleibt haengen.",
-        max_cycles=4,
+        max_cycles=2,
     )
 
     seen_hints: list[str | None] = []
@@ -604,6 +742,56 @@ async def test_autonomous_session_runs_follow_up_cycle_after_failure(
     assert refreshed.success_cycles == 1
     assert seen_hints[0] == "Coding bleibt haengen."
     assert "Model did not return valid JSON for coding." in (seen_hints[1] or "")
+
+
+@pytest.mark.asyncio
+async def test_autonomous_session_continues_after_success_until_budget_is_reached(
+    isolated_session_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _self_improvement_settings(
+        tmp_path,
+        monkeypatch,
+        SELF_IMPROVEMENT_ENABLED="true",
+        SELF_IMPROVEMENT_MODE="automatic",
+        SELF_IMPROVEMENT_MAX_SESSION_CYCLES="2",
+    )
+    task_service = TaskService(isolated_session_factory, settings)
+    service = SelfImprovementService(task_service, object(), settings=settings, session_factory=isolated_session_factory)
+    session_record = service._create_session_record(  # noqa: SLF001
+        trigger="overnight",
+        problem_hint="Autonome Verbesserung fortsetzen.",
+        max_cycles=2,
+    )
+
+    cycle_counter = {"value": 0}
+
+    async def fake_start_cycle(*, trigger: str, problem_hint: str | None, **kwargs) -> SelfImprovementCycleResponse:
+        del trigger, problem_hint, kwargs
+        cycle_counter["value"] += 1
+        cycle = service._create_record(trigger="session", problem_hint=None)  # noqa: SLF001
+        service._update(  # noqa: SLF001
+            cycle.id,
+            status=CycleStatus.COMPLETED.value,
+            goal=f"Erfolgreicher Zyklus {cycle_counter['value']}",
+        )
+        return SelfImprovementCycleResponse.from_record(service.get_cycle(cycle.id))
+
+    async def fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start_cycle", fake_start_cycle)
+    monkeypatch.setattr("services.shared.agentic_lab.self_improvement.asyncio.sleep", fast_sleep)
+
+    await service._run_session(session_id=session_record.id, force=False, run_task_fn=None, poll_interval=0.0)  # noqa: SLF001
+
+    refreshed = service.get_session_record(session_record.id)
+    assert refreshed is not None
+    assert refreshed.status == SessionStatus.COMPLETED.value
+    assert refreshed.cycles_started == 2
+    assert refreshed.completed_cycles == 2
+    assert refreshed.success_cycles == 2
 
 
 @pytest.mark.asyncio

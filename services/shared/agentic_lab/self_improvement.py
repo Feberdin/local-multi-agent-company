@@ -33,10 +33,13 @@ from services.shared.agentic_lab.db import (
     SelfImprovementSessionRecord,
     get_session_factory,
 )
+from services.shared.agentic_lab.github_client import GitHubApiError, GitHubClient
 from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.schemas import (
     ApprovalDecision,
     ApprovalRequest,
+    DeploymentConfig,
+    SmokeCheck,
     TaskCreateRequest,
     TaskStatus,
 )
@@ -657,6 +660,7 @@ class SelfImprovementService:
         self.task_service = task_service
         self.llm_client = llm_client
         self.settings = settings or get_settings()
+        self.github_client = GitHubClient(self.settings)
         self._session_factory = session_factory or get_session_factory()
         self.governance_service = SelfImprovementGovernanceService(self.settings)
         self.email_service = SelfImprovementEmailService(self.settings)
@@ -1050,7 +1054,7 @@ class SelfImprovementService:
         """
         active = self.get_active_cycle()
         if active is not None:
-            if self._resume_self_update_watchdog_cycle(active.id):
+            if self._resume_self_update_watchdog_cycle(active.id, run_task_fn=run_task_fn):
                 return
             self._update(
                 active.id,
@@ -1114,9 +1118,88 @@ class SelfImprovementService:
             parts.append(f"Analyse des vorigen Zyklus: {cycle.problem_hypothesis[:260]}")
         if cycle.latest_error:
             parts.append(f"Letzter Fehler nach dem Reparaturversuch: {cycle.latest_error[:500]}")
+        metadata = dict(cycle.metadata_json or {})
+        debug_report_path = (
+            metadata.get("watchdog_debug_report_path")
+            or metadata.get("rollback_debug_report_path")
+            or metadata.get("watchdog_rollback_report_path")
+        )
+        if debug_report_path:
+            parts.append(f"Debug-Report des Ruecksetzpfads: {str(debug_report_path)[:260]}")
         if not parts:
             parts.append("Voriger Reparaturversuch war nicht erfolgreich. Analysiere den naechsten kleinsten Fix.")
         return "\n".join(parts)[:1200]
+
+    def _build_self_improvement_task_request(
+        self,
+        *,
+        cycle_id: str,
+        goal: str,
+        cycle_metadata: dict[str, Any],
+        auto_deploy: bool,
+        worker_project_label: str,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> TaskCreateRequest:
+        """Build one task request so deploy-enabled cycles consistently carry the right rollout metadata."""
+
+        metadata = {
+            **cycle_metadata,
+            "self_improvement_cycle_id": cycle_id,
+            "worker_project_label": worker_project_label,
+            "allow_repository_modifications": True,
+            "deployment_target": "self" if auto_deploy else "staging",
+            "force_deploy_after_github": auto_deploy,
+            "pull_request_draft": not auto_deploy,
+        }
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
+        deployment: DeploymentConfig | None = None
+        smoke_checks: list[SmokeCheck] = []
+        if auto_deploy:
+            deployment = DeploymentConfig(
+                target="self",
+                project_dir=self.settings.self_host_project_dir or None,
+                compose_file=self.settings.self_host_compose_file or None,
+                healthcheck_url=self.settings.self_host_health_url or None,
+            )
+            if self.settings.self_host_health_url:
+                smoke_checks = [
+                    SmokeCheck(
+                        name="self-host-healthcheck",
+                        url=self.settings.self_host_health_url,
+                        expected_status=200,
+                    )
+                ]
+
+        return TaskCreateRequest(
+            goal=goal,
+            repository=self.settings.self_improvement_target_repo,
+            local_repo_path=self.settings.self_improvement_local_repo_path,
+            base_branch=self.settings.default_base_branch,
+            allow_repository_modifications=True,
+            auto_deploy_staging=auto_deploy,
+            deployment=deployment,
+            smoke_checks=smoke_checks,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _should_host_rollback_after_failure(
+        *,
+        failure_stage: str | None,
+        cycle_metadata: dict[str, Any],
+        deploy_outputs: dict[str, Any],
+    ) -> bool:
+        """Only roll back the live host automatically once the bad change was already deployed there."""
+
+        if not cycle_metadata.get("allow_deploy_after_success"):
+            return False
+        if str(cycle_metadata.get("deployment_target") or "").strip().lower() != "self":
+            return False
+        if not str(deploy_outputs.get("watchdog_previous_sha") or "").strip():
+            return False
+        return failure_stage in {"deploy", "qa"}
 
     async def _run_session(
         self,
@@ -1208,6 +1291,23 @@ class SelfImprovementService:
                     continue
 
                 metadata = dict(session_record.metadata_json or {})
+                rollback_task_id = str((current_cycle.metadata_json or {}).get("rollback_task_id") or "").strip()
+                if rollback_task_id:
+                    try:
+                        rollback_task = self.task_service.get_task(rollback_task_id)
+                    except KeyError:
+                        rollback_task = None
+                    if rollback_task is not None and rollback_task.status not in {
+                        TaskStatus.DONE,
+                        TaskStatus.FAILED,
+                    }:
+                        await asyncio.sleep(poll_interval)
+                        continue
+                    if rollback_task is not None:
+                        metadata["rollback_status"] = (
+                            "completed" if rollback_task.status == TaskStatus.DONE else "failed"
+                        )
+
                 goal_history = list(metadata.get("goal_history") or [])
                 error_history = list(metadata.get("error_history") or [])
                 if current_cycle.goal:
@@ -1243,18 +1343,35 @@ class SelfImprovementService:
                 }
 
                 if current_cycle.status == CycleStatus.COMPLETED.value:
+                    success_cycles = session_record.success_cycles + 1
+                    metadata["next_problem_hint"] = None
+                    metadata["last_successful_cycle_id"] = current_cycle.id
+                    base_update["metadata_json"] = metadata
+                    if completed_cycles >= session_record.max_cycles or (not force and self.is_daily_limit_reached()):
+                        self._update_session(
+                            session_id,
+                            status=SessionStatus.COMPLETED.value,
+                            completed_at=datetime.now(UTC),
+                            success_cycles=success_cycles,
+                            last_error=None,
+                            stop_reason=(
+                                "Der letzte autonome Reparaturzyklus war erfolgreich. "
+                                "Session endet nach erreichtem Budget oder Tageslimit."
+                            ),
+                            **base_update,
+                        )
+                        return
+
                     self._update_session(
                         session_id,
-                        status=SessionStatus.COMPLETED.value,
-                        completed_at=datetime.now(UTC),
-                        success_cycles=session_record.success_cycles + 1,
+                        status=SessionStatus.RUNNING.value,
+                        success_cycles=success_cycles,
                         last_error=None,
-                        stop_reason=(
-                            "Mindestens ein vollstaendiger Selbstreparaturzyklus wurde erfolgreich abgeschlossen."
-                        ),
+                        stop_reason="Naechster autonomer Reparaturzyklus wird vorbereitet.",
                         **base_update,
                     )
-                    return
+                    await asyncio.sleep(1.0)
+                    continue
 
                 metadata["next_problem_hint"] = self._build_followup_problem_hint(session_record, current_cycle)
                 stagnating = self._session_is_stagnating(metadata)
@@ -1307,7 +1424,114 @@ class SelfImprovementService:
                 stop_reason="Der Nachtmodus ist unerwartet abgestuerzt und wurde sicher beendet.",
             )
 
-    def _resume_self_update_watchdog_cycle(self, cycle_id: str) -> bool:
+    async def _finalize_successful_task(self, *, cycle_id: str, task) -> None:
+        """Persist one successful cycle and optionally merge the tested branch back into main."""
+
+        outputs = task.worker_results
+        coding_out = outputs.get("coding", {}).get("outputs", {})
+        github_out = outputs.get("github", {}).get("outputs", {})
+        testing_out = outputs.get("tester", {}).get("outputs", {})
+        deploy_out = outputs.get("deploy", {}).get("outputs", {})
+        qa_out = outputs.get("qa", {}).get("outputs", {})
+        cycle = self.get_cycle(cycle_id)
+        metadata = dict(cycle.metadata_json or {}) if cycle else {}
+        metadata.update(
+            {
+                "governance_status": GovernanceStatus.IMPLEMENTED.value,
+                "rollback_status": metadata.get("rollback_status"),
+            }
+        )
+
+        if metadata.get("allow_deploy_after_success"):
+            pull_request_number = (
+                metadata.get("pull_request_number")
+                or (task.metadata or {}).get("pull_request_number")
+                or github_out.get("pull_request_number")
+            )
+            branch_name = coding_out.get("branch_name") or task.branch_name
+            if pull_request_number in {None, ""}:
+                self._update(
+                    cycle_id,
+                    status=CycleStatus.FAILED.value,
+                    completed_at=datetime.now(UTC),
+                    latest_error=(
+                        "Deploy und QA waren gruen, aber die Pull-Request-Nummer fuer den automatischen Merge "
+                        "nach main fehlt."
+                    ),
+                    metadata_json=metadata,
+                )
+                return
+
+            try:
+                merge_result = await self.github_client.merge_pull_request(
+                    self.settings.self_improvement_target_repo,
+                    int(pull_request_number),
+                    merge_method="merge",
+                    commit_title=f"Auto-merge self-improvement cycle {cycle_id[:8]}",
+                )
+            except (GitHubApiError, ValueError) as exc:
+                self._update(
+                    cycle_id,
+                    status=CycleStatus.FAILED.value,
+                    completed_at=datetime.now(UTC),
+                    latest_error=(
+                        "Deploy und QA waren gruen, aber der automatische Merge nach main ist fehlgeschlagen: "
+                        f"{exc}"
+                    ),
+                    metadata_json=metadata,
+                )
+                return
+
+            if not bool(merge_result.get("merged", False)):
+                self._update(
+                    cycle_id,
+                    status=CycleStatus.FAILED.value,
+                    completed_at=datetime.now(UTC),
+                    latest_error=(
+                        "Deploy und QA waren gruen, aber GitHub hat den automatischen Merge nicht bestaetigt: "
+                        f"{merge_result.get('message', 'kein Detail von GitHub')}"
+                    ),
+                    metadata_json=metadata,
+                )
+                return
+
+            metadata.update(
+                {
+                    "merged_to_main": True,
+                    "merged_pull_request_number": int(pull_request_number),
+                    "merged_main_sha": merge_result.get("sha"),
+                    "merge_message": merge_result.get("message"),
+                }
+            )
+            if branch_name and branch_name != self.settings.default_base_branch:
+                try:
+                    await self.github_client.delete_git_ref(
+                        self.settings.self_improvement_target_repo,
+                        f"heads/{branch_name}",
+                    )
+                except GitHubApiError as exc:
+                    metadata["branch_cleanup_error"] = str(exc)
+                else:
+                    metadata["deleted_branch_name"] = branch_name
+
+        self._update(
+            cycle_id,
+            status=CycleStatus.COMPLETED.value,
+            completed_at=datetime.now(UTC),
+            branch_name=coding_out.get("branch_name") or task.branch_name,
+            commit_sha=github_out.get("commit_sha"),
+            changed_files_json=coding_out.get("changed_files", []),
+            test_results_json=testing_out or {},
+            deploy_result_json=deploy_out or {},
+            healthcheck_result_json=qa_out or {},
+            metadata_json=metadata,
+        )
+
+    def _resume_self_update_watchdog_cycle(
+        self,
+        cycle_id: str,
+        run_task_fn: TaskRunner | None = None,
+    ) -> bool:
         """Resume external self-update monitoring instead of failing immediately after an orchestrator restart."""
 
         cycle = self.get_cycle(cycle_id)
@@ -1325,13 +1549,21 @@ class SelfImprovementService:
             SelfUpdateWatchdogStatus.MONITORING,
             SelfUpdateWatchdogStatus.ROLLBACK_RUNNING,
         }:
-            asyncio.create_task(self._monitor_external_watchdog(cycle.id, cycle.task_id))
+            asyncio.create_task(
+                self._monitor_external_watchdog(cycle.id, cycle.task_id, run_task_fn=run_task_fn)
+            )
             return True
 
-        self._finalize_cycle_from_watchdog(cycle.id, cycle.task_id, state)
+        self._finalize_cycle_from_watchdog(cycle.id, cycle.task_id, state, run_task_fn=run_task_fn)
         return True
 
-    async def _monitor_external_watchdog(self, cycle_id: str, task_id: str) -> None:
+    async def _monitor_external_watchdog(
+        self,
+        cycle_id: str,
+        task_id: str,
+        *,
+        run_task_fn: TaskRunner | None = None,
+    ) -> None:
         """Keep observing a persisted self-update watchdog after the orchestrator has restarted."""
 
         while True:
@@ -1360,7 +1592,7 @@ class SelfImprovementService:
                 self._update(cycle_id, metadata_json=metadata)
                 continue
 
-            self._finalize_cycle_from_watchdog(cycle_id, task_id, state)
+            self._finalize_cycle_from_watchdog(cycle_id, task_id, state, run_task_fn=run_task_fn)
             return
 
     def _finalize_cycle_from_watchdog(
@@ -1368,6 +1600,8 @@ class SelfImprovementService:
         cycle_id: str,
         task_id: str,
         state: SelfUpdateWatchdogState,
+        *,
+        run_task_fn: TaskRunner | None = None,
     ) -> None:
         """Translate one persisted watchdog outcome into durable task and cycle state."""
 
@@ -1380,6 +1614,8 @@ class SelfImprovementService:
             {
                 "watchdog_status": state.status.value,
                 "watchdog_updated_at": state.updated_at.isoformat(),
+                "watchdog_debug_report_path": state.debug_report_path,
+                "watchdog_rollback_report_path": state.rollback_report_path,
             }
         )
 
@@ -1387,8 +1623,11 @@ class SelfImprovementService:
             if state.status == SelfUpdateWatchdogStatus.HEALTHY:
                 self.task_service.update_status(
                     task_id,
-                    TaskStatus.DONE,
-                    message="Self-Update erfolgreich abgeschlossen; der Rollback-Watchdog hat den gesunden Stack bestaetigt.",
+                    TaskStatus.STAGING_DEPLOYED,
+                    message=(
+                        "Self-Update erfolgreich deployed; der Rollback-Watchdog hat den "
+                        "gesunden Stack bestaetigt und QA kann fortfahren."
+                    ),
                     details={
                         "watchdog_status": state.status.value,
                         "health_url": state.health_url,
@@ -1398,13 +1637,14 @@ class SelfImprovementService:
                 )
                 self._update(
                     cycle_id,
-                    status=CycleStatus.COMPLETED.value,
-                    completed_at=datetime.now(UTC),
+                    status=CycleStatus.POST_DEPLOY_TESTING.value,
                     latest_error=None,
                     deploy_result_json={
                         "watchdog_status": state.status.value,
                         "project_dir": state.project_dir,
                         "branch_name": state.branch_name,
+                        "watchdog_previous_sha": state.previous_sha,
+                        "target_commit_sha": state.current_sha,
                     },
                     healthcheck_result_json={
                         "status": "ok",
@@ -1413,6 +1653,8 @@ class SelfImprovementService:
                     },
                     metadata_json=metadata,
                 )
+                if run_task_fn is not None:
+                    asyncio.create_task(run_task_fn(task_id))
                 return
         except KeyError:
             pass
@@ -1758,19 +2000,13 @@ class SelfImprovementService:
                 bool(cycle_metadata.get("allow_deploy_after_success", decision.allow_deploy))
                 and not approved_override
             )
-            request = TaskCreateRequest(
+            request = self._build_self_improvement_task_request(
+                cycle_id=cycle_id,
                 goal=goal,
-                repository=self.settings.self_improvement_target_repo,
-                local_repo_path=self.settings.self_improvement_local_repo_path,
-                base_branch=self.settings.default_base_branch,
-                allow_repository_modifications=True,
-                auto_deploy_staging=auto_deploy,
-                metadata={
-                    **cycle_metadata,
-                    "self_improvement_cycle_id": cycle_id,
-                    "worker_project_label": "Self-Improvement-Zyklus",
-                    "allow_repository_modifications": True,
-                    "deployment_target": "self" if auto_deploy else "staging",
+                cycle_metadata=cycle_metadata,
+                auto_deploy=auto_deploy,
+                worker_project_label="Self-Improvement-Zyklus",
+                extra_metadata={
                     "self_improvement_mode": decision.mode,
                     "self_improvement_governance_action": decision.action.value,
                     "force_publish_approval": force_publish_approval,
@@ -1839,21 +2075,42 @@ class SelfImprovementService:
         cycle_metadata["incident_id"] = incident.id
 
         if self.settings.self_improvement_auto_rollback and commit_sha:
+            deploy_outputs = (task.worker_results or {}).get("deploy", {}).get("outputs", {})
+            host_rollback = self._should_host_rollback_after_failure(
+                failure_stage=failure_stage,
+                cycle_metadata=cycle_metadata,
+                deploy_outputs=deploy_outputs,
+            )
+            rollback_goal = (
+                "Setze den Self-Host auf den letzten stabilen Commit zurueck und sichere davor Debug-Kontext."
+                if host_rollback
+                else f"Revertiere Commit {commit_sha} und stelle den letzten stabilen Zustand wieder her."
+            )
+            rollback_metadata = {
+                "self_improvement_cycle_id": cycle_id,
+                "worker_project_label": "Self-Improvement-Rollback",
+                "allow_repository_modifications": True,
+                "rollback_incident_id": incident.id,
+                "deployment_target": "self" if host_rollback else "staging",
+            }
+            if host_rollback:
+                rollback_metadata.update(
+                    {
+                        "rollback_host_previous_sha": str(deploy_outputs.get("watchdog_previous_sha") or "").strip(),
+                        "deployment_target_commit_sha": str(deploy_outputs.get("target_commit_sha") or commit_sha).strip(),
+                    }
+                )
+            else:
+                rollback_metadata["rollback_commit_sha"] = commit_sha
+
             rollback_request = TaskCreateRequest(
-                goal=f"Revertiere Commit {commit_sha} und stelle den letzten stabilen Zustand wieder her.",
+                goal=rollback_goal,
                 repository=self.settings.self_improvement_target_repo,
                 local_repo_path=self.settings.self_improvement_local_repo_path,
                 base_branch=self.settings.default_base_branch,
                 allow_repository_modifications=True,
                 auto_deploy_staging=False,
-                metadata={
-                    "self_improvement_cycle_id": cycle_id,
-                    "worker_project_label": "Self-Improvement-Rollback",
-                    "allow_repository_modifications": True,
-                    "rollback_commit_sha": commit_sha,
-                    "rollback_incident_id": incident.id,
-                    "deployment_target": "self",
-                },
+                metadata=rollback_metadata,
             )
             rollback_summary = self.task_service.create_task(rollback_request)
             self.incident_service.attach_rollback_task(
@@ -1865,6 +2122,7 @@ class SelfImprovementService:
                 {
                     "rollback_task_id": rollback_summary.id,
                     "rollback_status": IncidentStatus.ROLLBACK_RUNNING.value,
+                    "rollback_strategy": "self_host_restore" if host_rollback else "git_revert",
                 }
             )
             self._update(
@@ -1896,20 +2154,14 @@ class SelfImprovementService:
 
         try:
             goal = cycle.goal or ""
-            retry_request = TaskCreateRequest(
+            retry_request = self._build_self_improvement_task_request(
+                cycle_id=cycle_id,
                 goal=goal,
-                repository=self.settings.self_improvement_target_repo,
-                local_repo_path=self.settings.self_improvement_local_repo_path,
-                base_branch=self.settings.default_base_branch,
-                allow_repository_modifications=True,
-                auto_deploy_staging=bool(cycle_metadata.get("allow_deploy_after_success")),
-                metadata={
-                    **cycle_metadata,
-                    "self_improvement_cycle_id": cycle_id,
-                    "worker_project_label": "Self-Improvement-Zyklus",
-                    "allow_repository_modifications": True,
+                cycle_metadata=cycle_metadata,
+                auto_deploy=bool(cycle_metadata.get("allow_deploy_after_success")),
+                worker_project_label="Self-Improvement-Zyklus",
+                extra_metadata={
                     "retry_attempt": new_retry,
-                    "deployment_target": "self" if cycle_metadata.get("allow_deploy_after_success") else "staging",
                 },
             )
             retry_summary = self.task_service.create_task(retry_request)
@@ -1961,6 +2213,10 @@ class SelfImprovementService:
             except (KeyError, Exception):
                 continue
 
+            cycle = self.get_cycle(cycle_id)
+            cycle_metadata = dict(cycle.metadata_json or {}) if cycle else {}
+            allow_deploy_after_success = bool(cycle_metadata.get("allow_deploy_after_success"))
+
             # Mirror branch and error into cycle record for UI visibility
             update_kwargs: dict[str, Any] = {}
             commit_sha, branch_name, changed_files = self._extract_commit_context(task)
@@ -1985,6 +2241,8 @@ class SelfImprovementService:
                 continue
 
             if task.status == TaskStatus.SELF_UPDATING:
+                if cycle is not None:
+                    self._update(cycle_id, status=CycleStatus.DEPLOYING.value)
                 watchdog_state = read_watchdog_state(task.id, self.settings)
                 if watchdog_state is not None:
                     if watchdog_state.status in {
@@ -2007,7 +2265,12 @@ class SelfImprovementService:
                             self._update(cycle_id, metadata_json=metadata)
                         continue
 
-                    self._finalize_cycle_from_watchdog(cycle_id, task.id, watchdog_state)
+                    self._finalize_cycle_from_watchdog(
+                        cycle_id,
+                        task.id,
+                        watchdog_state,
+                        run_task_fn=run_task_fn,
+                    )
                     return
 
             if task.status in {TaskStatus.APPROVAL_REQUIRED}:
@@ -2049,33 +2312,16 @@ class SelfImprovementService:
                 )
                 continue
 
-            if task.status == TaskStatus.DONE or task.status == TaskStatus.PR_CREATED:
-                outputs = task.worker_results
-                coding_out = outputs.get("coding", {}).get("outputs", {})
-                github_out = outputs.get("github", {}).get("outputs", {})
-                testing_out = outputs.get("tester", {}).get("outputs", {})
-                deploy_out = outputs.get("deploy", {}).get("outputs", {})
-                qa_out = outputs.get("qa", {}).get("outputs", {})
-                cycle = self.get_cycle(cycle_id)
-                metadata = dict(cycle.metadata_json or {}) if cycle else {}
-                metadata.update(
-                    {
-                        "governance_status": GovernanceStatus.IMPLEMENTED.value,
-                        "rollback_status": metadata.get("rollback_status"),
-                    }
-                )
-                self._update(
-                    cycle_id,
-                    status=CycleStatus.COMPLETED.value,
-                    completed_at=datetime.now(UTC),
-                    branch_name=coding_out.get("branch_name") or task.branch_name,
-                    commit_sha=github_out.get("commit_sha"),
-                    changed_files_json=coding_out.get("changed_files", []),
-                    test_results_json=testing_out or {},
-                    deploy_result_json=deploy_out or {},
-                    healthcheck_result_json=qa_out or {},
-                    metadata_json=metadata,
-                )
+            if task.status == TaskStatus.PR_CREATED and allow_deploy_after_success:
+                self._update(cycle_id, status=CycleStatus.DEPLOYING.value)
+                continue
+
+            if task.status in {TaskStatus.STAGING_DEPLOYED, TaskStatus.QA_PENDING} and allow_deploy_after_success:
+                self._update(cycle_id, status=CycleStatus.POST_DEPLOY_TESTING.value)
+                continue
+
+            if task.status == TaskStatus.DONE or (task.status == TaskStatus.PR_CREATED and not allow_deploy_after_success):
+                await self._finalize_successful_task(cycle_id=cycle_id, task=task)
                 return
 
         # Deadline exceeded

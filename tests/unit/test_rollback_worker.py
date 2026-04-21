@@ -302,3 +302,48 @@ async def test_self_update_watchdog_does_not_accept_the_wrong_new_commit(
     assert persisted.current_sha == "ccc333"
     assert persisted.observed_target_change is False
     assert rollback_called["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_rollback_worker_can_restore_the_self_host_stack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SELF_HOST_SSH_HOST", "tower.local")
+    monkeypatch.setenv("SELF_HOST_SSH_USER", "root")
+    monkeypatch.setenv("SELF_HOST_SSH_PORT", "22")
+    monkeypatch.setenv("SELF_HOST_PROJECT_DIR", "/mnt/user/appdata/feberdin-agent-team/repo")
+    monkeypatch.setenv("SELF_HOST_COMPOSE_FILE", "docker-compose.yml")
+    monkeypatch.setenv("SELF_HOST_HEALTH_URL", "http://tower.local:18088/health")
+    settings = _rollback_settings(tmp_path, monkeypatch)
+    rollback_app = _load_rollback_module()
+    monkeypatch.setattr(rollback_app, "settings", settings)
+
+    async def fake_capture(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["previous_sha"] == "stable123"
+        return str(tmp_path / "rollback-debug-report.json")
+
+    def fake_run_command(command, timeout: int = 300):  # type: ignore[no-untyped-def]
+        assert "rollback-self-update.sh" in " ".join(str(part) for part in command)
+        return subprocess.CompletedProcess(command, 0, stdout="rollback ok", stderr="")
+
+    monkeypatch.setattr(rollback_app, "_capture_self_host_debug_report", fake_capture)
+    monkeypatch.setattr(rollback_app, "run_command", fake_run_command)
+    monkeypatch.setattr(rollback_app, "write_report", lambda *args, **kwargs: tmp_path / "rollback-host-report.json")
+
+    request = WorkerRequest(
+        task_id="task-self-host-rollback",
+        goal="Setze den Self-Host auf den letzten stabilen Commit zurueck.",
+        repository="Feberdin/local-multi-agent-company",
+        local_repo_path=str(tmp_path / "workspace" / "local-multi-agent-company"),
+        base_branch="main",
+        metadata={"rollback_host_previous_sha": "stable123", "deployment_target_commit_sha": "bad999"},
+        prior_results={},
+    )
+
+    response = await rollback_app.run(request)
+
+    assert response.success is True
+    assert response.outputs["backend"] == "self_host_restore"
+    assert response.outputs["rollback_host_previous_sha"] == "stable123"
+    assert response.outputs["debug_report_path"].endswith("rollback-debug-report.json")

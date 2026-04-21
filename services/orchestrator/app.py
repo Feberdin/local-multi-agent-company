@@ -107,7 +107,7 @@ worker_probe_service = WorkerProbeService(settings=settings, llm=llm_client, gov
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize persistence once per process using FastAPI's lifespan hook."""
     init_db()
-    self_improvement_service.resume_orphaned_cycles()
+    self_improvement_service.resume_orphaned_cycles(run_task_fn=_run_workflow_task)
     self_improvement_service.resume_orphaned_sessions(run_task_fn=_run_workflow_task)
     worker_probe_service.resume_orphaned_runs()
     github_autofix_loop_task: asyncio.Task[None] | None = None

@@ -1,7 +1,10 @@
 """
-Purpose: GitHub worker for staging changes, committing, pushing branches, and creating draft pull requests.
+Purpose: GitHub worker for staging changes, committing, pushing branches, and creating pull requests.
 Input/Output: Receives a reviewed and tested working tree, then returns commit and PR metadata.
-Important invariants: Branch-based flow is mandatory, the worker never merges to main, and all push/PR failures stay explicit.
+Important invariants:
+  - Branch-based flow is mandatory, and the worker never merges to main directly.
+  - Pull requests default to draft unless metadata explicitly marks them ready for autonomous promotion later.
+  - All push/PR failures stay explicit and operator-readable.
 How to debug: If PR creation fails, inspect git remote auth, the staged diff, and the GitHub API error in the report.
 """
 
@@ -123,6 +126,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
     pr_body = _build_pr_body(request, diff)
 
+    pull_request_draft = bool(request.metadata.get("pull_request_draft", True))
+
     try:
         pr = await github_client.create_pull_request(
             repository=request.repository,
@@ -130,6 +135,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             body=pr_body,
             head_branch=request.branch_name or "",
             base_branch=request.base_branch,
+            draft=pull_request_draft,
         )
     except GitHubApiError as exc:
         return WorkerResponse(
@@ -142,6 +148,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     report = {
         "commit_sha": commit_sha,
         "pull_request_url": pr["html_url"],
+        "pull_request_draft": pull_request_draft,
         "diff_stat": diff["diff_stat"],
         "publish_strategy": publish_strategy,
         "local_commit_created": commit_created,
@@ -156,6 +163,7 @@ async def run(request: WorkerRequest) -> WorkerResponse:
             "commit_sha": commit_sha,
             "pull_request_url": pr["html_url"],
             "pull_request_number": pr["number"],
+            "pull_request_draft": pull_request_draft,
             "publish_strategy": publish_strategy,
             "local_commit_created": commit_created,
         },

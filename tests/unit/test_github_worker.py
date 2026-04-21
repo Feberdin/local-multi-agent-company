@@ -355,3 +355,54 @@ async def test_run_reuses_local_head_when_retry_has_nothing_new_to_commit(
     assert response.outputs["local_commit_created"] is False
     push_command, _push_env = next(item for item in captured_commands if item[0][:2] == ["git", "push"])
     assert push_command == ["git", "push", "--set-upstream", "origin", "feature/readme-smiley"]
+
+
+@pytest.mark.asyncio
+async def test_run_can_create_ready_pull_request_when_metadata_requests_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    github_worker_app = _load_github_worker_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    captured_pr_kwargs: dict[str, object] = {}
+
+    def fake_current_diff(repo_path: Path, base_branch: str) -> dict[str, object]:  # noqa: ARG001
+        return {"changed_files": ["README.md"], "diff_stat": "README.md | 1 +"}
+
+    def fake_run_command(
+        args: list[str],
+        cwd: Path | None = None,  # noqa: ARG001
+        env: dict[str, str] | None = None,  # noqa: ARG001
+        timeout: int = 300,  # noqa: ARG001
+        check: bool = True,  # noqa: ARG001
+    ) -> CompletedProcess[str]:
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    def fake_git(args: list[str], repo_path: Path, timeout: int = 300, check: bool = True) -> str:  # noqa: ARG001
+        if args == ["config", "--get", "remote.origin.url"]:
+            return "https://github.com/Feberdin/local-multi-agent-company.git"
+        if args == ["rev-parse", "HEAD"]:
+            return "abc123"
+        return ""
+
+    class _FakeGitHubClient:
+        async def create_pull_request(self, **kwargs: object) -> dict[str, object]:
+            captured_pr_kwargs.update(kwargs)
+            return {"html_url": "https://github.com/Feberdin/local-multi-agent-company/pull/10", "number": 10}
+
+    monkeypatch.setattr(github_worker_app, "current_diff", fake_current_diff)
+    monkeypatch.setattr(github_worker_app, "run_command", fake_run_command)
+    monkeypatch.setattr(github_worker_app, "git", fake_git)
+    monkeypatch.setattr(github_worker_app, "write_report", lambda *args, **kwargs: tmp_path / "github-report.json")
+    monkeypatch.setattr(github_worker_app, "github_client", _FakeGitHubClient())
+    monkeypatch.setattr(github_worker_app.settings, "github_token", "ghs_push_token")
+
+    request = _worker_request(repo_path)
+    request.metadata["pull_request_draft"] = False
+
+    response = await github_worker_app.run(request)
+
+    assert response.success is True
+    assert captured_pr_kwargs["draft"] is False
+    assert response.outputs["pull_request_draft"] is False

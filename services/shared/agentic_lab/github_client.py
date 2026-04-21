@@ -161,6 +161,8 @@ class GitHubClient:
         body: str,
         head_branch: str,
         base_branch: str,
+        *,
+        draft: bool = True,
     ) -> dict[str, Any]:
         """Create a pull request and return the GitHub response payload."""
 
@@ -172,7 +174,7 @@ class GitHubClient:
                 "body": body,
                 "head": head_branch,
                 "base": base_branch,
-                "draft": True,
+                "draft": draft,
             },
         )
 
@@ -189,6 +191,25 @@ class GitHubClient:
         """Load one pull request so automation can inspect the current head SHA safely."""
 
         return await self._request_json("GET", f"/repos/{repository}/pulls/{pull_number}")
+
+    async def merge_pull_request(
+        self,
+        repository: str,
+        pull_number: int,
+        *,
+        merge_method: str = "merge",
+        commit_title: str | None = None,
+    ) -> dict[str, Any]:
+        """Merge one pull request into the base branch after autonomous QA has passed."""
+
+        payload: dict[str, Any] = {"merge_method": merge_method}
+        if commit_title:
+            payload["commit_title"] = commit_title
+        return await self._request_json(
+            "PUT",
+            f"/repos/{repository}/pulls/{pull_number}/merge",
+            json_body=payload,
+        )
 
     async def get_git_ref(self, repository: str, ref_name: str) -> dict[str, Any]:
         """Load one Git ref such as `heads/main` so workers can publish fallback commits safely."""
@@ -264,6 +285,17 @@ class GitHubClient:
             f"/repos/{repository}/git/refs/{ref_name}",
             json_body={"sha": commit_sha, "force": force},
         )
+
+    async def delete_git_ref(self, repository: str, ref_name: str) -> None:
+        """Delete one Git ref such as `heads/feature-branch` after the change has been promoted."""
+
+        url = f"{self.settings.github_api_url.rstrip('/')}/repos/{repository}/git/refs/{ref_name}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.delete(url, headers=self._headers())
+        if response.status_code >= 400:
+            raise GitHubApiError(
+                f"GitHub ref deletion failed: {response.status_code} {response.text}"
+            )
 
     async def get_commit_check_overview(self, repository: str, ref: str) -> dict[str, Any]:
         """Return one normalized CI summary for the given commit ref or SHA."""

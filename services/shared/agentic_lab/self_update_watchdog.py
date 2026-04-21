@@ -56,6 +56,8 @@ class SelfUpdateWatchdogState(BaseModel):
     observed_target_change: bool = False
     heartbeat_count: int = 0
     last_error: str | None = None
+    debug_report_path: str | None = None
+    rollback_report_path: str | None = None
     notes: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
