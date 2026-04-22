@@ -386,6 +386,46 @@ async def test_local_patch_backend_uses_deterministic_readme_smiley_fast_path(
 
 
 @pytest.mark.asyncio
+async def test_local_patch_backend_uses_deterministic_readme_top_block_fast_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = tmp_path / "readme-block-repo"
+    repo_path.mkdir()
+    (repo_path / "README.md").write_text("# Demo\n\nExisting intro\n", encoding="utf-8")
+    _run_git(repo_path, "init", "-b", "main")
+    _run_git(repo_path, "config", "user.email", "test@example.com")
+    _run_git(repo_path, "config", "user.name", "Test User")
+    _run_git(repo_path, "add", "README.md")
+    _run_git(repo_path, "commit", "-m", "initial")
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        WorkerRequest(
+            task_id="task-readme-block-fast",
+            goal="Add a self-improvement block at the top of the README.md file",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            branch_name="feature/readme-block-fast",
+            metadata={"task_profile": {"name": "readme_top_block_fix"}},
+            prior_results={},
+        ),
+        repo_path,
+        "feature/readme-block-fast",
+    )
+
+    assert response.success is True
+    assert response.outputs["changed_files"] == ["README.md"]
+    assert response.outputs["deterministic_strategy"] == "insert_markdown_block_at_top_of_readme"
+    assert response.outputs["inserted_section_title"] == "Self-Improvement"
+    assert (repo_path / "README.md").read_text(encoding="utf-8").startswith("## Self-Improvement\n")
+
+
+@pytest.mark.asyncio
 async def test_local_patch_backend_uses_deterministic_worker_stage_timeout_fast_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -434,6 +474,110 @@ async def test_local_patch_backend_uses_deterministic_worker_stage_timeout_fast_
         encoding="utf-8"
     )
     assert "WORKER_STAGE_TIMEOUT_SECONDS=3600" in (repo_path / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_local_patch_backend_moves_to_the_next_small_batch_when_an_earlier_batch_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = tmp_path / "chunk-repo"
+    (repo_path / "services").mkdir(parents=True)
+    for relative_path, content in {
+        "services/alpha_worker.py": "def alpha_worker():\n    return 'alpha'\n",
+        "services/beta_worker.py": "def beta_worker():\n    return 'beta'\n",
+        "services/gamma_worker.py": "def gamma_worker():\n    return 'gamma'\n",
+    }.items():
+        file_path = repo_path / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+    _run_git(repo_path, "init", "-b", "main")
+    _run_git(repo_path, "config", "user.email", "test@example.com")
+    _run_git(repo_path, "config", "user.name", "Test User")
+    _run_git(repo_path, "add", ".")
+    _run_git(repo_path, "commit", "-m", "initial")
+
+    class _BatchingLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json_with_trace(self, *, user_prompt: str, **_kwargs) -> tuple[dict[str, object], dict[str, object]]:
+            self.calls += 1
+            if "- services/alpha_worker.py" in user_prompt and "- services/beta_worker.py" in user_prompt:
+                return (
+                    {
+                        "summary": "The first small batch is not a safe fit.",
+                        "operations": [],
+                        "blocking_reason": "No safe change in the alpha/beta batch.",
+                    },
+                    {"provider": "mistral", "used_fallback": False, "repair_pass_used": False},
+                )
+            if "- services/gamma_worker.py" in user_prompt:
+                return (
+                    {
+                        "summary": "Update gamma_worker in the second small batch.",
+                        "operations": [
+                            {
+                                "action": "replace_symbol_body",
+                                "file_path": "services/gamma_worker.py",
+                                "symbol_name": "gamma_worker",
+                                "reason": "The second batch contains the safest narrow change target.",
+                                "new_content": 'def gamma_worker():\n    return "gamma-updated"\n',
+                            }
+                        ],
+                    },
+                    {"provider": "mistral", "used_fallback": False, "repair_pass_used": False},
+                )
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+    class _GuidanceStub:
+        def guidance_prompt_block(self, request: WorkerRequest, worker_name: str) -> str:  # noqa: ARG002
+            return ""
+
+    monkeypatch.setattr(coding_app, "settings", settings)
+    monkeypatch.setattr(coding_app, "llm", _BatchingLLM())
+    monkeypatch.setattr(coding_app, "worker_governance", _GuidanceStub())
+
+    response = await coding_app._run_local_patch_backend(  # pyright: ignore[reportPrivateUsage]
+        WorkerRequest(
+            task_id="task-small-batch-coding",
+            goal="Improve the worker behavior with a small safe change in the service layer.",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            branch_name="feature/small-batch-coding",
+            metadata={},
+            prior_results={
+                "requirements": {"outputs": {"requirements": ["Keep the change narrow and safe."]}},
+                "architecture": {
+                    "outputs": {
+                        "touched_areas": [
+                            "services/alpha_worker.py",
+                            "services/beta_worker.py",
+                            "services/gamma_worker.py",
+                        ]
+                    }
+                },
+                "research": {
+                    "outputs": {
+                        "candidate_files": [
+                            "services/alpha_worker.py",
+                            "services/beta_worker.py",
+                            "services/gamma_worker.py",
+                        ]
+                    }
+                },
+            },
+        ),
+        repo_path,
+        "feature/small-batch-coding",
+    )
+
+    assert response.success is True
+    assert response.outputs["changed_files"] == ["services/gamma_worker.py"]
+    assert "gamma-updated" in (repo_path / "services" / "gamma_worker.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -845,6 +989,30 @@ def test_select_candidate_files_prioritizes_real_fix_targets_over_generic_repo_f
     assert "README.md" not in candidate_files[:2]
 
 
+def test_select_candidate_files_respects_explicit_preferred_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _coding_settings(tmp_path, monkeypatch)
+    coding_app = _load_coding_module()
+    repo_path = _create_repo(tmp_path)
+    (repo_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    service_file = repo_path / "services" / "worker_entry.py"
+    service_file.parent.mkdir(parents=True, exist_ok=True)
+    service_file.write_text("def worker_entry():\n    return 'ok'\n", encoding="utf-8")
+
+    candidate_files = coding_app._select_candidate_files(  # pyright: ignore[reportPrivateUsage]
+        repo_path=repo_path,
+        goal="Add a short block at the top of README.md",
+        requirements={"requirements": ["Change README only."]},
+        architecture={"touched_areas": ["services/worker_entry.py"]},
+        research={"candidate_files": ["services/worker_entry.py"]},
+        preferred_files=["README.md"],
+    )
+
+    assert candidate_files[0] == "README.md"
+
+
 @pytest.mark.asyncio
 async def test_local_patch_backend_applies_replace_lines_without_rewriting_the_whole_file(
     tmp_path: Path,
@@ -1160,7 +1328,7 @@ async def test_local_patch_backend_persists_failure_diagnostics_when_operations_
     assert response.outputs["candidate_files"] == ["worker_target.py"]
     assert response.outputs["patch_plan_summary"] == "No code changes needed after review."
     assert response.outputs["blocking_reason"] == "Model found no safe patch."
-    assert len(response.outputs["plan_attempts"]) == 2
+    assert len(response.outputs["plan_attempts"]) == 3
     assert response.outputs["plan_attempts"][0]["operation_count"] == 0
     assert response.warnings == [
         "Das Modell hat zwar ein JSON-Objekt geliefert, aber keine konkreten Datei-Operationen vorgeschlagen."

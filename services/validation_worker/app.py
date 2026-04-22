@@ -16,6 +16,7 @@ from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
 from services.shared.agentic_lab.task_profiles import (
     is_readme_smiley_profile,
+    is_readme_top_block_profile,
     is_worker_stage_timeout_profile,
     profile_target_files,
     profile_target_timeout_seconds,
@@ -44,6 +45,23 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
     if is_readme_smiley_profile(request.metadata):
         outputs = _readme_smiley_validation(request)
+        report_path = write_report(settings.task_report_dir(request.task_id), "validation.json", outputs)
+        return WorkerResponse(
+            worker="validation",
+            summary="Validation against the original Auftrag completed.",
+            outputs=outputs,
+            warnings=[],
+            artifacts=[
+                Artifact(
+                    name="validation",
+                    path=str(report_path),
+                    description="Validation of acceptance criteria, residual risks, and maturity rating.",
+                )
+            ],
+        )
+
+    if is_readme_top_block_profile(request.metadata):
+        outputs = _readme_top_block_validation(request)
         report_path = write_report(settings.task_report_dir(request.task_id), "validation.json", outputs)
         return WorkerResponse(
             worker="validation",
@@ -207,6 +225,47 @@ def _worker_stage_timeout_validation(request: WorkerRequest) -> dict:
         "recommendation": (
             "Proceed with a draft PR for the deterministic timeout-config fix."
             if release_readiness == "beta"
+            else "Inspect the resulting diff before creating a PR."
+        ),
+    }
+
+
+def _readme_top_block_validation(request: WorkerRequest) -> dict:
+    """Validate the small README top-block fast path without another slow model roundtrip."""
+
+    coding_outputs = request.prior_results.get("coding", {}).get("outputs", {})
+    changed_files = [item for item in coding_outputs.get("changed_files", []) if isinstance(item, str)]
+    block_title = str(coding_outputs.get("inserted_section_title") or "").strip()
+    only_readme_changed = changed_files == ["README.md"]
+
+    fulfilled = ["Der Fast-Path blieb auf den kleinen README-Scope begrenzt."]
+    partially_verified: list[str] = []
+    unverified: list[str] = []
+
+    if only_readme_changed:
+        fulfilled.append("Nur README.md ist im resultierenden Diff sichtbar.")
+    else:
+        partially_verified.append(
+            "Die geaenderten Dateien weichen vom erwarteten README-Only-Scope ab oder sind noch nicht vollstaendig sichtbar."
+        )
+
+    if block_title:
+        fulfilled.append(f"Der neue README-Block wurde mit der Ueberschrift `{block_title}` vorbereitet.")
+    else:
+        unverified.append("Die neue README-Block-Ueberschrift wurde noch nicht explizit nachgewiesen.")
+
+    if not changed_files:
+        unverified.append("Es wurde noch kein veraenderter README-Diff nachgewiesen.")
+
+    return {
+        "fulfilled": fulfilled,
+        "partially_verified": partially_verified,
+        "unverified": unverified,
+        "residual_risks": [] if only_readme_changed else ["Pruefe den Diff manuell, falls neben README.md weitere Dateien auftauchen."],
+        "release_readiness": "beta" if only_readme_changed and block_title else "prototype",
+        "recommendation": (
+            "Proceed with a draft PR for the small README block fix."
+            if only_readme_changed and block_title
             else "Inspect the resulting diff before creating a PR."
         ),
     }

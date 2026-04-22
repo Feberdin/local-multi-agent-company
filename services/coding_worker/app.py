@@ -41,8 +41,10 @@ from services.shared.agentic_lab.repo_tools import (
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
 from services.shared.agentic_lab.task_profiles import (
     README_SMILEY_CODING_STRATEGY,
+    README_TOP_BLOCK_CODING_STRATEGY,
     WORKER_STAGE_TIMEOUT_CODING_STRATEGY,
     is_readme_smiley_profile,
+    is_readme_top_block_profile,
     is_worker_stage_timeout_profile,
     profile_target_files,
     profile_target_timeout_seconds,
@@ -185,6 +187,8 @@ async def _run_local_patch_backend(
 
     if is_readme_smiley_profile(request.metadata):
         return _run_readme_smiley_fast_path(request, repo_path, branch_name)
+    if is_readme_top_block_profile(request.metadata):
+        return _run_readme_top_block_fast_path(request, repo_path, branch_name)
     if is_worker_stage_timeout_profile(request.metadata):
         return _run_worker_stage_timeout_fast_path(request, repo_path, branch_name)
 
@@ -204,130 +208,42 @@ async def _run_local_patch_backend(
         requirements=requirements,
         architecture=architecture,
         research=research,
-    )
-
-    # Build a lightweight symbol index for Python candidate files so the LLM can
-    # use targeted replace_symbol_body operations instead of full file rewrites.
-    code_index = build_index(repo_path, candidate_files)
-    symbol_index_block = code_index.format_for_prompt()
-    file_context = _build_prompt_file_context(
-        repo_path=repo_path,
-        candidate_files=candidate_files,
-        goal=request.goal,
-        requirements=requirements,
-        code_index=code_index,
+        preferred_files=profile_target_files(request.metadata),
     )
     plan_attempts: list[dict[str, Any]] = []
-
-    try:
-        patch_plan = await llm.complete_json(
-            system_prompt=_coding_system_prompt(guidance_block),
-            user_prompt=_coding_user_prompt(
-                request.goal,
-                requirements,
-                architecture,
-                research,
-                overview,
-                file_context,
-                symbol_index_block,
-                candidate_files,
-            ),
-            worker_name="coding",
-            required_keys=["summary", "operations"],
-        )
-        plan_attempts.append(_patch_plan_attempt_snapshot("initial", patch_plan))
-    except LLMError as exc:
-        plan_attempts.append(
-            {
-                "attempt": "initial_contract_failure",
-                "error": _short_text(str(exc), limit=900),
-            }
-        )
-        try:
-            patch_plan = await llm.complete_json(
-                system_prompt=_coding_system_prompt(guidance_block),
-                user_prompt=_coding_contract_recovery_user_prompt(
-                    goal=request.goal,
-                    requirements=requirements,
-                    candidate_files=candidate_files,
-                    file_context=file_context,
-                    symbol_index_block=symbol_index_block,
-                    previous_error=str(exc),
-                ),
-                worker_name="coding",
-                required_keys=["summary", "operations"],
-            )
-            plan_attempts.append(_patch_plan_attempt_snapshot("retry_after_contract_failure", patch_plan))
-        except LLMError as retry_exc:
-            return _coding_failure_response(
-                request=request,
-                repo_path=repo_path,
-                summary="Coding plan generation failed.",
-                errors=[str(exc), str(retry_exc)],
-                candidate_files=candidate_files,
-                arch_touched=arch_touched,
-                research=research,
-                file_context=file_context,
-                symbol_index_block=symbol_index_block,
-                plan_attempts=plan_attempts,
-            )
-
-    raw_operations = _raw_operations_from_plan(patch_plan)
-    if not raw_operations:
-        try:
-            patch_plan = await llm.complete_json(
-                system_prompt=_coding_system_prompt(guidance_block),
-                user_prompt=_coding_noop_retry_user_prompt(
-                    goal=request.goal,
-                    requirements=requirements,
-                    architecture=architecture,
-                    research=research,
-                    overview=overview,
-                    file_context=file_context,
-                    symbol_index_block=symbol_index_block,
-                    candidate_files=candidate_files,
-                    previous_plan=patch_plan,
-                ),
-                worker_name="coding",
-                required_keys=["summary", "operations"],
-            )
-            plan_attempts.append(_patch_plan_attempt_snapshot("retry_after_no_operations", patch_plan))
-        except LLMError as exc:
-            return _coding_failure_response(
-                request=request,
-                repo_path=repo_path,
-                summary="Coding plan retry failed after an empty first plan.",
-                errors=[str(exc)],
-                candidate_files=candidate_files,
-                arch_touched=arch_touched,
-                research=research,
-                file_context=file_context,
-                symbol_index_block=symbol_index_block,
-                plan_attempts=plan_attempts,
-            )
-        raw_operations = _raw_operations_from_plan(patch_plan)
-
-    if not raw_operations:
-        blocking_reason = str(patch_plan.get("blocking_reason") or "").strip()
-        errors = ["The local patch backend did not generate any file operations."]
-        if blocking_reason:
-            errors.append(f"Blocking reason: {blocking_reason}")
+    aggregated_file_context: dict[str, str] = {}
+    any_symbol_index = False
+    batch_outcome = await _generate_patch_plan_in_batches(
+        request=request,
+        repo_path=repo_path,
+        requirements=requirements,
+        architecture=architecture,
+        research=research,
+        overview=overview,
+        guidance_block=guidance_block,
+        candidate_files=candidate_files,
+        plan_attempts=plan_attempts,
+    )
+    aggregated_file_context = batch_outcome["file_context"]
+    any_symbol_index = batch_outcome["symbol_index_available"]
+    patch_plan = batch_outcome["patch_plan"]
+    if patch_plan is None:
         return _coding_failure_response(
             request=request,
             repo_path=repo_path,
-            summary="Coding backend returned no file operations.",
-            errors=errors,
+            summary=batch_outcome["failure_summary"],
+            errors=batch_outcome["errors"],
             candidate_files=candidate_files,
             arch_touched=arch_touched,
             research=research,
-            file_context=file_context,
-            symbol_index_block=symbol_index_block,
+            file_context=aggregated_file_context,
+            symbol_index_block="available" if any_symbol_index else "",
             plan_attempts=plan_attempts,
-            patch_plan=patch_plan,
-            warnings=[
-                "Das Modell hat zwar ein JSON-Objekt geliefert, aber keine konkreten Datei-Operationen vorgeschlagen."
-            ],
+            patch_plan=batch_outcome.get("last_patch_plan"),
+            warnings=batch_outcome.get("warnings") or [],
         )
+
+    raw_operations = _raw_operations_from_plan(patch_plan)
 
     # Parse and normalize operations (supports both new structured edits and legacy create_or_update)
     edit_ops, parse_errors = _parse_operations(raw_operations)
@@ -340,8 +256,8 @@ async def _run_local_patch_backend(
             candidate_files=candidate_files,
             arch_touched=arch_touched,
             research=research,
-            file_context=file_context,
-            symbol_index_block=symbol_index_block,
+            file_context=aggregated_file_context,
+            symbol_index_block="available" if any_symbol_index else "",
             plan_attempts=plan_attempts,
             patch_plan=patch_plan,
         )
@@ -361,8 +277,8 @@ async def _run_local_patch_backend(
             candidate_files=candidate_files,
             arch_touched=arch_touched,
             research=research,
-            file_context=file_context,
-            symbol_index_block=symbol_index_block,
+            file_context=aggregated_file_context,
+            symbol_index_block="available" if any_symbol_index else "",
             plan_attempts=plan_attempts,
             patch_plan=patch_plan,
             parse_errors=parse_errors,
@@ -397,8 +313,8 @@ async def _run_local_patch_backend(
             candidate_files=candidate_files,
             arch_touched=arch_touched,
             research=research,
-            file_context=file_context,
-            symbol_index_block=symbol_index_block,
+            file_context=aggregated_file_context,
+            symbol_index_block="available" if any_symbol_index else "",
             plan_attempts=plan_attempts,
             patch_plan=patch_plan,
             parse_errors=parse_errors,
@@ -533,6 +449,123 @@ def _run_readme_smiley_fast_path(
                 name="coding-report",
                 path=str(report_path),
                 description="Deterministischer README-Mini-Fix mit resultierendem Diff.",
+            )
+        ],
+    )
+
+
+def _run_readme_top_block_fast_path(
+    request: WorkerRequest,
+    repo_path: Path,
+    branch_name: str,
+) -> WorkerResponse:
+    """
+    Apply one tiny deterministic README block insertion without letting a broad code-planning loop run.
+
+    Example:
+      Goal: "Add a self-improvement block at the top of the README.md file"
+      Result: A short markdown section is inserted at the beginning of README.md only.
+    """
+
+    target_path = repo_path / "README.md"
+    if not target_path.is_file():
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="README-Block-Fix konnte nicht ausgefuehrt werden.",
+            errors=["README.md wurde im isolierten Task-Workspace nicht gefunden."],
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    original_content = target_path.read_text(encoding="utf-8", errors="ignore")
+    section_title = _derive_readme_top_block_title(request.goal)
+    updated_content = _prepend_markdown_block_to_readme(original_content, section_title)
+    if updated_content == original_content:
+        report = {
+            "summary": "README enthaelt den gewuenschten Top-Block bereits.",
+            "branch_name": branch_name,
+            "changed_files": [],
+            "diff_stat": "",
+            "deterministic_strategy": README_TOP_BLOCK_CODING_STRATEGY,
+            "inserted_section_title": section_title,
+        }
+        report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
+        return WorkerResponse(
+            worker="coding",
+            summary="README war bereits im gewuenschten Zustand.",
+            outputs={
+                "branch_name": branch_name,
+                "local_repo_path": str(repo_path),
+                "changed_files": [],
+                "diff_stat": "",
+                "deterministic_strategy": README_TOP_BLOCK_CODING_STRATEGY,
+                "inserted_section_title": section_title,
+            },
+            warnings=[f"README.md enthaelt bereits einen passenden Abschnitt mit der Ueberschrift `{section_title}`."],
+            artifacts=[
+                Artifact(
+                    name="coding-report",
+                    path=str(report_path),
+                    description="Deterministischer README-Block-Fix ohne resultierenden Diff.",
+                )
+            ],
+        )
+
+    edit_plan = [
+        EditOperation(
+            action=EditAction.CREATE_OR_UPDATE,
+            file_path="README.md",
+            reason=(
+                "Der kleine README-Fast-Path fuegt nur einen kompakten Markdown-Block am Anfang der Datei ein "
+                "und laesst den restlichen Inhalt unveraendert."
+            ),
+            new_content=updated_content,
+        )
+    ]
+    patch_result = apply_edit_plan(repo_path, edit_plan)
+    if not patch_result.success:
+        errors = [
+            f"Operation {item.operation_index} ({item.action} on {item.file_path}): {item.error}"
+            for item in patch_result.failed_operations
+        ]
+        return WorkerResponse(
+            worker="coding",
+            success=False,
+            summary="README-Block-Fix konnte nicht angewendet werden.",
+            errors=errors or patch_result.errors,
+            outputs={"local_repo_path": str(repo_path), "branch_name": branch_name},
+        )
+
+    diff = current_diff(repo_path, request.base_branch)
+    risk_flags = detect_risk_flags(diff["changed_files"], diff["diff_text"])
+    report = {
+        "summary": "README-Block-Fix wurde deterministisch angewendet.",
+        "branch_name": branch_name,
+        "changed_files": diff["changed_files"],
+        "diff_stat": diff["diff_stat"],
+        "deterministic_strategy": README_TOP_BLOCK_CODING_STRATEGY,
+        "inserted_section_title": section_title,
+        "patch_summary": patch_result.summary_text(),
+    }
+    report_path = write_report(settings.task_report_dir(request.task_id), "coding-report.json", report)
+    return WorkerResponse(
+        worker="coding",
+        summary="README-Block-Fix wurde deterministisch angewendet.",
+        outputs={
+            "branch_name": branch_name,
+            "local_repo_path": str(repo_path),
+            "changed_files": diff["changed_files"],
+            "diff_stat": diff["diff_stat"],
+            "deterministic_strategy": README_TOP_BLOCK_CODING_STRATEGY,
+            "inserted_section_title": section_title,
+            "patch_summary": patch_result.summary_text(),
+        },
+        risk_flags=risk_flags,
+        artifacts=[
+            Artifact(
+                name="coding-report",
+                path=str(report_path),
+                description="Deterministischer README-Block-Fix mit resultierendem Diff.",
             )
         ],
     )
@@ -734,6 +767,270 @@ def _grep_for_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list
     return [path for path, _ in ranked[:max_files]]
 
 
+async def _generate_patch_plan_in_batches(
+    *,
+    request: WorkerRequest,
+    repo_path: Path,
+    requirements: object,
+    architecture: object,
+    research: object,
+    overview: dict[str, Any],
+    guidance_block: str,
+    candidate_files: list[str],
+    plan_attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Plan coding changes in small file batches so one oversized prompt cannot consume the whole stage budget."""
+
+    if not candidate_files:
+        return {
+            "file_context": {},
+            "symbol_index_available": False,
+            "patch_plan": None,
+            "failure_summary": "The local patch backend did not find any concrete candidate files to edit.",
+            "errors": ["No candidate files were available after requirements, research, and architecture triage."],
+            "warnings": [],
+        }
+
+    candidate_batches = _candidate_file_batches(candidate_files)
+    aggregated_file_context: dict[str, str] = {}
+    any_symbol_index = False
+    warnings: list[str] = []
+    errors: list[str] = []
+    last_patch_plan: dict[str, Any] | None = None
+
+    if len(candidate_batches) > 1:
+        warnings.append(
+            f"Chunked coding planning across {len(candidate_batches)} small file batches to avoid one oversized prompt."
+        )
+
+    for batch_index, batch_files in enumerate(candidate_batches, start=1):
+        batch_outcome = await _request_patch_plan_for_batch(
+            request=request,
+            repo_path=repo_path,
+            requirements=requirements,
+            architecture=architecture,
+            research=research,
+            overview=overview,
+            guidance_block=guidance_block,
+            batch_files=batch_files,
+            batch_index=batch_index,
+            total_batches=len(candidate_batches),
+            plan_attempts=plan_attempts,
+        )
+        aggregated_file_context.update(batch_outcome["file_context"])
+        any_symbol_index = any_symbol_index or batch_outcome["symbol_index_available"]
+        warnings.extend(batch_outcome["warnings"])
+        if batch_outcome.get("last_patch_plan") is not None:
+            last_patch_plan = batch_outcome["last_patch_plan"]
+
+        patch_plan = batch_outcome["patch_plan"]
+        if patch_plan is not None and _raw_operations_from_plan(patch_plan):
+            return {
+                "file_context": aggregated_file_context,
+                "symbol_index_available": any_symbol_index,
+                "patch_plan": patch_plan,
+                "last_patch_plan": patch_plan,
+                "failure_summary": "",
+                "errors": [],
+                "warnings": warnings,
+            }
+
+        errors.extend(batch_outcome["errors"])
+
+    return {
+        "file_context": aggregated_file_context,
+        "symbol_index_available": any_symbol_index,
+        "patch_plan": None,
+        "last_patch_plan": last_patch_plan,
+        "failure_summary": "Coding backend returned no file operations.",
+        "errors": errors or ["All coding batches returned empty or unusable plans."],
+        "warnings": warnings,
+    }
+
+
+async def _request_patch_plan_for_batch(
+    *,
+    request: WorkerRequest,
+    repo_path: Path,
+    requirements: object,
+    architecture: object,
+    research: object,
+    overview: dict[str, Any],
+    guidance_block: str,
+    batch_files: list[str],
+    batch_index: int,
+    total_batches: int,
+    plan_attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Try one small candidate-file batch with strict retries before the worker spends time on the next batch."""
+
+    batch_label = f"batch {batch_index}/{total_batches}"
+    code_index = build_index(repo_path, batch_files)
+    symbol_index_block = _build_symbol_index_block(code_index)
+    file_context = _build_prompt_file_context(
+        repo_path=repo_path,
+        candidate_files=batch_files,
+        goal=request.goal,
+        requirements=requirements,
+        code_index=code_index,
+    )
+    warnings: list[str] = []
+    errors: list[str] = []
+    system_prompt = _coding_system_prompt(guidance_block)
+    last_patch_plan: dict[str, Any] | None = None
+
+    async def _run_attempt(*, attempt_name: str, user_prompt: str) -> tuple[dict[str, Any] | None, str]:
+        nonlocal last_patch_plan
+        try:
+            if hasattr(llm, "complete_json_with_trace"):
+                patch_plan, trace = await llm.complete_json_with_trace(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    worker_name="coding",
+                    required_keys=["summary", "operations"],
+                )
+            else:
+                patch_plan = await llm.complete_json(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    worker_name="coding",
+                    required_keys=["summary", "operations"],
+                )
+                trace = {}
+        except LLMError as exc:
+            plan_attempts.append(
+                _patch_plan_error_snapshot(
+                    attempt=f"{batch_label}:{attempt_name}",
+                    candidate_files=batch_files,
+                    error=str(exc),
+                    trace=getattr(exc, "trace", {}),
+                )
+            )
+            errors.append(f"{batch_label} {attempt_name} failed: {exc}")
+            return None, str(exc)
+
+        last_patch_plan = patch_plan
+        plan_attempts.append(
+            _patch_plan_attempt_snapshot_with_context(
+                attempt=f"{batch_label}:{attempt_name}",
+                candidate_files=batch_files,
+                patch_plan=patch_plan,
+                trace=trace,
+            )
+        )
+        blocking_reason = str(patch_plan.get("blocking_reason") or "").strip()
+        if _raw_operations_from_plan(patch_plan):
+            return patch_plan, blocking_reason
+        return None, blocking_reason or "No file operations were returned."
+
+    initial_plan, initial_issue = await _run_attempt(
+        attempt_name="initial",
+        user_prompt=_coding_user_prompt(
+            request.goal,
+            requirements,
+            architecture,
+            research,
+            overview,
+            file_context,
+            symbol_index_block,
+            batch_files,
+        ),
+    )
+    if initial_plan is not None:
+        return {
+            "patch_plan": initial_plan,
+            "last_patch_plan": initial_plan,
+            "file_context": file_context,
+            "symbol_index_available": bool(symbol_index_block),
+            "warnings": warnings,
+            "errors": errors,
+        }
+
+    noop_issue = ""
+    if not errors:
+        noop_retry_plan, noop_issue = await _run_attempt(
+            attempt_name="no-op-retry",
+            user_prompt=_coding_noop_retry_user_prompt(
+                goal=request.goal,
+                requirements=requirements,
+                architecture=architecture,
+                research=research,
+                overview=overview,
+                file_context=file_context,
+                symbol_index_block=symbol_index_block,
+                candidate_files=batch_files,
+                previous_plan={"summary": initial_issue, "operations": [], "blocking_reason": initial_issue},
+            ),
+        )
+        if noop_retry_plan is not None:
+            return {
+                "patch_plan": noop_retry_plan,
+                "last_patch_plan": noop_retry_plan,
+                "file_context": file_context,
+                "symbol_index_available": bool(symbol_index_block),
+                "warnings": warnings,
+                "errors": errors,
+            }
+
+    recovery_plan, recovery_issue = await _run_attempt(
+        attempt_name="contract-recovery",
+        user_prompt=_coding_contract_recovery_user_prompt(
+            goal=request.goal,
+            requirements=requirements,
+            candidate_files=batch_files,
+            file_context=file_context,
+            symbol_index_block=symbol_index_block,
+            previous_error=noop_issue or initial_issue,
+        ),
+    )
+    if recovery_plan is not None:
+        return {
+            "patch_plan": recovery_plan,
+            "last_patch_plan": recovery_plan,
+            "file_context": file_context,
+            "symbol_index_available": bool(symbol_index_block),
+            "warnings": warnings,
+            "errors": errors,
+        }
+
+    if total_batches == 1:
+        warnings.append("Das Modell hat zwar ein JSON-Objekt geliefert, aber keine konkreten Datei-Operationen vorgeschlagen.")
+    else:
+        warnings.append(
+            f"{batch_label} produced no concrete edit operations for {', '.join(batch_files)} and was skipped in favour of the next batch."
+        )
+    errors.append(f"{batch_label} returned no concrete edit operations: {recovery_issue or noop_issue or initial_issue}")
+    return {
+        "patch_plan": None,
+        "last_patch_plan": last_patch_plan,
+        "file_context": file_context,
+        "symbol_index_available": bool(symbol_index_block),
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
+def _candidate_file_batches(candidate_files: list[str], *, batch_size: int = 2) -> list[list[str]]:
+    """Split coding candidates into small, stable batches so large prompts cannot monopolize the whole stage."""
+
+    if not candidate_files:
+        return []
+    return [
+        candidate_files[index : index + batch_size]
+        for index in range(0, len(candidate_files), batch_size)
+        if candidate_files[index : index + batch_size]
+    ]
+
+
+def _build_symbol_index_block(code_index: Any) -> str:
+    """Render the symbol index only when it carries useful symbol data for the current file batch."""
+
+    formatted = code_index.format_for_prompt() if hasattr(code_index, "format_for_prompt") else ""
+    if not isinstance(formatted, str):
+        return ""
+    return formatted.strip()
+
+
 def _select_candidate_files(
     *,
     repo_path: Path,
@@ -742,6 +1039,7 @@ def _select_candidate_files(
     architecture: object,
     research: object,
     max_files: int = 6,
+    preferred_files: list[str] | None = None,
 ) -> list[str]:
     """
     Choose the most relevant existing files for coding so concrete source targets win over repo metadata.
@@ -754,12 +1052,13 @@ def _select_candidate_files(
 
     architecture_outputs = architecture if isinstance(architecture, dict) else {}
     research_outputs = research if isinstance(research, dict) else {}
+    preferred_candidates = _existing_candidate_paths(preferred_files or [], repo_path)
     arch_candidates = _existing_candidate_paths(
         architecture_outputs.get("touched_areas", []) or architecture_outputs.get("module_boundaries", []),
         repo_path,
     )
     research_candidates = _existing_candidate_paths(research_outputs.get("candidate_files", []), repo_path)
-    candidate_pool = _merge_unique_candidate_paths(research_candidates, arch_candidates)
+    candidate_pool = _merge_unique_candidate_paths(preferred_candidates, research_candidates, arch_candidates)
 
     if not candidate_pool:
         return _grep_for_candidates(repo_path, goal, max_files=max_files)
@@ -770,12 +1069,13 @@ def _select_candidate_files(
         requirements=requirements,
         architecture=architecture_outputs,
         research=research_outputs,
+        preferred_candidates=preferred_candidates,
         arch_candidates=arch_candidates,
         research_candidates=research_candidates,
         candidate_pool=candidate_pool,
     )
     if ranked:
-        return ranked[:max_files]
+        return _merge_unique_candidate_paths(preferred_candidates, ranked)[:max_files]
 
     return candidate_pool[:max_files]
 
@@ -816,6 +1116,7 @@ def _rank_candidate_files(
     requirements: object,
     architecture: dict[str, Any],
     research: dict[str, Any],
+    preferred_candidates: list[str],
     arch_candidates: list[str],
     research_candidates: list[str],
     candidate_pool: list[str],
@@ -842,6 +1143,8 @@ def _rank_candidate_files(
         path_terms = _candidate_path_terms(path)
         score = len(matched_terms)
 
+        if path in preferred_candidates:
+            score += 25
         if path in research_candidates:
             score += 9
         if path in arch_candidates:
@@ -926,6 +1229,40 @@ def _prepend_smiley_to_first_line(content: str) -> str:
 
     lines[0] = f":) {stripped_first_line}{line_break}"
     return "".join(lines)
+
+
+def _derive_readme_top_block_title(goal: str) -> str:
+    """Choose one small, readable section title from the task goal without needing a model roundtrip."""
+
+    normalized_goal = _normalize_prompt_search_text(goal)
+    if "self improvement" in normalized_goal or "self-improvement" in normalized_goal:
+        return "Self-Improvement"
+    if "operator" in normalized_goal:
+        return "Operator Guidance"
+    if "rollback" in normalized_goal:
+        return "Rollback and Recovery"
+    if "deploy" in normalized_goal:
+        return "Deployment Notes"
+    return "Quick Improvement Guide"
+
+
+def _prepend_markdown_block_to_readme(content: str, section_title: str) -> str:
+    """Insert one compact markdown block at the top of README.md while keeping the remaining file stable."""
+
+    block = (
+        f"## {section_title}\n\n"
+        "This repository prefers small, reviewable self-improvement steps so changes stay understandable and reversible.\n\n"
+        "- Keep improvements narrow and testable.\n"
+        "- Review the generated handoff before deploying.\n"
+        "- Prefer rollback when a deployment does not recover cleanly.\n\n"
+    )
+    if content.startswith(block):
+        return content
+    if re.match(rf"^## {re.escape(section_title)}\s*$", content, flags=re.MULTILINE):
+        return content
+    if not content:
+        return block.rstrip() + "\n"
+    return block + content.lstrip("\n")
 
 
 def _replace_worker_stage_timeout_default(content: str, target_timeout_seconds: float) -> str:
@@ -1520,6 +1857,43 @@ def _patch_plan_attempt_snapshot(attempt: str, patch_plan: dict[str, Any]) -> di
         "operation_actions": [str(item.get("action") or "unknown") for item in raw_operations[:12]],
         "blocking_reason": str(patch_plan.get("blocking_reason") or "").strip(),
         "response_keys": sorted(str(key) for key in patch_plan.keys()),
+    }
+
+
+def _patch_plan_attempt_snapshot_with_context(
+    *,
+    attempt: str,
+    candidate_files: list[str],
+    patch_plan: dict[str, Any],
+    trace: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach batch and provider context to one successful structured-plan attempt snapshot."""
+
+    snapshot = _patch_plan_attempt_snapshot(attempt, patch_plan)
+    snapshot["candidate_files"] = list(candidate_files)
+    snapshot["provider"] = str(trace.get("provider") or "")
+    snapshot["used_fallback"] = bool(trace.get("used_fallback"))
+    snapshot["repair_pass_used"] = bool(trace.get("repair_pass_used"))
+    return snapshot
+
+
+def _patch_plan_error_snapshot(
+    *,
+    attempt: str,
+    candidate_files: list[str],
+    error: str,
+    trace: dict[str, Any],
+) -> dict[str, Any]:
+    """Capture one failed plan attempt so operator-visible diagnostics stay compact but concrete."""
+
+    return {
+        "attempt": attempt,
+        "candidate_files": list(candidate_files),
+        "error": error,
+        "provider": str(trace.get("provider") or ""),
+        "used_fallback": bool(trace.get("used_fallback")),
+        "repair_pass_used": bool(trace.get("repair_pass_used")),
+        "output_contract": str(trace.get("output_contract") or ""),
     }
 
 

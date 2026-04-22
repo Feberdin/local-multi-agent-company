@@ -69,3 +69,24 @@ async def test_requirements_worker_uses_deterministic_worker_stage_timeout_fast_
     assert "services/shared/agentic_lab/config.py" in response.outputs["requirements"][0]
     assert "README und Docs konsistent" in response.outputs["requirements"][1]
     assert response.outputs["recommended_workers"] == ["cost", "human_resources", "coding", "validation", "github", "memory"]
+
+
+@pytest.mark.asyncio
+async def test_requirements_worker_uses_deterministic_readme_top_block_fast_path(tmp_path, monkeypatch) -> None:
+    app_module = _load_requirements_module(tmp_path, monkeypatch)
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-requirements-readme-block-fast",
+            goal="Add a self-improvement block at the top of the README.md file",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(tmp_path / "workspace" / "local-multi-agent-company"),
+            base_branch="main",
+            metadata={"task_profile": {"name": "readme_top_block_fix"}},
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["requirements"][0] == "Aendere nur README.md im Repository-Wurzelverzeichnis."
+    assert "am Dateianfang" in response.outputs["requirements"][1]
+    assert response.outputs["recommended_workers"] == ["cost", "human_resources", "coding", "validation", "github", "memory"]

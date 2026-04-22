@@ -19,7 +19,7 @@ from services.shared.agentic_lab.llm import LLMClient, LLMError
 from services.shared.agentic_lab.logging_utils import TaskLoggerAdapter, configure_logging
 from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
-from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile, is_readme_top_block_profile
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
 settings = get_settings()
@@ -58,6 +58,23 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
     if is_readme_smiley_profile(request.metadata):
         outputs = _readme_smiley_architecture(request.goal)
+        outputs = _normalize_architecture_outputs(outputs, repo_path, research)
+        report_path = write_report(settings.task_report_dir(request.task_id), "architecture.json", outputs)
+        return WorkerResponse(
+            worker="architecture",
+            summary="Architecture and implementation plan prepared.",
+            outputs=outputs,
+            artifacts=[
+                Artifact(
+                    name="architecture",
+                    path=str(report_path),
+                    description="Architecture design, data flows, deployment approach, and implementation plan.",
+                )
+            ],
+        )
+
+    if is_readme_top_block_profile(request.metadata):
+        outputs = _readme_top_block_architecture(request.goal)
         outputs = _normalize_architecture_outputs(outputs, repo_path, research)
         report_path = write_report(settings.task_report_dir(request.task_id), "architecture.json", outputs)
         return WorkerResponse(
@@ -180,6 +197,40 @@ def _readme_smiley_architecture(goal: str) -> dict[str, Any]:
         "test_strategy": [
             "Verify that only README.md appears in the diff.",
             "Verify that the first README line now begins with `:) `.",
+        ],
+        "risks": ["Do not rewrite the full document unnecessarily.", "Do not create or touch any additional files."],
+        "approval_gates": ["No additional approval gate is needed beyond normal repository-modification approval."],
+    }
+
+
+def _readme_top_block_architecture(goal: str) -> dict[str, Any]:
+    """Return a fully non-empty architecture package for a small README top-block task."""
+
+    return {
+        "summary": f"Minimaler README-Block-Fix fuer: {goal}",
+        "components": [
+            {
+                "name": "README.md",
+                "type": "documentation",
+                "description": "Operator-facing project overview at the repository root.",
+            }
+        ],
+        "responsibilities": {
+            "README.md": "Carries the requested top-of-file markdown block and remains the only allowed edit target."
+        },
+        "data_flows": ["Goal -> coding -> README.md block insertion at file top -> validation of the resulting diff."],
+        "module_boundaries": ["Only README.md may change.", "No source code, CI, tests, or deployment files are in scope."],
+        "touched_areas": ["README.md"],
+        "deployment_strategy": ["No deployment changes are required for this documentation-only patch."],
+        "logging_strategy": ["Normal task-level logs are sufficient; no new runtime logging is needed."],
+        "implementation_plan": [
+            "Open README.md in the task-local workspace.",
+            "Insert a short markdown block at the top of the file.",
+            "Keep the rest of the README stable and avoid any second file edit.",
+        ],
+        "test_strategy": [
+            "Verify that only README.md appears in the diff.",
+            "Verify that the new markdown block is visible at the top of README.md.",
         ],
         "risks": ["Do not rewrite the full document unnecessarily.", "Do not create or touch any additional files."],
         "approval_gates": ["No additional approval gate is needed beyond normal repository-modification approval."],

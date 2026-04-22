@@ -39,7 +39,7 @@ from services.shared.agentic_lab.schemas import (
 )
 from services.shared.agentic_lab.search_providers import SearchProviderService
 from services.shared.agentic_lab.source_router import SourceRouter
-from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile
+from services.shared.agentic_lab.task_profiles import is_readme_smiley_profile, is_readme_top_block_profile
 from services.shared.agentic_lab.trusted_sources import TrustedSourceService
 from services.shared.agentic_lab.worker_governance import WorkerGovernanceService
 
@@ -89,6 +89,8 @@ async def run(request: WorkerRequest) -> WorkerResponse:
 
         if is_readme_smiley_profile(request.metadata):
             return _run_readme_smiley_fast_path(request, repo_path, warnings)
+        if is_readme_top_block_profile(request.metadata):
+            return _run_readme_top_block_fast_path(request, repo_path, warnings)
 
         overview = collect_repo_overview(repo_path)
         sampled_files = list(overview["important_files"] or overview["sample_files"][:8])
@@ -289,6 +291,76 @@ def _run_readme_smiley_fast_path(
     )
 
 
+def _run_readme_top_block_fast_path(
+    request: WorkerRequest,
+    repo_path: Path,
+    warnings: list[str],
+) -> WorkerResponse:
+    """
+    Return one tiny deterministic research package when the task only asks for a README block at the top.
+
+    Why this exists:
+    A documentation-only README block must not trigger long repo-wide source sampling or optional web research.
+    """
+
+    overview = collect_repo_overview(repo_path)
+    sampled_files: list[str] = []
+    if (repo_path / "README.md").is_file():
+        sampled_files.append("README.md")
+    readme_excerpt = read_text_file(repo_path, "README.md") if sampled_files else ""
+    warnings = list(warnings)
+    warnings.append(
+        "README-Block-Fix erkannt; breite Repository- und Web-Recherche wurde bewusst uebersprungen."
+    )
+    research_notes = _readme_top_block_summary(request.goal, overview, readme_excerpt)
+    source_plan = {
+        "mode": "local_repo_only",
+        "reason": "README.md ist als einziger sicherer Zielpfad bekannt.",
+        "general_web_allowed": False,
+        "fallback_reason": "Nicht noetig fuer einen kleinen README-Block am Dateianfang.",
+        "trusted_matches": [],
+    }
+    report_text = _build_report(
+        goal=request.goal,
+        repository=request.repository,
+        notes=research_notes,
+        overview=overview,
+        sampled_files=sampled_files,
+        source_plan=source_plan,
+        web_results=[],
+        warnings=warnings,
+    )
+    report_path = write_report(settings.task_report_dir(request.task_id), "research-notes.md", report_text)
+    return WorkerResponse(
+        worker="research",
+        summary="Repository research completed.",
+        outputs={
+            "research_notes": research_notes,
+            "repo_overview": overview,
+            "candidate_files": sampled_files,
+            "sources": {
+                "repository_files": sampled_files,
+                "trusted_source_plan": source_plan,
+                "trusted_sources": [],
+                "general_web_results": [],
+                "web_sources": [],
+                "source_quality": {},
+            },
+            "uncertainties": warnings,
+            "prompt_injection_signals": [],
+            "local_repo_path": str(repo_path),
+        },
+        warnings=warnings,
+        artifacts=[
+            Artifact(
+                name="research-notes",
+                path=str(report_path),
+                description="Structured repository and architecture research notes.",
+            )
+        ],
+    )
+
+
 def _grep_for_source_candidates(repo_path: Path, goal: str, max_files: int = 6) -> list[str]:
     """Keyword-grep Python sources for goal tokens so the research LLM sees relevant code, not just config files."""
     import re
@@ -409,6 +481,30 @@ def _readme_smiley_summary(goal: str, overview: dict, readme_excerpt: str) -> st
         "## Unknowns\n"
         f"- Requested change: {goal}\n"
         "- If README.md is missing, the coding worker should fail clearly instead of broadening scope.\n"
+    )
+
+
+def _readme_top_block_summary(goal: str, overview: dict, readme_excerpt: str) -> str:
+    """Return one deterministic five-section summary for a small README top-block task."""
+
+    first_line = readme_excerpt.splitlines()[0] if readme_excerpt.splitlines() else "README.md not readable."
+    return (
+        "## Architecture\n"
+        "- The requested change is a documentation-only README block at the top of the file.\n"
+        f"- Repository file count: {overview.get('file_count', 0)}.\n"
+        f"- Current first README line: {first_line}\n\n"
+        "## Likely Change Points\n"
+        "- Edit only README.md.\n"
+        "- Insert one short markdown block before the current first section.\n\n"
+        "## Trusted Sources\n"
+        "- No external sources are needed because the target file is already explicit.\n"
+        "- General web fallback intentionally skipped.\n\n"
+        "## Risks\n"
+        "- A broad README rewrite would be disproportionate for this task.\n"
+        "- Any edit outside README.md would violate the intended narrow scope.\n\n"
+        "## Unknowns\n"
+        f"- Requested change: {goal}\n"
+        "- If README.md is missing, coding should fail clearly instead of broadening scope.\n"
     )
 
 

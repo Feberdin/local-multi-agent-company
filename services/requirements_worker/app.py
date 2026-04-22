@@ -16,6 +16,7 @@ from services.shared.agentic_lab.repo_tools import write_report
 from services.shared.agentic_lab.schemas import Artifact, HealthResponse, WorkerRequest, WorkerResponse
 from services.shared.agentic_lab.task_profiles import (
     is_readme_smiley_profile,
+    is_readme_top_block_profile,
     is_worker_stage_timeout_profile,
     profile_target_timeout_seconds,
 )
@@ -39,6 +40,22 @@ async def run(request: WorkerRequest) -> WorkerResponse:
     try:
         if is_readme_smiley_profile(request.metadata):
             outputs = _readme_smiley_requirements(request.goal, request.repository)
+            report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
+            return WorkerResponse(
+                worker="requirements",
+                summary="Requirements package created.",
+                outputs=outputs,
+                artifacts=[
+                    Artifact(
+                        name="requirements",
+                        path=str(report_path),
+                        description="Structured requirements, assumptions, risks, and acceptance criteria.",
+                    )
+                ],
+            )
+
+        if is_readme_top_block_profile(request.metadata):
+            outputs = _readme_top_block_requirements(request.goal, request.repository)
             report_path = write_report(settings.task_report_dir(request.task_id), "requirements.json", outputs)
             return WorkerResponse(
                 worker="requirements",
@@ -175,6 +192,37 @@ def _readme_smiley_requirements(goal: str, repository: str) -> dict:
             "Nur README.md erscheint im Diff.",
             "Die erste README-Zeile beginnt mit `:)`.",
             "Keine andere README-Zeile oder Datei wird geaendert.",
+        ],
+        "open_questions": [],
+        "recommended_workers": ["cost", "human_resources", "coding", "validation", "github", "memory"],
+    }
+
+
+def _readme_top_block_requirements(goal: str, repository: str) -> dict:
+    """Return a deterministic requirements package for one small README top-block task."""
+
+    return {
+        "summary": f"Kleiner README-Block-Fix fuer {repository}: {goal}",
+        "requirements": [
+            "Aendere nur README.md im Repository-Wurzelverzeichnis.",
+            "Fuege am Dateianfang von README.md genau einen kurzen Markdown-Block mit Ueberschrift ein.",
+            "Lasse alle anderen Dateien sowie den restlichen README-Inhalt so stabil wie moeglich.",
+        ],
+        "wishes": [
+            "Der neue Block soll klar lesbar sein und wie ein echter Einstiegshinweis wirken.",
+        ],
+        "assumptions": [
+            "README.md ist die einzige benoetigte Zieldatei.",
+            "Der genaue Wortlaut darf klein und operatorfreundlich formuliert werden, solange der neue Block zum Auftrag passt.",
+        ],
+        "risks": [
+            "Eine breite inhaltliche Umschreibung der ganzen README waere fuer diesen Auftrag zu gross.",
+            "Jede Aenderung ausserhalb von README.md verletzt den beabsichtigten Minimal-Scope.",
+        ],
+        "acceptance_criteria": [
+            "Nur README.md erscheint im Diff.",
+            "Der neue Block steht am Anfang von README.md.",
+            "Der restliche README-Inhalt bleibt nachvollziehbar erhalten.",
         ],
         "open_questions": [],
         "recommended_workers": ["cost", "human_resources", "coding", "validation", "github", "memory"],

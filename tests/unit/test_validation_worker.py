@@ -85,3 +85,31 @@ async def test_validation_worker_uses_deterministic_worker_stage_timeout_fast_pa
     assert response.success is True
     assert response.outputs["release_readiness"] == "beta"
     assert "services/shared/agentic_lab/config.py" in response.outputs["fulfilled"][0]
+
+
+@pytest.mark.asyncio
+async def test_validation_worker_uses_deterministic_readme_top_block_fast_path(tmp_path, monkeypatch) -> None:
+    app_module = _load_validation_module(tmp_path, monkeypatch)
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-validation-readme-block-fast",
+            goal="Add a self-improvement block at the top of the README.md file",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(tmp_path / "workspace" / "local-multi-agent-company"),
+            base_branch="main",
+            metadata={"task_profile": {"name": "readme_top_block_fix"}},
+            prior_results={
+                "coding": {
+                    "outputs": {
+                        "changed_files": ["README.md"],
+                        "inserted_section_title": "Self-Improvement",
+                    }
+                }
+            },
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["release_readiness"] == "beta"
+    assert any("Self-Improvement" in item for item in response.outputs["fulfilled"])

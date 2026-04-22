@@ -280,3 +280,30 @@ async def test_architecture_worker_uses_readme_smiley_fast_path(
     assert response.success is True
     assert response.outputs["touched_areas"] == ["README.md"]
     assert response.outputs["implementation_plan"][0] == "Open README.md in the task-local workspace."
+
+
+@pytest.mark.asyncio
+async def test_architecture_worker_uses_readme_top_block_fast_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app_module = _load_architecture_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    response = await app_module.run(
+        WorkerRequest(
+            task_id="task-architecture-readme-block-fast",
+            goal="Add a self-improvement block at the top of the README.md file",
+            repository="Feberdin/local-multi-agent-company",
+            local_repo_path=str(repo_path),
+            base_branch="main",
+            metadata={"task_profile": {"name": "readme_top_block_fix"}},
+            prior_results={"research": {"outputs": {"candidate_files": ["README.md"]}}},
+        )
+    )
+
+    assert response.success is True
+    assert response.outputs["touched_areas"] == ["README.md"]
+    assert response.outputs["implementation_plan"][0] == "Open README.md in the task-local workspace."

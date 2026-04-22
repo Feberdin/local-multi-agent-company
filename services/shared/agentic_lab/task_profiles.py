@@ -15,6 +15,9 @@ from typing import Any
 README_SMILEY_PROFILE_NAME = "readme_prefix_smiley_fix"
 README_SMILEY_TARGET_FILES: tuple[str, ...] = ("README.md",)
 README_SMILEY_CODING_STRATEGY = "prepend_ascii_smiley_to_readme_first_line"
+README_TOP_BLOCK_PROFILE_NAME = "readme_top_block_fix"
+README_TOP_BLOCK_TARGET_FILES: tuple[str, ...] = ("README.md",)
+README_TOP_BLOCK_CODING_STRATEGY = "insert_markdown_block_at_top_of_readme"
 WORKER_STAGE_TIMEOUT_PROFILE_NAME = "worker_stage_timeout_config_fix"
 WORKER_STAGE_TIMEOUT_TARGET_FILES: tuple[str, ...] = (
     "services/shared/agentic_lab/config.py",
@@ -63,6 +66,11 @@ def infer_task_profile(goal: str, metadata: Mapping[str, Any] | None = None) -> 
             "Das Ziel beschreibt einen sehr kleinen README-Einzeilenfix mit Smiley-Praefix."
         )
 
+    if _looks_like_readme_top_block_fix(normalized_goal):
+        return _readme_top_block_profile(
+            "Das Ziel beschreibt einen kleinen README-Block am Dateianfang und braucht keine breite Repo-Analyse."
+        )
+
     worker_stage_timeout_target = _extract_worker_stage_timeout_target_seconds(normalized_goal)
     if worker_stage_timeout_target is not None and _looks_like_worker_stage_timeout_fix(
         normalized_goal,
@@ -102,6 +110,12 @@ def is_worker_stage_timeout_profile(metadata: Mapping[str, Any] | None) -> bool:
     """Shortcut for the deterministic worker-stage-timeout config fast path."""
 
     return has_profile_name(metadata, WORKER_STAGE_TIMEOUT_PROFILE_NAME)
+
+
+def is_readme_top_block_profile(metadata: Mapping[str, Any] | None) -> bool:
+    """Shortcut for the deterministic README top-block docs fast path."""
+
+    return has_profile_name(metadata, README_TOP_BLOCK_PROFILE_NAME)
 
 
 def profile_flag(metadata: Mapping[str, Any] | None, flag_name: str) -> bool:
@@ -200,6 +214,31 @@ def _worker_stage_timeout_profile(target_timeout_seconds: float, reason: str) ->
     }
 
 
+def _readme_top_block_profile(reason: str) -> dict[str, Any]:
+    """Return one narrow profile for README block insertions at the top of the file."""
+
+    return {
+        "name": README_TOP_BLOCK_PROFILE_NAME,
+        "label": "README-Block-Fix",
+        "reason": reason,
+        "target_files": list(README_TOP_BLOCK_TARGET_FILES),
+        "skip_research": True,
+        "skip_architecture": True,
+        "skip_review": True,
+        "skip_testing": True,
+        "skip_security": True,
+        "skip_documentation": True,
+        "route_after_coding": "validation",
+        "route_after_validation": "github",
+        "route_after_github": "memory",
+        "deterministic_requirements": True,
+        "deterministic_research": True,
+        "deterministic_architecture": True,
+        "deterministic_validation": True,
+        "deterministic_coding_strategy": README_TOP_BLOCK_CODING_STRATEGY,
+    }
+
+
 def _looks_like_readme_smiley_fix(normalized_goal: str) -> bool:
     """Keep the heuristic strict so only obviously tiny README smiley tasks use the fast lane."""
 
@@ -225,6 +264,46 @@ def _looks_like_readme_smiley_fix(normalized_goal: str) -> bool:
         for token in ("add", "change", "update", "fix", "fuge", "fuege", "setze", "aendere")
     )
     return mentions_readme and mentions_smiley and mentions_first_line and mentions_change
+
+
+def _looks_like_readme_top_block_fix(normalized_goal: str) -> bool:
+    """Detect tiny README block/section additions without catching broad documentation rewrites."""
+
+    mentions_readme = "readme" in normalized_goal
+    mentions_top = any(
+        token in normalized_goal
+        for token in (
+            "am anfang",
+            "anfang",
+            "oben",
+            "at the top",
+            "top of",
+            "beginning",
+            "first section",
+        )
+    )
+    mentions_block = any(
+        token in normalized_goal
+        for token in (" block ", " section ", " heading ", " header ", " abschnitt ", " sektion ")
+    )
+    mentions_change = any(
+        token in normalized_goal
+        for token in ("add", "insert", "update", "change", "fix", "fuge", "fuege", "setze", "aendere")
+    )
+    mentions_code_surface = any(
+        token in normalized_goal
+        for token in (
+            "services/",
+            "tests/",
+            "workflow.py",
+            "config.py",
+            "docker",
+            "compose",
+            "python",
+            "worker.py",
+        )
+    )
+    return mentions_readme and mentions_top and mentions_block and mentions_change and not mentions_code_surface
 
 
 def _looks_like_worker_stage_timeout_fix(normalized_goal: str, metadata: Mapping[str, Any]) -> bool:

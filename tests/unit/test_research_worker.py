@@ -191,3 +191,29 @@ def test_research_worker_uses_readme_smiley_fast_path_without_broad_sampling(tmp
     assert payload["outputs"]["candidate_files"] == ["README.md"]
     assert payload["outputs"]["research_notes"].startswith("## Architecture")
     assert any("README-Mini-Fix erkannt" in warning for warning in payload["warnings"])
+
+
+def test_research_worker_uses_readme_top_block_fast_path_without_broad_sampling(tmp_path, monkeypatch) -> None:
+    app_module = _prepare_research_module(tmp_path, monkeypatch)
+    repo_path = tmp_path / "workspace" / "local-multi-agent-company"
+    (repo_path / ".git").mkdir(parents=True, exist_ok=True)
+    (repo_path / "README.md").write_text("# Demo\n\nExisting intro\n", encoding="utf-8")
+    (repo_path / "services").mkdir()
+    (repo_path / "services" / "noise.py").write_text("print('noise')\n", encoding="utf-8")
+
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/run",
+            json={
+                **_worker_payload(repo_path),
+                "goal": "Add a self-improvement block at the top of the README.md file",
+                "metadata": {"task_profile": {"name": "readme_top_block_fix"}},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["outputs"]["candidate_files"] == ["README.md"]
+    assert payload["outputs"]["research_notes"].startswith("## Architecture")
+    assert any("README-Block-Fix erkannt" in warning for warning in payload["warnings"])

@@ -24,6 +24,7 @@ from services.shared.agentic_lab.schemas import DeploymentConfig, SmokeCheck, Ta
 from services.shared.agentic_lab.task_profiles import (
     infer_task_profile,
     is_readme_smiley_profile,
+    is_readme_top_block_profile,
     is_worker_stage_timeout_profile,
     profile_flag,
     profile_route_target,
@@ -313,7 +314,7 @@ class WorkflowOrchestrator:
             if profile_flag(state.get("metadata"), "skip_architecture"):
                 return "coding"
             return "architecture"
-        if is_readme_smiley_profile(state.get("metadata")):
+        if is_readme_smiley_profile(state.get("metadata")) or is_readme_top_block_profile(state.get("metadata")):
             return "coding"
         return "research"
 
@@ -322,7 +323,7 @@ class WorkflowOrchestrator:
             return "stop"
         if profile_flag(state.get("metadata"), "skip_architecture"):
             return "coding"
-        if is_readme_smiley_profile(state.get("metadata")):
+        if is_readme_smiley_profile(state.get("metadata")) or is_readme_top_block_profile(state.get("metadata")):
             return "coding"
         return "architecture"
 
@@ -628,6 +629,22 @@ class WorkflowOrchestrator:
                     "validation": "Pruefe nur, dass README.md sauber geaendert wurde und keine Nebenwirkungen sichtbar sind.",
                 }
             )
+        if is_readme_top_block_profile(state.get("metadata")):
+            worker_specific_focus.update(
+                {
+                    "requirements": (
+                        "Halte den Auftrag klein: nur README.md, nur einen kurzen Markdown-Block am Dateianfang, "
+                        "keine Neben-Dateien."
+                    ),
+                    "research": "Breite Repo-Recherche ist fuer einen README-Block am Dateianfang nicht noetig.",
+                    "architecture": "Plane nur einen kleinen Markdown-Block am Anfang von README.md ohne Codeaenderungen.",
+                    "coding": (
+                        "Aendere nur README.md und fuege den angeforderten Block am Dateianfang ein. "
+                        "Arbeite in sehr kleinen Schritten und lasse alle anderen Dateien unberuehrt."
+                    ),
+                    "validation": "Pruefe nur, dass README.md geaendert wurde und der neue Block am Dateianfang steht.",
+                }
+            )
         if is_worker_stage_timeout_profile(state.get("metadata")):
             timeout_target = profile_target_timeout_seconds(state.get("metadata")) or 3600.0
             timeout_label = f"{timeout_target:.1f}" if float(timeout_target).is_integer() else str(timeout_target)
@@ -657,7 +674,11 @@ class WorkflowOrchestrator:
     def _uses_compact_fast_path_profile(self, metadata: dict[str, Any] | None) -> bool:
         """Group tiny deterministic profiles so UI handoffs and labels stay consistent."""
 
-        return is_readme_smiley_profile(metadata) or is_worker_stage_timeout_profile(metadata)
+        return (
+            is_readme_smiley_profile(metadata)
+            or is_readme_top_block_profile(metadata)
+            or is_worker_stage_timeout_profile(metadata)
+        )
 
     def _progress_details(
         self,

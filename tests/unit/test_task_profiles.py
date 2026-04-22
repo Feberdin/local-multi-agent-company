@@ -50,6 +50,19 @@ def test_infer_task_profile_detects_generic_worker_stage_timeout_wording() -> No
     assert profile["target_timeout_seconds"] == 3600.0
 
 
+def test_infer_task_profile_detects_small_readme_top_block_fix() -> None:
+    profile = infer_task_profile(
+        "Add a self-improvement block at the top of the README.md file",
+        {"problem_class": "code_quality"},
+    )
+
+    assert profile is not None
+    assert profile["name"] == "readme_top_block_fix"
+    assert profile["target_files"] == ["README.md"]
+    assert profile["skip_research"] is True
+    assert profile["route_after_coding"] == "validation"
+
+
 def test_profile_helpers_accept_legacy_string_metadata_shapes() -> None:
     metadata = {
         "task_profile": {
