@@ -123,7 +123,7 @@ Hinweis für schwächere Hardware:
   - `LLM_WRITE_TIMEOUT_SECONDS=60`
   - `LLM_POOL_TIMEOUT_SECONDS=60`
   - `LLM_REQUEST_DEADLINE_SECONDS=1500`
-  - `WORKER_STAGE_TIMEOUT_SECONDS=1800`
+  - `WORKER_STAGE_TIMEOUT_SECONDS=3600`
 
 ## Git meldet `detected dubious ownership`
 
