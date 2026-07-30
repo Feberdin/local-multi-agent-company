@@ -80,10 +80,15 @@ def _build_handoff_payload(request: WorkerRequest) -> dict[str, object]:
 def _build_handoff_markdown(payload: dict[str, object]) -> str:
     """Render a short handoff that humans can skim before deciding to merge or deploy."""
 
-    changed_files = payload.get("changed_files") or []
-    fulfilled = payload.get("validation_fulfilled") or []
-    residual_risks = payload.get("validation_residual_risks") or []
-    next_steps = payload.get("next_steps") or []
+    def _to_str_list(values: object) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return [str(item) for item in values]
+
+    changed_files = _to_str_list(payload.get("changed_files", []))
+    fulfilled = _to_str_list(payload.get("validation_fulfilled", []))
+    residual_risks = _to_str_list(payload.get("validation_residual_risks", []))
+    next_steps = _to_str_list(payload.get("next_steps", []))
     commit_sha = str(payload.get("commit_sha") or "noch keiner")
     pull_request_url = str(payload.get("pull_request_url") or "noch keine PR")
     publish_strategy = str(payload.get("publish_strategy") or "unbekannt")
