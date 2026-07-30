@@ -13,8 +13,9 @@ first because all summary counters derive from that function.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Any, Literal
 
 ProbeExpectation = Literal["json_visible", "text_visible"]
 ProbeOutcome = Literal["success", "degraded", "failure"]
@@ -127,7 +128,7 @@ def classify_probe_outcome(
     )
 
 
-def summarize_provider_results(classifications: list[OllamaProbeClassification]) -> dict[str, object]:
+def summarize_provider_results(classifications: list[OllamaProbeClassification]) -> dict[str, float | int]:
     """Aggregate one provider's probe classifications into operator-facing counters."""
 
     total = len(classifications)
@@ -151,12 +152,12 @@ def summarize_provider_results(classifications: list[OllamaProbeClassification])
     }
 
 
-def recommend_provider_actions(*, provider_name: str, summary: dict[str, object]) -> list[str]:
+def recommend_provider_actions(*, provider_name: str, summary: Mapping[str, float | int | Any]) -> list[str]:
     """Generate small, practical recommendations from batch-eval counters."""
 
-    degraded_rate = float(summary.get("degraded_rate") or 0.0)
-    failure_rate = float(summary.get("failure_rate") or 0.0)
-    visible_json_rate = float(summary.get("visible_json_rate") or 0.0)
+    degraded_rate = float(summary.get("degraded_rate", 0.0))
+    failure_rate = float(summary.get("failure_rate", 0.0))
+    visible_json_rate = float(summary.get("visible_json_rate", 0.0))
 
     recommendations: list[str] = []
     if degraded_rate >= 0.5:

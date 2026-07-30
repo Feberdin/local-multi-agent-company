@@ -7,6 +7,8 @@ How to debug: If future tasks miss relevant context, inspect the generated memor
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from fastapi import FastAPI
 
 from services.shared.agentic_lab.config import get_settings
@@ -32,8 +34,8 @@ def _build_handoff_payload(request: WorkerRequest) -> dict[str, object]:
     github_outputs = request.prior_results.get("github", {}).get("outputs", {})
     deploy_outputs = request.prior_results.get("deploy", {}).get("outputs", {})
 
-    changed_files = list(coding_outputs.get("changed_files") or [])
-    residual_risks = list(validation_outputs.get("residual_risks") or [])
+    changed_files = list(_as_str_list(coding_outputs.get("changed_files")))
+    residual_risks = list(_as_str_list(validation_outputs.get("residual_risks")))
     pull_request_url = github_outputs.get("pull_request_url")
     commit_sha = github_outputs.get("commit_sha")
     publish_strategy = github_outputs.get("publish_strategy")
@@ -77,13 +79,30 @@ def _build_handoff_payload(request: WorkerRequest) -> dict[str, object]:
     }
 
 
+def _as_str_list(value: object) -> list[str]:
+    """Normalize list-like payload fragments to a list of strings for markdown rendering."""
+
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    if isinstance(value, Iterable):
+        normalized: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                item_text = item.strip()
+                if item_text:
+                    normalized.append(item_text)
+        return normalized
+    return []
+
+
 def _build_handoff_markdown(payload: dict[str, object]) -> str:
     """Render a short handoff that humans can skim before deciding to merge or deploy."""
 
-    changed_files = payload.get("changed_files") or []
-    fulfilled = payload.get("validation_fulfilled") or []
-    residual_risks = payload.get("validation_residual_risks") or []
-    next_steps = payload.get("next_steps") or []
+    changed_files = _as_str_list(payload.get("changed_files"))
+    fulfilled = _as_str_list(payload.get("validation_fulfilled"))
+    residual_risks = _as_str_list(payload.get("validation_residual_risks"))
+    next_steps = _as_str_list(payload.get("next_steps"))
     commit_sha = str(payload.get("commit_sha") or "noch keiner")
     pull_request_url = str(payload.get("pull_request_url") or "noch keine PR")
     publish_strategy = str(payload.get("publish_strategy") or "unbekannt")
