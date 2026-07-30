@@ -32,8 +32,8 @@ def _build_handoff_payload(request: WorkerRequest) -> dict[str, object]:
     github_outputs = request.prior_results.get("github", {}).get("outputs", {})
     deploy_outputs = request.prior_results.get("deploy", {}).get("outputs", {})
 
-    changed_files = list(coding_outputs.get("changed_files") or [])
-    residual_risks = list(validation_outputs.get("residual_risks") or [])
+    changed_files = _as_str_list(coding_outputs.get("changed_files"))
+    residual_risks = _as_str_list(validation_outputs.get("residual_risks"))
     pull_request_url = github_outputs.get("pull_request_url")
     commit_sha = github_outputs.get("commit_sha")
     publish_strategy = github_outputs.get("publish_strategy")
@@ -70,20 +70,28 @@ def _build_handoff_payload(request: WorkerRequest) -> dict[str, object]:
         "deployment_target": deployment_target or "unknown",
         "deployment_performed": deployment_performed,
         "deploy_allowed": deploy_allowed,
-        "validation_fulfilled": list(validation_outputs.get("fulfilled") or []),
+        "validation_fulfilled": _as_str_list(validation_outputs.get("fulfilled")),
         "validation_residual_risks": residual_risks,
         "release_readiness": validation_outputs.get("release_readiness"),
         "next_steps": next_steps,
     }
 
 
+def _as_str_list(value: object) -> list[str]:
+    """Normalize optional payload data into a list of strings for markdown rendering."""
+
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
 def _build_handoff_markdown(payload: dict[str, object]) -> str:
     """Render a short handoff that humans can skim before deciding to merge or deploy."""
 
-    changed_files = payload.get("changed_files") or []
-    fulfilled = payload.get("validation_fulfilled") or []
-    residual_risks = payload.get("validation_residual_risks") or []
-    next_steps = payload.get("next_steps") or []
+    changed_files = _as_str_list(payload.get("changed_files"))
+    fulfilled = _as_str_list(payload.get("validation_fulfilled"))
+    residual_risks = _as_str_list(payload.get("validation_residual_risks"))
+    next_steps = _as_str_list(payload.get("next_steps"))
     commit_sha = str(payload.get("commit_sha") or "noch keiner")
     pull_request_url = str(payload.get("pull_request_url") or "noch keine PR")
     publish_strategy = str(payload.get("publish_strategy") or "unbekannt")
