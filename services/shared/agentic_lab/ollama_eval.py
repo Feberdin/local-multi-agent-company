@@ -154,9 +154,9 @@ def summarize_provider_results(classifications: list[OllamaProbeClassification])
 def recommend_provider_actions(*, provider_name: str, summary: dict[str, object]) -> list[str]:
     """Generate small, practical recommendations from batch-eval counters."""
 
-    degraded_rate = float(summary.get("degraded_rate") or 0.0)
-    failure_rate = float(summary.get("failure_rate") or 0.0)
-    visible_json_rate = float(summary.get("visible_json_rate") or 0.0)
+    degraded_rate = _summary_rate(summary.get("degraded_rate"))
+    failure_rate = _summary_rate(summary.get("failure_rate"))
+    visible_json_rate = _summary_rate(summary.get("visible_json_rate"))
 
     recommendations: list[str] = []
     if degraded_rate >= 0.5:
@@ -176,6 +176,14 @@ def recommend_provider_actions(*, provider_name: str, summary: dict[str, object]
     if not recommendations:
         recommendations.append(f"{provider_name}: Keine unmittelbare Routing-Anpassung aus diesem Batch nötig.")
     return recommendations
+
+
+def _summary_rate(value: object) -> float:
+    """Accept only numeric persisted rates and fail safely on malformed data."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
 
 
 def _is_parseable_json_object(content: str) -> bool:

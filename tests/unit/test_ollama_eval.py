@@ -77,3 +77,18 @@ def test_provider_summary_and_recommendations_flag_reasoning_only_model() -> Non
     assert summary["degraded"] == 6
     assert summary["visible_json"] == 4
     assert any("nicht als Primärmodell" in item for item in recommendations)
+
+
+def test_provider_recommendations_ignore_malformed_rate_values() -> None:
+    """Unexpected persisted summary values must not crash an operator report."""
+
+    recommendations = recommend_provider_actions(
+        provider_name="qwen",
+        summary={
+            "degraded_rate": object(),
+            "failure_rate": None,
+            "visible_json_rate": "not-a-number",
+        },
+    )
+
+    assert recommendations == ["qwen: Keine unmittelbare Routing-Anpassung aus diesem Batch nötig."]

@@ -126,3 +126,22 @@ async def test_memory_worker_marks_deploy_as_performed_when_outputs_exist(tmp_pa
     handoff_payload = json.loads(Path(response.outputs["handoff_json_path"]).read_text(encoding="utf-8"))
     assert handoff_payload["deployment_performed"] is True
     assert handoff_payload["deploy_allowed"] is True
+
+
+def test_handoff_markdown_ignores_non_list_collection_values(tmp_path, monkeypatch) -> None:
+    """Malformed persisted payload fields render safely instead of raising TypeError."""
+
+    app_module = _load_memory_module(tmp_path, monkeypatch)
+    markdown = app_module._build_handoff_markdown(
+        {
+            "changed_files": object(),
+            "validation_fulfilled": object(),
+            "validation_residual_risks": object(),
+            "next_steps": object(),
+        }
+    )
+
+    assert "- keine" in markdown
+    assert "- keine bestaetigten Punkte" in markdown
+    assert "- keine expliziten Rest-Risiken" in markdown
+    assert "- keine weiteren Schritte hinterlegt" in markdown
