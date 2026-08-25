@@ -13,7 +13,7 @@ Zielsystem:
 
 ## Was das Bootstrap-Skript macht
 
-Das Skript [scripts/setup_unraid_ssh.sh](/Users/joachim.stiegler/CodingFamily/scripts/setup_unraid_ssh.sh):
+Das Skript [scripts/setup_unraid_ssh.sh](../scripts/setup_unraid_ssh.sh):
 
 1. prüft, ob `~/.ssh/unraid_agent` und `~/.ssh/unraid_agent.pub` bereits existieren
 2. erzeugt bei Bedarf lokal einen neuen `ed25519`-Key mit `ssh-keygen`
@@ -85,7 +85,7 @@ Sicherheitsrelevante Entscheidungen:
 
 ## Optionale Härtung
 
-Zusätzlich liegt das Skript [scripts/harden_unraid_authorized_key.sh](/Users/joachim.stiegler/CodingFamily/scripts/harden_unraid_authorized_key.sh) bei. Es ist standardmäßig **nicht** Teil des normalen Bootstraps.
+Zusätzlich liegt das Skript [scripts/harden_unraid_authorized_key.sh](../scripts/harden_unraid_authorized_key.sh) bei. Es ist standardmäßig **nicht** Teil des normalen Bootstraps.
 
 Es ersetzt den unbeschränkten Agent-Key-Eintrag optional durch eine restriktive `authorized_keys`-Zeile wie:
 
@@ -112,7 +112,7 @@ Das Projekt kann die Initialisierung optional schon beim Bootstrap auslösen, oh
 Empfohlener Weg:
 
 1. In `.env` den Wert `BOOTSTRAP_UNRAID_SSH=true` setzen
-2. dann [scripts/bootstrap.sh](/Users/joachim.stiegler/CodingFamily/scripts/bootstrap.sh) ausführen
+2. dann [scripts/bootstrap.sh](../scripts/bootstrap.sh) ausführen
 
 Beispiel:
 

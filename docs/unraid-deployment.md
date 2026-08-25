@@ -25,7 +25,7 @@ Wenn auf dem Host bereits andere Dienste auf diesen Ports laufen, ändere `ORCHE
 
 ## Installation direkt aus Git
 
-Für eine hostseitige Installation aus einem Git-Repo liegt [scripts/unraid/install-from-git.sh](/Users/joachim.stiegler/CodingFamily/scripts/unraid/install-from-git.sh) bei.
+Für eine hostseitige Installation aus einem Git-Repo liegt [scripts/unraid/install-from-git.sh](../scripts/unraid/install-from-git.sh) bei.
 
 Beispiel:
 
@@ -49,7 +49,7 @@ Verhalten:
 
 ## Installation per Unraid XML Template
 
-Für Nutzer, die lieber aus der Unraid-Weboberfläche starten, liegt eine Bootstrap-Vorlage unter [infra/unraid/templates/feberdin-agent-bootstrap.xml](/Users/joachim.stiegler/CodingFamily/infra/unraid/templates/feberdin-agent-bootstrap.xml).
+Für Nutzer, die lieber aus der Unraid-Weboberfläche starten, liegt eine Bootstrap-Vorlage unter [infra/unraid/templates/feberdin-agent-bootstrap.xml](../infra/unraid/templates/feberdin-agent-bootstrap.xml).
 
 So nutzt du sie:
 
@@ -85,7 +85,7 @@ Hinweis:
 
 ## Preflight und Mount-Prüfung
 
-Der wichtigste Vorab-Check ist jetzt [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh). Das Skript bricht mit einer klaren Fehlermeldung ab, wenn:
+Der wichtigste Vorab-Check ist jetzt [scripts/doctor.sh](../scripts/doctor.sh). Das Skript bricht mit einer klaren Fehlermeldung ab, wenn:
 
 - `HOST_STAGING_STACK_ROOT` fehlt
 - `HOST_STAGING_STACK_ROOT` nicht beschreibbar ist
@@ -129,4 +129,4 @@ Die Compose-Services behalten ihre internen Service-Namen, aber die sichtbaren C
 - `fmac-code`
 - `fmac-web`
 
-Die komplette Zuordnung inklusive SVG-Icons findest du in [docs/unraid-icons.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-icons.md).
+Die komplette Zuordnung inklusive SVG-Icons findest du in [docs/unraid-icons.md](unraid-icons.md).

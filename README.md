@@ -167,7 +167,7 @@ Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherc
 
 Das Projekt enthält ein dediziertes SSH-Bootstrap für den Coding-Agent nach dem Prinzip „eigener Schlüssel pro Zweck“.
 
-- Skript: [scripts/setup_unraid_ssh.sh](/Users/joachim.stiegler/CodingFamily/scripts/setup_unraid_ssh.sh)
+- Skript: [scripts/setup_unraid_ssh.sh](scripts/setup_unraid_ssh.sh)
 - Ziel: installiert `~/.ssh/unraid_agent.pub` auf `root@192.168.57.10`
 - Verhalten:
   - erzeugt lokal bei Bedarf einen `ed25519`-Key unter `~/.ssh/unraid_agent`
@@ -193,20 +193,20 @@ Optional beim Projekt-Bootstrap:
 BOOTSTRAP_UNRAID_SSH=true ./scripts/bootstrap.sh
 ```
 
-Die vollständige Beschreibung inklusive optionaler Härtung per Forced Command findest du in [docs/ssh-bootstrap.md](/Users/joachim.stiegler/CodingFamily/docs/ssh-bootstrap.md).
+Die vollständige Beschreibung inklusive optionaler Härtung per Forced Command findest du in [docs/ssh-bootstrap.md](docs/ssh-bootstrap.md).
 
 ## Unraid XML Bootstrap
 
-Wenn du das Projekt lieber über eine Unraid-Template-XML anstoßen willst, liegt eine Bootstrap-Vorlage unter [infra/unraid/templates/feberdin-agent-bootstrap.xml](/Users/joachim.stiegler/CodingFamily/infra/unraid/templates/feberdin-agent-bootstrap.xml).
+Wenn du das Projekt lieber über eine Unraid-Template-XML anstoßen willst, liegt eine Bootstrap-Vorlage unter [infra/unraid/templates/feberdin-agent-bootstrap.xml](infra/unraid/templates/feberdin-agent-bootstrap.xml).
 
 Wichtig:
 
 - Die XML ist bewusst ein Bootstrap-Helfer für ein Multi-Container-Projekt.
-- Sie lädt per `curl` das Host-Skript [scripts/unraid/install-from-git.sh](/Users/joachim.stiegler/CodingFamily/scripts/unraid/install-from-git.sh) aus deinem Git-Repo.
+- Sie lädt per `curl` das Host-Skript [scripts/unraid/install-from-git.sh](scripts/unraid/install-from-git.sh) aus deinem Git-Repo.
 - Danach wird das Repo unter `/mnt/user/appdata/feberdin-agent-team/repo` geklont oder aktualisiert.
 - Optional kann der Bootstrap-Container anschließend `docker compose up -d` auf dem Unraid-Host ausführen, wenn du den Docker-Socket bewusst mountest und `AUTO_START_STACK=true` setzt.
 
-Die vollständige Anleitung steht in [docs/unraid-deployment.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-deployment.md).
+Die vollständige Anleitung steht in [docs/unraid-deployment.md](docs/unraid-deployment.md).
 
 ## Kurze Containernamen und Unraid-Icons
 
@@ -218,11 +218,11 @@ Fuer die Unraid-Docker-Ansicht verwendet der Stack jetzt kurze, eindeutige Conta
 - `fmac-rsch`
 - `fmac-web`
 
-Zusaetzlich liegt ein kleines SVG-Icon-Set fuer die Worker unter [infra/unraid/icons](/Users/joachim.stiegler/CodingFamily/infra/unraid/icons) bereit. Die Zuordnung steht in [docs/unraid-icons.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-icons.md).
+Zusaetzlich liegt ein kleines SVG-Icon-Set fuer die Worker unter [infra/unraid/icons](infra/unraid/icons) bereit. Die Zuordnung steht in [docs/unraid-icons.md](docs/unraid-icons.md).
 
 ## Runtime-Preflight
 
-Vor jedem Start prüft [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh):
+Vor jedem Start prüft [scripts/doctor.sh](scripts/doctor.sh):
 
 - doppelte Schlüssel in `.env`
 - ob `HOST_DATA_DIR`, `HOST_REPORTS_DIR`, `HOST_WORKSPACE_ROOT` und `HOST_STAGING_STACK_ROOT` existieren und beschreibbar sind
@@ -248,7 +248,7 @@ curl http://localhost:18088/health
 
 ## Exaktes Commit-Update auf Unraid
 
-Wenn du sicherstellen willst, dass **genau ein bestimmter Commit** ausgerollt wird und nicht versehentlich schon ein neuerer Stand, nutze [scripts/unraid/update-to-commit.sh](/Users/joachim.stiegler/CodingFamily/scripts/unraid/update-to-commit.sh).
+Wenn du sicherstellen willst, dass **genau ein bestimmter Commit** ausgerollt wird und nicht versehentlich schon ein neuerer Stand, nutze [scripts/unraid/update-to-commit.sh](scripts/unraid/update-to-commit.sh).
 
 Warum:
 
@@ -268,7 +268,7 @@ Wenn der Commit noch nicht auf GitHub angekommen ist, wartet das Skript automati
 
 ## Debug-Center
 
-Unter [services/web_ui/templates/debug.html](/Users/joachim.stiegler/CodingFamily/services/web_ui/templates/debug.html) bietet die Web-UI jetzt ein eigenes `Debug-Center`:
+Unter [services/web_ui/templates/debug.html](services/web_ui/templates/debug.html) bietet die Web-UI jetzt ein eigenes `Debug-Center`:
 
 - Einzel-Downloads fuer aktuelle API-Snapshots wie Tasks, Repository-Allowlist, Trusted Sources, Worker Guidance und Suggestions
 - Direktdownloads fuer persistierte Runtime-Dateien aus `DATA_DIR`, soweit sie vorhanden sind
@@ -284,11 +284,11 @@ Wichtig:
 
 ## Self-Improvement
 
-Unter [services/web_ui/templates/self_improvement.html](/Users/joachim.stiegler/CodingFamily/services/web_ui/templates/self_improvement.html) gibt es jetzt ein eigenes Operator-Panel fuer die kontrollierte Selbstverbesserung des Systems.
+Unter [services/web_ui/templates/self_improvement.html](services/web_ui/templates/self_improvement.html) gibt es jetzt ein eigenes Operator-Panel fuer die kontrollierte Selbstverbesserung des Systems.
 
 Wichtige Bausteine:
 
-- Governance-Policy in [config/self-improvement.policy.yaml](/Users/joachim.stiegler/CodingFamily/config/self-improvement.policy.yaml)
+- Governance-Policy in [config/self-improvement.policy.yaml](config/self-improvement.policy.yaml)
 - drei Modi:
   - `manual`: nur Analyse und Vorschlag
   - `assisted`: niedrige und mittlere Risiken autonom, riskante Veroeffentlichung mit Freigabe
@@ -311,7 +311,7 @@ Wichtig fuer den Betrieb:
 
 ## Modellrouting
 
-Das Routing liegt in [config/model-routing.example.yaml](/Users/joachim.stiegler/CodingFamily/config/model-routing.example.yaml).
+Das Routing liegt in [config/model-routing.example.yaml](config/model-routing.example.yaml).
 
 - `Mistral` ist Standard für leichte Extraktion, Doku, Routing-Hinweise und einfache Klassifikation.
 - `Qwen` ist fuer die schwereren Stufen wie Architektur, komplexes Coding, Security und Validation reserviert.
@@ -426,9 +426,9 @@ Das Dashboard enthält jetzt eine zentrale Allowlist für GitHub-Repositories.
 
 Der Research-/Search-Worker verwendet jetzt ein persistentes Trusted-Source-Profil.
 
-- Seed-Profil: [config/trusted_sources.coding_profile.json](/Users/joachim.stiegler/CodingFamily/config/trusted_sources.coding_profile.json)
-- Web-Search-Provider: [config/web_search.providers.json](/Users/joachim.stiegler/CodingFamily/config/web_search.providers.json)
-- Doku: [docs/trusted-sources.md](/Users/joachim.stiegler/CodingFamily/docs/trusted-sources.md)
+- Seed-Profil: [config/trusted_sources.coding_profile.json](config/trusted_sources.coding_profile.json)
+- Web-Search-Provider: [config/web_search.providers.json](config/web_search.providers.json)
+- Doku: [docs/trusted-sources.md](docs/trusted-sources.md)
 
 Verhalten:
 
@@ -476,7 +476,7 @@ Das Dashboard enthält jetzt zwei zusätzliche Führungsbereiche:
 
 Außerdem schreibt der Orchestrator für jeden Worker-Lauf einen sichtbaren Entscheidungsbaum in die Task-Detail-Seite.
 
-Mehr dazu in [docs/worker-governance.md](/Users/joachim.stiegler/CodingFamily/docs/worker-governance.md).
+Mehr dazu in [docs/worker-governance.md](docs/worker-governance.md).
 
 ## Logs und Debugging
 
@@ -499,14 +499,14 @@ pip install -e ".[dev]"
 
 ## Wichtige Dokumente
 
-- [docs/architecture.md](/Users/joachim.stiegler/CodingFamily/docs/architecture.md)
-- [docs/workflows.md](/Users/joachim.stiegler/CodingFamily/docs/workflows.md)
-- [docs/unraid-deployment.md](/Users/joachim.stiegler/CodingFamily/docs/unraid-deployment.md)
-- [docs/ssh-bootstrap.md](/Users/joachim.stiegler/CodingFamily/docs/ssh-bootstrap.md)
-- [docs/configuration.md](/Users/joachim.stiegler/CodingFamily/docs/configuration.md)
-- [docs/security.md](/Users/joachim.stiegler/CodingFamily/docs/security.md)
-- [docs/troubleshooting.md](/Users/joachim.stiegler/CodingFamily/docs/troubleshooting.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/workflows.md](docs/workflows.md)
+- [docs/unraid-deployment.md](docs/unraid-deployment.md)
+- [docs/ssh-bootstrap.md](docs/ssh-bootstrap.md)
+- [docs/configuration.md](docs/configuration.md)
+- [docs/security.md](docs/security.md)
+- [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## Lizenz
 
-MIT. Details siehe [LICENSE](/Users/joachim.stiegler/CodingFamily/LICENSE).
+MIT. Details siehe [LICENSE](LICENSE).

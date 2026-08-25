@@ -10,8 +10,8 @@ Reihenfolge:
 2. offizielle Dokumentation
 3. allgemeine Websuche nur als klar markierter Fallback
 
-Der Seed-Startpunkt liegt in [config/trusted_sources.coding_profile.json](/Users/joachim.stiegler/CodingFamily/config/trusted_sources.coding_profile.json).  
-Die Web-Search-Defaults liegen in [config/web_search.providers.json](/Users/joachim.stiegler/CodingFamily/config/web_search.providers.json).
+Der Seed-Startpunkt liegt in [config/trusted_sources.coding_profile.json](../config/trusted_sources.coding_profile.json).
+Die Web-Search-Defaults liegen in [config/web_search.providers.json](../config/web_search.providers.json).
 
 ## Neue Quellen hinzufügen
 
@@ -37,7 +37,7 @@ Wichtige Regeln:
 
 ## Worker-Routing
 
-Die Routing-Logik liegt in [source_router.py](/Users/joachim.stiegler/CodingFamily/services/shared/agentic_lab/source_router.py).
+Die Routing-Logik liegt in [source_router.py](../services/shared/agentic_lab/source_router.py).
 
 Beispiele:
 

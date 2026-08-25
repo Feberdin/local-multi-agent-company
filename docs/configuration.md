@@ -107,7 +107,7 @@ SELF_IMPROVEMENT_EMAIL_FROM=
 
 Policy-Datei:
 
-- Standardpfad: [config/self-improvement.policy.yaml](/Users/joachim.stiegler/CodingFamily/config/self-improvement.policy.yaml)
+- Standardpfad: [config/self-improvement.policy.yaml](../config/self-improvement.policy.yaml)
 - regelt pro Modus und Risikostufe:
   - Aktion
   - E-Mail-Intent
@@ -219,7 +219,7 @@ Warum das wichtig ist:
 
 ## Trusted Sources
 
-- Seed-Datei: [config/trusted_sources.coding_profile.json](/Users/joachim.stiegler/CodingFamily/config/trusted_sources.coding_profile.json)
+- Seed-Datei: [config/trusted_sources.coding_profile.json](../config/trusted_sources.coding_profile.json)
 - Laufzeit-Persistenz: `DATA_DIR/trusted_sources.json`
 - Verwaltung im Dashboard unter `Trusted Sources`
 
@@ -233,7 +233,7 @@ Unterstützt:
 
 ## Web Search Provider
 
-- Seed-Datei: [config/web_search.providers.json](/Users/joachim.stiegler/CodingFamily/config/web_search.providers.json)
+- Seed-Datei: [config/web_search.providers.json](../config/web_search.providers.json)
 - Laufzeit-Persistenz: `DATA_DIR/web_search_providers.json`
 - Verwaltung im Dashboard unter `Web Search Providers`
 
@@ -265,7 +265,7 @@ search:
 
 ## Worker Guidance
 
-- Seed-Datei: [config/worker_guidance.defaults.json](/Users/joachim.stiegler/CodingFamily/config/worker_guidance.defaults.json)
+- Seed-Datei: [config/worker_guidance.defaults.json](../config/worker_guidance.defaults.json)
 - Laufzeit-Persistenz: `DATA_DIR/worker_guidance.json`
 - Vorschlags-Persistenz: `DATA_DIR/improvement_suggestions.json`
 
@@ -278,7 +278,7 @@ Im Dashboard pflegbar:
 
 ## Modellrouting
 
-- Worker-Routing wird in [config/model-routing.example.yaml](/Users/joachim.stiegler/CodingFamily/config/model-routing.example.yaml) definiert.
+- Worker-Routing wird in [config/model-routing.example.yaml](../config/model-routing.example.yaml) definiert.
 - Pro Worker konfigurierbar:
   - `primary_provider`
   - `fallback_provider`
@@ -342,7 +342,7 @@ Empfehlung fuer langsame lokale Hardware:
 
 ## Runtime-Doctor
 
-- Skript: [scripts/doctor.sh](/Users/joachim.stiegler/CodingFamily/scripts/doctor.sh)
+- Skript: [scripts/doctor.sh](../scripts/doctor.sh)
 - Prüft vor dem Start:
   - Host-Verzeichnisse
   - Schreibrechte

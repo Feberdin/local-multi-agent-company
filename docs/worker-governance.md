@@ -78,7 +78,7 @@ JSON-Dateien im Datenverzeichnis:
 
 Seed-Konfiguration:
 
-- [config/worker_guidance.defaults.json](/Users/joachim.stiegler/CodingFamily/config/worker_guidance.defaults.json)
+- [config/worker_guidance.defaults.json](../config/worker_guidance.defaults.json)
 
 ## Hinweise
 

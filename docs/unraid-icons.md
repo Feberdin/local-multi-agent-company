@@ -2,7 +2,7 @@
 
 ## Ziel
 
-Die Compose-Container bekommen kurze, eindeutige Namen, damit die Unraid-Docker-Ansicht lesbarer wird. Zusaetzlich liegt ein kleines SVG-Icon-Set fuer alle Worker unter [infra/unraid/icons](/Users/joachim.stiegler/CodingFamily/infra/unraid/icons) bereit.
+Die Compose-Container bekommen kurze, eindeutige Namen, damit die Unraid-Docker-Ansicht lesbarer wird. Zusaetzlich liegt ein kleines SVG-Icon-Set fuer alle Worker unter [infra/unraid/icons](../infra/unraid/icons) bereit.
 
 Wichtig:
 
@@ -35,7 +35,7 @@ Wichtig:
 | Rollback | `rollback-worker` | `fmac-rb` | `rb.svg` |
 | Web UI | `web-ui` | `fmac-web` | `web.svg` |
 
-Die maschinenlesbare Quelle dazu ist [infra/unraid/icons/manifest.json](/Users/joachim.stiegler/CodingFamily/infra/unraid/icons/manifest.json).
+Die maschinenlesbare Quelle dazu ist [infra/unraid/icons/manifest.json](../infra/unraid/icons/manifest.json).
 
 ## Beispielnutzung
 

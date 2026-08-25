@@ -70,7 +70,7 @@ Das System bildet ein lokales Feberdin-Entwicklungsunternehmen nach. Ein Orchest
 
 - `Mistral`: leichte Extraktion, Doku, Klassifikation, Kosten-/Teamhinweise
 - `Qwen`: Architektur, Coding, Review, Security, Validation
-- Routing wird über [config/model-routing.example.yaml](/Users/joachim.stiegler/CodingFamily/config/model-routing.example.yaml) gesteuert
+- Routing wird über [config/model-routing.example.yaml](../config/model-routing.example.yaml) gesteuert
 
 ## Freigabepunkte
 
