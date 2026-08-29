@@ -1,3 +1,11 @@
+## Self-Improvement
+
+This repository prefers small, reviewable self-improvement steps so changes stay understandable and reversible.
+
+- Keep improvements narrow and testable.
+- Review the generated handoff before deploying.
+- Prefer rollback when a deployment does not recover cleanly.
+
 # Feberdin Multi-Agent Company
 
 Lokales, zustandsbehaftetes Multi-Agent-System für Softwareentwicklung, Recherche, Review, Testing, GitHub-Automation und kontrolliertes Staging-Deployment auf Unraid. Der Stack ist so aufgebaut, als würdest du ein Ziel an ein spezialisiertes Team delegieren: Der Orchestrator strukturiert den Auftrag, verteilt Arbeit an Worker, protokolliert Ergebnisse, erzwingt Freigaben und dokumentiert das Resultat in GitHub.
