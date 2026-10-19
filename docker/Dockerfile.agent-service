@@ -3,7 +3,7 @@
 # Invariants: The image runs as a non-root user and keeps runtime state in mounted volumes.
 # Debugging: If a service fails before binding its port, inspect the dependency install stage here first.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ARG BUILD_COMMIT_SHA=""
 ARG BUILD_GIT_REF=""
